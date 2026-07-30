@@ -140,10 +140,7 @@ bool AppConfig::load()
 
 		const json& tr= j.value("tracking", json::object());
 		tracking.flipHandedness= tr.value("flipHandedness", true);
-		tracking.usePoseModel= tr.value("usePoseModel", true);
-		tracking.poseHandSeededRoi= tr.value("poseHandSeededRoi", false);
 		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
-		tracking.poseFrameDivider= tr.value("poseFrameDivider", 2);
 		tracking.smoothingMinCutoff= tr.value("smoothingMinCutoff", 1.0f);
 		tracking.smoothingBeta= tr.value("smoothingBeta", 0.05f);
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
@@ -213,10 +210,7 @@ bool AppConfig::save() const
 
 	j["tracking"]= {
 		{"flipHandedness", tracking.flipHandedness},
-		{"usePoseModel", tracking.usePoseModel},
-		{"poseHandSeededRoi", tracking.poseHandSeededRoi},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
-		{"poseFrameDivider", tracking.poseFrameDivider},
 		{"smoothingMinCutoff", tracking.smoothingMinCutoff},
 		{"smoothingBeta", tracking.smoothingBeta},
 		{"smoothingEnabled", tracking.smoothingEnabled},

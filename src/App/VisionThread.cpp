@@ -69,10 +69,7 @@ void VisionThread::refreshConfigOnThread()
 	{
 		HandTrackingPipelineConfig pipelineConfig;
 		pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
-		pipelineConfig.usePoseModel= m_config->tracking.usePoseModel;
-		pipelineConfig.poseHandSeededRoi= m_config->tracking.poseHandSeededRoi;
 		pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
-		pipelineConfig.poseFrameDivider= m_config->tracking.poseFrameDivider;
 		pipelineConfig.preferredEp= m_config->tracking.onnxEp;
 
 		m_pipeline= std::make_unique<HandTrackingPipeline>();
@@ -86,10 +83,7 @@ void VisionThread::refreshConfigOnThread()
 	{
 		HandTrackingPipelineConfig pipelineConfig= m_pipeline->getConfig();
 		pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
-		pipelineConfig.usePoseModel= m_config->tracking.usePoseModel;
-		pipelineConfig.poseHandSeededRoi= m_config->tracking.poseHandSeededRoi;
 		pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
-		pipelineConfig.poseFrameDivider= m_config->tracking.poseFrameDivider;
 		m_pipeline->setConfig(pipelineConfig);
 	}
 

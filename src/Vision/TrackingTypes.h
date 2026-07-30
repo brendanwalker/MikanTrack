@@ -48,18 +48,6 @@ constexpr int HAND_CONNECTIONS[HAND_CONNECTION_COUNT][2]= {
 	{0, 17},                                  // palm edge
 };
 
-// BlazePose landmark indices we consume (of the 33-landmark set)
-enum class ePoseLandmark : int
-{
-	LEFT_SHOULDER= 11,
-	RIGHT_SHOULDER= 12,
-	LEFT_ELBOW= 13,
-	RIGHT_ELBOW= 14,
-	LEFT_WRIST= 15,
-	RIGHT_WRIST= 16,
-};
-constexpr int POSE_LANDMARK_COUNT= 33;
-
 enum class eHandSide : int
 {
 	Left= 0,
@@ -106,17 +94,14 @@ struct TrackedHand
 struct TrackedArm
 {
 	bool valid= false;
-	bool fromFallback= false;   // true when derived from hand orientation, not the pose model
+	// Elbows are geometric estimates extended from the hand orientation
+	// (BlazePose measurement was removed - it never fires on overhead rigs);
+	// kept in the schema so OSC consumers can distinguish estimate quality
+	bool fromFallback= true;
 	float confidence= 0.f;
 
 	glm::vec2 elbowPixel{0.f};
 	glm::vec2 wristPixel{0.f};
-
-	// Optional depth hint from the pose model's world landmarks:
-	// elbow z minus wrist z in meters (camera +Z forward). Used by
-	// LandmarkTo3D when back-projecting the elbow.
-	bool hasElbowZHint= false;
-	float elbowZOffsetFromWrist= 0.f;
 
 	bool hasCameraSpace= false;
 	glm::vec3 elbowCamera{0.f};
@@ -141,8 +126,6 @@ struct TrackingFrameResult
 	std::array<TrackedHand, 2> hands;
 	std::array<TrackedArm, 2> arms;
 
-	// Debug: raw detector output boxes (palm + person)
+	// Debug: raw palm detector output + active hand ROI boxes
 	std::vector<DetectionBox> palmDetections;
-	std::vector<DetectionBox> personDetections;
-	bool poseModelActive= false;
 };

@@ -41,27 +41,13 @@ bool HandTrackingPipeline::startup(const HandTrackingPipelineConfig& config)
 	if (!m_handLandmarkModel.load(dir + "/hand_landmark.onnx", ep))
 		return false;
 
-	// Pose models are optional
-	m_bPoseModelsLoaded=
-		m_poseDetector.load(dir + "/person_detection.onnx", ep) &&
-		m_poseLandmarkModel.load(dir + "/pose_landmark.onnx", ep);
-	if (!m_bPoseModelsLoaded)
-	{
-		MIKAN_MT_LOG_WARNING("HandTrackingPipeline::startup")
-			<< "Pose models unavailable - arm tracking will use hand-derived fallback only";
-	}
-
 	for (HandSlot& slot : m_slots)
 		slot.deactivate();
 	m_frameIndex= -1;
 	m_framesSinceDetector= 0;
-	m_bPoseRoiTracked= false;
-	m_lastPoseResult= PoseLandmarkResult();
-	m_lastPoseFrameIndex= -1000;
 
 	MIKAN_MT_LOG_INFO("HandTrackingPipeline::startup")
-		<< "Pipeline ready (EP: " << getActiveExecutionProvider()
-		<< ", pose models: " << (m_bPoseModelsLoaded ? "loaded" : "disabled") << ")";
+		<< "Pipeline ready (EP: " << getActiveExecutionProvider() << ")";
 	return true;
 }
 
@@ -96,23 +82,11 @@ int HandTrackingPipeline::countActiveSlots() const
 	return count;
 }
 
-bool HandTrackingPipeline::isPoseResultFresh() const
-{
-	if (!m_lastPoseResult.valid ||
-		m_lastPoseResult.confidence < m_config.poseConfidenceThreshold)
-		return false;
-
-	const int64_t maxAge= (int64_t)std::max(m_config.poseFrameDivider, 1);
-	return (m_frameIndex - m_lastPoseFrameIndex) <= maxAge;
-}
-
 void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult& outResult)
 {
 	const auto startTime= std::chrono::steady_clock::now();
 
 	outResult.palmDetections.clear();
-	outResult.personDetections.clear();
-	outResult.poseModelActive= false;
 	for (TrackedHand& hand : outResult.hands)
 		hand= TrackedHand();
 	for (TrackedArm& arm : outResult.arms)
@@ -133,10 +107,6 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 		m_framesSinceDetector++;
 
 	runHandLandmarkStage(bgrFrame);
-
-	if (m_config.usePoseModel && m_bPoseModelsLoaded)
-		runPoseStage(bgrFrame, outResult);
-	outResult.poseModelActive= isPoseResultFresh();
 
 	resolveHandedness(bgrFrame.cols);
 	publishHands(outResult);
@@ -250,113 +220,9 @@ void HandTrackingPipeline::runHandLandmarkStage(const cv::Mat& bgrFrame)
 	}
 }
 
-void HandTrackingPipeline::runPoseStage(const cv::Mat& bgrFrame, TrackingFrameResult& outResult)
-{
-	if (m_config.poseFrameDivider > 1 &&
-		(m_frameIndex % (int64_t)m_config.poseFrameDivider) != 0)
-		return;
-
-	PoseRoi roi;
-	bool haveRoi= false;
-
-	if (m_bPoseRoiTracked)
-	{
-		// aux-landmark ROI reuse (the landmark model's aux points 33/34 encode
-		// next frame's ROI, same as upstream MediaPipe tracking mode)
-		roi= m_trackedPoseRoi;
-		haveRoi= true;
-	}
-	else if (m_config.poseHandSeededRoi)
-	{
-		// Overhead-rig mode: seed the pose crop from the tracked hands instead
-		// of the person detector (which never fires on top-down views).
-		// Crop geometry (see PoseLandmarkModel): square of radius
-		// |hip - fullBody| centered on hipCenter, rotated so hip->fullBody
-		// points up. bodyDir runs from the knuckles through the wrist, i.e.
-		// up the forearm toward the elbows/shoulders.
-		glm::vec2 wristSum(0.f);
-		glm::vec2 bodyDirSum(0.f);
-		float handLengthSum= 0.f;
-		int activeHands= 0;
-		for (const HandSlot& slot : m_slots)
-		{
-			if (!slot.active)
-				continue;
-
-			const glm::vec2 wrist= glm::vec2(slot.imagePoints[(int)eHandLandmark::WRIST]);
-			const glm::vec2 mcpCentroid=
-				(glm::vec2(slot.imagePoints[(int)eHandLandmark::INDEX_MCP]) +
-				 glm::vec2(slot.imagePoints[(int)eHandLandmark::MIDDLE_MCP]) +
-				 glm::vec2(slot.imagePoints[(int)eHandLandmark::RING_MCP]) +
-				 glm::vec2(slot.imagePoints[(int)eHandLandmark::PINKY_MCP])) *
-				0.25f;
-
-			const glm::vec2 handSegment= wrist - mcpCentroid;
-			const float handLength= glm::length(handSegment);
-			if (handLength < 1.f)
-				continue;
-
-			wristSum+= wrist;
-			bodyDirSum+= handSegment / handLength;
-			handLengthSum+= handLength;
-			++activeHands;
-		}
-
-		if (activeHands > 0 && glm::length(bodyDirSum) > 0.1f)
-		{
-			const glm::vec2 wristMid= wristSum / (float)activeHands;
-			const glm::vec2 bodyDir= glm::normalize(bodyDirSum);
-			const float handLength= handLengthSum / (float)activeHands;
-
-			// Center the crop ~3 hand-lengths up the forearms with a 4
-			// hand-length radius: spans from just past the fingertips to
-			// roughly the shoulders
-			roi.hipCenter= wristMid + bodyDir * (3.f * handLength);
-			roi.fullBodyPoint= roi.hipCenter + bodyDir * (4.f * handLength);
-			haveRoi= true;
-		}
-	}
-	else
-	{
-		m_poseDetector.detect(bgrFrame, m_personDetections);
-		for (const PersonDetection& detection : m_personDetections)
-			outResult.personDetections.push_back(PoseDetector::toDebugBox(detection));
-
-		if (!m_personDetections.empty() &&
-			m_personDetections[0].score >= m_config.personScoreThreshold)
-		{
-			roi= PoseRoi::fromPersonDetection(m_personDetections[0]);
-			haveRoi= true;
-		}
-	}
-
-	if (!haveRoi)
-		return;
-
-	PoseLandmarkResult poseResult;
-	m_poseLandmarkModel.estimate(bgrFrame, roi, poseResult);
-
-	if (poseResult.valid && poseResult.confidence >= m_config.poseConfidenceThreshold)
-	{
-		m_lastPoseResult= poseResult;
-		m_lastPoseFrameIndex= m_frameIndex;
-		m_trackedPoseRoi.hipCenter= poseResult.auxRoiCenter;
-		m_trackedPoseRoi.fullBodyPoint= poseResult.auxRoiScalePoint;
-		m_bPoseRoiTracked= true;
-
-		outResult.personDetections.push_back(poseResult.usedRoi);
-	}
-	else
-	{
-		// lost: fall back to person detection on the next pose frame
-		m_bPoseRoiTracked= false;
-	}
-}
-
 void HandTrackingPipeline::resolveHandedness(int frameWidth)
 {
-	const bool poseFresh= isPoseResultFresh();
-	const float assocDist= m_config.poseWristAssocFrameWidthFrac * (float)frameWidth;
+	(void)frameWidth;
 
 	for (HandSlot& slot : m_slots)
 	{
@@ -369,34 +235,6 @@ void HandTrackingPipeline::resolveHandedness(int frameWidth)
 		if (m_config.flipHandedness)
 			rightProb= 1.f - rightProb;
 		eHandSide candidate= rightProb > 0.5f ? eHandSide::Right : eHandSide::Left;
-
-		// geometric cross-check: nearest visible pose wrist wins over the classifier
-		if (poseFresh)
-		{
-			const glm::vec2 slotWrist= glm::vec2(slot.imagePoints[(int)eHandLandmark::WRIST]);
-
-			float bestDist= assocDist;
-			bool haveVote= false;
-			eHandSide voteSide= candidate;
-			const int wristIndices[2]= {(int)ePoseLandmark::LEFT_WRIST, (int)ePoseLandmark::RIGHT_WRIST};
-			const eHandSide wristSides[2]= {eHandSide::Left, eHandSide::Right};
-			for (int i= 0; i < 2; ++i)
-			{
-				if (m_lastPoseResult.visibility[wristIndices[i]] < 0.5f)
-					continue;
-
-				const float dist=
-					glm::length(glm::vec2(m_lastPoseResult.imagePoints[wristIndices[i]]) - slotWrist);
-				if (dist < bestDist)
-				{
-					bestDist= dist;
-					voteSide= wristSides[i];
-					haveVote= true;
-				}
-			}
-			if (haveVote)
-				candidate= voteSide;
-		}
 
 		// temporal stickiness: keep the assigned side unless contradicted for
 		// handednessSwitchFrames consecutive frames
@@ -460,88 +298,38 @@ void HandTrackingPipeline::publishHands(TrackingFrameResult& outResult)
 
 void HandTrackingPipeline::publishArms(TrackingFrameResult& outResult)
 {
-	const bool poseFresh= isPoseResultFresh();
-
+	// Elbow/forearm estimation from hand geometry: extend up the forearm
+	// direction from the palm orientation. When extrinsics are calibrated,
+	// LandmarkTo3D::refineFallbackArms recomputes this in world space with an
+	// anatomical forearm length and a table-plane clamp.
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		TrackedArm& arm= outResult.arms[sideIndex];
 		const TrackedHand& hand= outResult.hands[sideIndex];
 
-		const int wristIndex=
-			sideIndex == (int)eHandSide::Left
-			? (int)ePoseLandmark::LEFT_WRIST
-			: (int)ePoseLandmark::RIGHT_WRIST;
-		const int elbowIndex=
-			sideIndex == (int)eHandSide::Left
-			? (int)ePoseLandmark::LEFT_ELBOW
-			: (int)ePoseLandmark::RIGHT_ELBOW;
+		if (!hand.tracked)
+			continue;
 
-		bool usedPose= false;
-		if (poseFresh)
+		const glm::vec2 wrist= glm::vec2(hand.imagePoints[(int)eHandLandmark::WRIST]);
+		const glm::vec2 mcpCentroid=
+			(glm::vec2(hand.imagePoints[(int)eHandLandmark::INDEX_MCP]) +
+			 glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]) +
+			 glm::vec2(hand.imagePoints[(int)eHandLandmark::RING_MCP]) +
+			 glm::vec2(hand.imagePoints[(int)eHandLandmark::PINKY_MCP])) * 0.25f;
+
+		const glm::vec2 toWrist= wrist - mcpCentroid;
+		const float toWristLength= glm::length(toWrist);
+		if (toWristLength > 1e-3f)
 		{
-			const float elbowVisibility= m_lastPoseResult.visibility[elbowIndex];
-			if (elbowVisibility >= m_config.elbowVisibilityThreshold)
-			{
-				const glm::vec2 poseWrist= glm::vec2(m_lastPoseResult.imagePoints[wristIndex]);
-				const glm::vec2 poseElbow= glm::vec2(m_lastPoseResult.imagePoints[elbowIndex]);
+			const glm::vec2 dir= toWrist / toWristLength;
+			const float handLength=
+				glm::length(wrist - glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]));
 
-				// plausibility gates against the tracked hand (when present)
-				bool plausible= true;
-				glm::vec2 handWrist= poseWrist;
-				if (hand.tracked)
-				{
-					handWrist= glm::vec2(hand.imagePoints[(int)eHandLandmark::WRIST]);
-					const glm::vec2 middleMcp= glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]);
-					const float handSize= glm::length(handWrist - middleMcp);
-					const float forearmLength= glm::length(poseElbow - poseWrist);
-
-					plausible=
-						glm::length(poseWrist - handWrist) <= m_config.poseWristPlausibilityPx &&
-						forearmLength >= handSize * 0.5f &&
-						forearmLength <= handSize * 8.f;
-				}
-
-				if (plausible)
-				{
-					arm.valid= true;
-					arm.fromFallback= false;
-					arm.confidence= elbowVisibility;
-					arm.elbowPixel= poseElbow;
-					arm.wristPixel= handWrist;
-					// metric depth hint from the pose world landmarks
-					arm.hasElbowZHint= true;
-					arm.elbowZOffsetFromWrist=
-						m_lastPoseResult.worldPoints[elbowIndex].z -
-						m_lastPoseResult.worldPoints[wristIndex].z;
-					usedPose= true;
-				}
-			}
-		}
-
-		if (!usedPose && hand.tracked)
-		{
-			// fallback: extend the forearm from the palm orientation
-			const glm::vec2 wrist= glm::vec2(hand.imagePoints[(int)eHandLandmark::WRIST]);
-			const glm::vec2 mcpCentroid=
-				(glm::vec2(hand.imagePoints[(int)eHandLandmark::INDEX_MCP]) +
-				 glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]) +
-				 glm::vec2(hand.imagePoints[(int)eHandLandmark::RING_MCP]) +
-				 glm::vec2(hand.imagePoints[(int)eHandLandmark::PINKY_MCP])) * 0.25f;
-
-			const glm::vec2 toWrist= wrist - mcpCentroid;
-			const float toWristLength= glm::length(toWrist);
-			if (toWristLength > 1e-3f)
-			{
-				const glm::vec2 dir= toWrist / toWristLength;
-				const float handLength=
-					glm::length(wrist - glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]));
-
-				arm.valid= true;
-				arm.fromFallback= true;
-				arm.confidence= 0.1f;
-				arm.wristPixel= wrist;
-				arm.elbowPixel= wrist + dir * (m_config.armFallbackElbowScale * handLength);
-			}
+			arm.valid= true;
+			arm.fromFallback= true;
+			arm.confidence= 0.1f;
+			arm.wristPixel= wrist;
+			arm.elbowPixel= wrist + dir * (m_config.armFallbackElbowScale * handLength);
 		}
 	}
 }

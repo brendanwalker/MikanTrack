@@ -39,11 +39,9 @@ linked, so this app builds standalone.
 
 ## ML models
 
-The MediaPipe hand/pose models (Apache-2.0, Google) are used in their
+The MediaPipe hand models (Apache-2.0, Google) are used in their
 OpenCV Zoo ONNX conversions (https://github.com/opencv/opencv_zoo,
 Apache-2.0), downloaded into `models/` by `InitialSetup_x64.bat`:
 
 - `palm_detection.onnx` — palm_detection_mediapipe_2023feb
 - `hand_landmark.onnx` — handpose_estimation_mediapipe_2023feb
-- `person_detection.onnx` — person_detection_mediapipe_2023mar
-- `pose_landmark.onnx` — pose_estimation_mediapipe_2023mar

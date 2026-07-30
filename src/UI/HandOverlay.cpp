@@ -4,7 +4,6 @@ static const ImU32 k_leftHandColor= IM_COL32(80, 160, 255, 255);   // blue
 static const ImU32 k_rightHandColor= IM_COL32(255, 96, 96, 255);   // red
 static const ImU32 k_jointColor= IM_COL32(255, 255, 255, 220);
 static const ImU32 k_palmDetectColor= IM_COL32(255, 220, 60, 180); // yellow
-static const ImU32 k_personDetectColor= IM_COL32(160, 255, 120, 140);
 
 static void drawDashedLine(ImDrawList* drawList, const ImVec2& a, const ImVec2& b, ImU32 color, float thickness,
 						   float dashLength= 8.f)
@@ -45,7 +44,6 @@ void HandOverlay::drawTrackingResult(ImDrawList* drawList, const TrackingFrameRe
 			}
 		};
 		drawBoxes(result.palmDetections, k_palmDetectColor);
-		drawBoxes(result.personDetections, k_personDetectColor);
 	}
 
 	// Hand skeletons

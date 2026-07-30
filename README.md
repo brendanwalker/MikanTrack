@@ -4,22 +4,28 @@ Standalone Windows app for GPU hand + forearm tracking from an overhead webcam,
 streaming world-space landmark positions over OSC (built for consumption by
 Unreal Engine's OSC plugin).
 
-Runs the Google MediaPipe hand/pose models (palm detection, hand landmark,
-person detection, BlazePose) via **ONNX Runtime with the DirectML execution
-provider** — real GPU inference on any Windows GPU, no Bazel, no MediaPipe
-framework build. The two-stage detector→landmark graph logic (SSD anchors,
-weighted NMS, rotated crops, frame-to-frame ROI tracking) is implemented in
-C++, ported from the [OpenCV Zoo](https://github.com/opencv/opencv_zoo)
-reference demos. Webcam capture, calibration and app scaffolding are borrowed
-from [MikanXR](https://github.com/MikanXR/MikanXR) (see `NOTICE.md`).
+Runs the Google MediaPipe hand models (palm detection + hand landmark) via
+**ONNX Runtime with the DirectML execution provider** — real GPU inference on
+any Windows GPU, no Bazel, no MediaPipe framework build. The two-stage
+detector→landmark graph logic (SSD anchors, weighted NMS, rotated crops,
+frame-to-frame ROI tracking) is implemented in C++, ported from the
+[OpenCV Zoo](https://github.com/opencv/opencv_zoo) reference demos. Webcam
+capture, calibration and app scaffolding are borrowed from
+[MikanXR](https://github.com/MikanXR/MikanXR) (see `NOTICE.md`).
+
+Elbows/forearms are geometric estimates (extended up the forearm direction
+from the hand orientation, clamped to the calibrated table plane) rather than
+model measurements: BlazePose was tried and removed — its person detector
+never fires on top-down/overhead camera views. For avatar work, treat the
+streamed elbow as an IK hint and solve the arm with Two-Bone IK in-engine.
 
 ## Features
 
 - Webcam capture via Media Foundation (device/mode selection, hotplug,
   hardware-decode policy with vendor-MFT hang workarounds, NV12/YUY2 passthrough)
-- Two-hand tracking (21 landmarks each) + elbows/forearms from BlazePose,
-  with a hand-derived forearm fallback for overhead framing where BlazePose
-  gets unreliable (fallback forearms are drawn dashed and sent with low confidence)
+- Two-hand tracking (21 landmarks each) + estimated elbows/forearms derived
+  from the hand orientation and table plane (drawn dashed and sent with low
+  confidence so consumers can treat them as IK hints)
 - Live preview with skeleton wireframe overlay; alternate 3D scene view
   (marker grid, camera frustum, 3D skeletons, orbit camera)
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)

@@ -8,7 +8,6 @@
 #include "Logger.h"
 
 static constexpr float kMinDepthMeters= 0.05f;
-static constexpr float kElbowDepthRangeMeters= 0.5f;
 static constexpr float kDefaultDtSeconds= 1.f / 60.f;
 // Anatomical forearm length as a multiple of the wrist->middle-MCP distance
 // (forearm ~26cm vs palm ~8cm)
@@ -145,11 +144,7 @@ void LandmarkTo3D::processArm(TrackedArm& arm, const TrackedHand& hand, eHandSid
 	const glm::vec3& wristCamera= hand.cameraPoints[(int)eHandLandmark::WRIST];
 	const float zWrist= wristCamera.z;
 
-	// pose z hint (elbow relative to wrist, meters) when available
-	const float zOffset= arm.hasElbowZHint ? arm.elbowZOffsetFromWrist : 0.f;
-	const float zElbow= std::max(
-		std::clamp(zWrist + zOffset, zWrist - kElbowDepthRangeMeters, zWrist + kElbowDepthRangeMeters),
-		kMinDepthMeters);
+	const float zElbow= std::max(zWrist, kMinDepthMeters);
 
 	glm::vec3 elbowCamera= backProject(arm.elbowPixel.x, arm.elbowPixel.y, zElbow);
 	if (m_bSmoothingEnabled)
@@ -172,8 +167,6 @@ void LandmarkTo3D::refineFallbackArms(TrackingFrameResult& ioResult, const glm::
 		TrackedArm& arm= ioResult.arms[sideIndex];
 		const TrackedHand& hand= ioResult.hands[sideIndex];
 
-		// Only refine hand-derived fallback elbows; measured pose elbows keep
-		// their own (image + z hint) estimate
 		if (!arm.valid || !arm.fromFallback || !hand.tracked || !hand.hasWorldSpace)
 			continue;
 
