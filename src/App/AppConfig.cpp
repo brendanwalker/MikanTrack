@@ -80,7 +80,7 @@ std::string AppConfig::getConfigFilePath()
 	std::error_code ec;
 	std::filesystem::create_directories(configDir, ec);
 
-	return (configDir / "config.json").u8string();
+	return (configDir / "config.json").string();
 }
 
 bool AppConfig::load()

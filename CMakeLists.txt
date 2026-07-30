@@ -10,7 +10,7 @@ if(NOT MSVC)
 endif()
 
 add_compile_options(/MP /W3)
-add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN)
+add_compile_definitions(NOMINMAX _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN GLM_ENABLE_EXPERIMENTAL)
 
 set(ROOT_DIR ${CMAKE_CURRENT_LIST_DIR})
 set(DEPS_DIR ${ROOT_DIR}/deps)

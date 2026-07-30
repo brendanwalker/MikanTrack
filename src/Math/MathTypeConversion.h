@@ -41,11 +41,6 @@ glm::vec3 cv_vec3f_to_glm_vec3(const cv::Vec3f& in);
 glm::dvec3 cv_vec3d_to_glm_dvec3(const cv::Vec3d& in);
 glm::dquat cv_quatd_to_glm_dquat(const cv::Quatd& in);
 
-// VRDevicePost to GLM types
-glm::vec3 VRDevicePosition_to_glm_vec3(const struct VRDevicePosition& in);
-glm::quat VRDeviceQuat_to_glm_quat(const struct VRDeviceQuat& in);
-GlmTransform VRDevicePose_to_GlmTransform(const struct VRDevicePose& in);
-
 // OpenCV <-> Mikan types
 MikanVector3d cv_vec3d_to_MikanVector3d(const cv::Vec3d& in);
 MikanQuatd cv_quatd_to_MikanQuatd(const cv::Quatd& in);

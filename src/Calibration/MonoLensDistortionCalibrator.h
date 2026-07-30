@@ -1,9 +1,7 @@
 #pragma once
 
-#include "ObjectSystemFwd.h"
-#include "ObjectSystemConfigFwd.h"
+#include "CalibrationPatternFinder.h"
 #include "MikanVideoSourceTypes.h"
-#include "MikanCameraTypes.h"
 
 #include <memory>
 
@@ -12,27 +10,39 @@
 class MonoLensDistortionCalibrator
 {
 public:
-	MonoLensDistortionCalibrator(MarkerObjectSystemPtr markerObjectSystem,
-								 class VideoFrameDistortionView* distortionView, int desiredBoardCount);
+	// How long the pattern must stay valid (in a new location) before a sample is auto-captured
+	static constexpr float k_imagePointStabilityDuration= 1.0f; // seconds
+	// Minimum average pixel distance the pattern corners must move from the last
+	// captured sample to be considered a new board location
+	static constexpr float k_defaultMinSeperationDist= 100.f; // pixels
+
+	MonoLensDistortionCalibrator(int frameWidth, int frameHeight, int charucoCols, int charucoRows,
+								 float charucoSquareLengthMM, float charucoMarkerLengthMM,
+								 eCharucoDictionaryType charucoDictionaryType, int desiredSampleCount);
 	virtual ~MonoLensDistortionCalibrator();
 
-	inline class CalibrationPatternFinder* getPatternFinder() const { return m_patternFinder; }
+	inline class CalibrationPatternFinder_Charuco* getPatternFinder() const { return m_patternFinder; }
+
+	// Per-frame update: feed in the latest grayscale video frame, search it for the
+	// calibration pattern, and auto-capture a sample once the pattern has been held
+	// steady in a new location for k_imagePointStabilityDuration seconds
+	void update(float deltaSeconds, const cv::Mat* grayscaleFrame,
+				const float minSeperationDist= k_defaultMinSeperationDist);
+
 	void findNewCalibrationPattern(const float minSeperationDist);
 	bool captureLastFoundCalibrationPattern();
 
 	bool hasSampledAllCalibrationPatterns() const;
 	bool areCurrentImagePointsValid() const;
+	bool areCurrentImagePointsStable() const;
 	float computeCalibrationProgress() const;
 	void resetCalibrationState();
-	void resetDistortionView();
 
 	void computeCameraCalibration();
 	bool getIsCameraCalibrationComplete() const;
 	int getDesiredPatternCount() const;
 	bool getCameraCalibration(MikanMonoIntrinsics* out_mono_intrinsics);
 	float getReprojectionError() const;
-
-	void renderCalibrationState();
 
 protected:
 	float frameWidth;
@@ -41,9 +51,6 @@ protected:
 	// Internal Calibration State
 	struct MonoLensDistortionCalibrationState* m_calibrationState;
 
-	// Video buffer state
-	class VideoFrameDistortionView* m_distortionView;
-
 	// Calibration pattern being used
-	class CalibrationPatternFinder* m_patternFinder;
+	class CalibrationPatternFinder_Charuco* m_patternFinder;
 };

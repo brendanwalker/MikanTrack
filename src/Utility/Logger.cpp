@@ -177,11 +177,18 @@ public:
 
 	void write_line()
 	{
-		if (g_is_initialized && g_logger_callback != nullptr && m_hasWrittenLog && log_can_emit_level(m_level))
+		if (g_is_initialized && m_hasWrittenLog && log_can_emit_level(m_level))
 		{
 			const std::string line= m_lineBuffer.str();
 
-			(*g_logger_callback)((int)m_level, line.c_str());
+			// Always emit to the standard streams + log file; a custom
+			// callback (e.g. the in-app log panel) is invoked in addition,
+			// not as a replacement
+			log_default_callback((int)m_level, line.c_str());
+			if (g_logger_callback != nullptr && g_logger_callback != &log_default_callback)
+			{
+				(*g_logger_callback)((int)m_level, line.c_str());
+			}
 		}
 	}
 };

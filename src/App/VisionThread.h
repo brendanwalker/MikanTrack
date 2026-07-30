@@ -41,6 +41,11 @@ public:
 	void setTrackingEnabled(bool bEnabled) { m_bTrackingEnabled= bEnabled; }
 	bool isTrackingEnabled() const { return m_bTrackingEnabled; }
 
+	// Disable to receive raw distorted preview frames (needed while capturing
+	// intrinsics calibration samples). Re-enabled after the wizard exits.
+	void setUndistortEnabled(bool bEnabled) { m_bUndistortEnabled= bEnabled; }
+	bool isUndistortEnabled() const { return m_bUndistortEnabled; }
+
 	// Copies the newest preview frame + result into outFrame.
 	// Returns false if nothing new arrived since the last call.
 	bool fetchPreviewFrame(VisionPreviewFrame& outFrame);
@@ -68,6 +73,7 @@ private:
 	std::thread m_thread;
 	std::atomic_bool m_bRunning{false};
 	std::atomic_bool m_bTrackingEnabled{true};
+	std::atomic_bool m_bUndistortEnabled{true};
 	std::atomic_bool m_bConfigRefreshRequested{true};
 	std::atomic<float> m_lastInferenceMs{0.f};
 

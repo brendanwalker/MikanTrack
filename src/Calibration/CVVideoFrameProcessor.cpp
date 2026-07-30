@@ -1,94 +1,96 @@
 #include "CVVideoFrameProcessor.h"
+#include "MathTypeConversion.h"
 
 #include "opencv2/opencv.hpp"
 
 #include <easy/profiler.h>
 
-CVVideoFrameProcessor::CVVideoFrameProcessor() {}
+CVVideoFrameProcessor::CVVideoFrameProcessor(const MikanMonoIntrinsics& intrinsics, int width, int height)
+	: m_frameWidth(width)
+	, m_frameHeight(height)
+{
+	m_distortionMapX= new cv::Mat(height, width, CV_32FC1);
+	m_distortionMapY= new cv::Mat(height, width, CV_32FC1);
+
+	m_gsSourceBuffer= new cv::Mat(height, width, CV_8UC1);
+	m_gsUndistortBuffer= new cv::Mat(height, width, CV_8UC1);
+	m_bgrGsDisplayBuffer= new cv::Mat(height, width, CV_8UC3);
+
+	applyMonoCameraIntrinsics(intrinsics);
+}
 
 CVVideoFrameProcessor::~CVVideoFrameProcessor()
 {
-	if (m_bgrUndistortBuffer != nullptr)
-		delete m_bgrUndistortBuffer;
+	delete m_distortionMapX;
+	delete m_distortionMapY;
 
-	if (m_gsSourceBuffer != nullptr)
-		delete m_gsSourceBuffer;
-
-	if (m_gsUndistortBuffer != nullptr)
-		delete m_gsUndistortBuffer;
-
-	if (m_bgrGsDisplayBuffer != nullptr)
-		delete m_bgrGsDisplayBuffer;
+	delete m_gsSourceBuffer;
+	delete m_gsUndistortBuffer;
+	delete m_bgrGsDisplayBuffer;
 }
 
-void CVVideoFrameProcessor::ensureBufferSize(int width, int height)
+void CVVideoFrameProcessor::applyMonoCameraIntrinsics(const MikanMonoIntrinsics& intrinsics)
 {
-	if (m_bgrUndistortBuffer != nullptr)
-		delete m_bgrUndistortBuffer;
-	m_bgrUndistortBuffer= new cv::Mat(cv::Size(width, height), CV_8UC3);
+	const cv::Matx33d distortedIntrinsicMatrix= MikanMatrix3d_to_cv_mat33d(intrinsics.distorted_camera_matrix);
+	const cv::Matx81d distortionCoeffs= Mikan_distortion_to_cv_vec8(intrinsics.distortion_coefficients);
+	const cv::Matx33d undistortedIntrinsicMatrix= MikanMatrix3d_to_cv_mat33d(intrinsics.undistorted_camera_matrix);
 
-	if (m_gsSourceBuffer != nullptr)
-		delete m_gsSourceBuffer;
-	m_gsSourceBuffer= new cv::Mat(height, width, CV_8UC1);
-
-	if (m_gsUndistortBuffer != nullptr)
-		delete m_gsUndistortBuffer;
-	m_gsUndistortBuffer= new cv::Mat(height, width, CV_8UC1);
-
-	if (m_bgrGsDisplayBuffer != nullptr)
-		delete m_bgrGsDisplayBuffer;
-	m_bgrGsDisplayBuffer= new cv::Mat(height, width, CV_8UC3);
+	// (Re)create the X and Y undistortion maps used by cv::remap
+	cv::initUndistortRectifyMap(distortedIntrinsicMatrix, distortionCoeffs,
+								cv::noArray(), // unneeded rectification transformation computed by stereoRectify()
+								undistortedIntrinsicMatrix, cv::Size(m_frameWidth, m_frameHeight),
+								CV_32FC1, // Distortion map type
+								*m_distortionMapX, *m_distortionMapY);
 }
 
-void CVVideoFrameProcessor::computeUndistortion(const cv::Mat& srcBuffer, const cv::Mat& distortionMapX,
-												const cv::Mat& distortionMapY)
+void CVVideoFrameProcessor::processColorFrame(const cv::Mat& bgrSourceBuffer, cv::Mat& bgrUndistortedOut)
 {
-	if (m_bgrUndistortBuffer == nullptr)
-		return;
-
 	EASY_BLOCK("OpenCV Undistort");
 
-	// Apply the X and Y undistortion maps to create an undistorted 24-BPP image (for display)
+	// Apply the X and Y undistortion maps to create an undistorted 24-BPP image
 	if (!m_bColorUndistortDisabled)
 	{
 		EASY_BLOCK("Color Undistort");
 
-		cv::remap(srcBuffer, *m_bgrUndistortBuffer, distortionMapX, distortionMapY, cv::INTER_LINEAR,
+		cv::remap(bgrSourceBuffer, bgrUndistortedOut, *m_distortionMapX, *m_distortionMapY, cv::INTER_LINEAR,
 				  cv::BORDER_CONSTANT);
 	}
-
-	// Also, optionally do grayscale conversion (and maybe undistortion)
-	if (m_gsSourceBuffer != nullptr && m_bgrGsDisplayBuffer != nullptr)
+	else
 	{
-		if (!m_bGrayscaleUndistortDisabled && m_gsUndistortBuffer != nullptr)
+		bgrSourceBuffer.copyTo(bgrUndistortedOut);
+	}
+}
+
+void CVVideoFrameProcessor::processGrayscale(const cv::Mat& bgrSourceBuffer)
+{
+	if (!m_bGrayscaleUndistortDisabled)
+	{
 		{
-			{
-				EASY_BLOCK("BGR -> Grayscale");
-				cv::cvtColor(srcBuffer, *m_gsSourceBuffer, cv::COLOR_BGR2GRAY);
-			}
-
-			{
-				EASY_BLOCK("Grayscale Undistort");
-				cv::remap(*m_gsSourceBuffer, *m_gsUndistortBuffer, distortionMapX, distortionMapY, cv::INTER_LINEAR,
-						  cv::BORDER_CONSTANT);
-			}
-
-			{
-				EASY_BLOCK("Grayscale -> BGR");
-				cv::cvtColor(*m_gsUndistortBuffer, *m_bgrGsDisplayBuffer, cv::COLOR_GRAY2BGR);
-			}
+			EASY_BLOCK("BGR -> Grayscale");
+			cv::cvtColor(bgrSourceBuffer, *m_gsSourceBuffer, cv::COLOR_BGR2GRAY);
 		}
-		else if (m_bGrayscaleUndistortDisabled)
-		{
-			{
-				EASY_BLOCK("BGR -> Grayscale");
-				cv::cvtColor(srcBuffer, *m_gsSourceBuffer, cv::COLOR_BGR2GRAY);
-			}
 
-			{
-				EASY_BLOCK("Grayscale -> BGR");
-				cv::cvtColor(*m_gsSourceBuffer, *m_bgrGsDisplayBuffer, cv::COLOR_GRAY2BGR);
-			}
+		{
+			EASY_BLOCK("Grayscale Undistort");
+			cv::remap(*m_gsSourceBuffer, *m_gsUndistortBuffer, *m_distortionMapX, *m_distortionMapY, cv::INTER_LINEAR,
+					  cv::BORDER_CONSTANT);
+		}
+
+		{
+			EASY_BLOCK("Grayscale -> BGR");
+			cv::cvtColor(*m_gsUndistortBuffer, *m_bgrGsDisplayBuffer, cv::COLOR_GRAY2BGR);
+		}
+	}
+	else
+	{
+		{
+			EASY_BLOCK("BGR -> Grayscale");
+			cv::cvtColor(bgrSourceBuffer, *m_gsSourceBuffer, cv::COLOR_BGR2GRAY);
+		}
+
+		{
+			EASY_BLOCK("Grayscale -> BGR");
+			cv::cvtColor(*m_gsSourceBuffer, *m_bgrGsDisplayBuffer, cv::COLOR_GRAY2BGR);
 		}
 	}
 }

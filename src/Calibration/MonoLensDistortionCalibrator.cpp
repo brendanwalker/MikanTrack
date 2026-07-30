@@ -1,17 +1,14 @@
-#include "CalibrationRenderHelpers.h"
 #include "CalibrationPatternFinder_Charuco.h"
-#include "Colors.h"
 #include "Logger.h"
 #include "MathUtility.h"
-#include "MarkerObjectSystem.h"
 #include "MonoLensDistortionCalibrator.h"
 #include "MathTypeConversion.h"
-#include "VideoFrameDistortionView.h"
-#include "VideoSourceComponent.h"
 
 #include <algorithm>
 #include <atomic>
 #include <thread>
+
+#include "opencv2/opencv.hpp"
 
 struct MonoLensDistortionCalibrationState
 {
@@ -35,6 +32,10 @@ struct MonoLensDistortionCalibrationState
 	std::vector<t_opencv_point2d_list> imagePointsList;
 	std::vector<t_opencv_pointID_list> imagePointIDList;
 
+	// Image point stability state
+	float imagePointsStabilityTimer;
+	bool areImagePointsStable;
+
 	// Async Calibration Compute
 	std::thread* asyncComputeTask;
 	std::atomic_int asyncComputeTaskStatus;
@@ -43,10 +44,13 @@ struct MonoLensDistortionCalibrationState
 	MikanMonoIntrinsics outputCameraIntrinsics;
 	double reprojectionError;
 
-	void init(CalibrationPatternFinder* patternFinder, VideoSourceComponentPtr videoSourceComponent, int patternCount)
+	void init(CalibrationPatternFinder* patternFinder, int width, int height, int patternCount)
 	{
-		videoSourceComponent->getVideoPixelDimensions(frameWidth, frameHeight);
+		frameWidth= width;
+		frameHeight= height;
 		desiredPatternCount= patternCount;
+
+		createDefautMonoIntrinsics(frameWidth, frameHeight, originalCameraIntrinsics);
 
 		patternFinder->getOpenCVLensCalibrationGeometry(&calibrationGeometry);
 
@@ -59,6 +63,11 @@ struct MonoLensDistortionCalibrationState
 		capturedPatternCount= 0;
 		quadList.clear();
 		imagePointsList.clear();
+		imagePointIDList.clear();
+
+		// Reset the stability state
+		imagePointsStabilityTimer= 0.f;
+		areImagePointsStable= false;
 
 		// Reset the async task state
 		asyncComputeTask= nullptr;
@@ -71,25 +80,71 @@ struct MonoLensDistortionCalibrationState
 };
 
 //-- MonoDistortionCalibrator ----
-MonoLensDistortionCalibrator::MonoLensDistortionCalibrator(MarkerObjectSystemPtr markerObjectSystem,
-														   VideoFrameDistortionView* distortionView,
-														   int desiredBoardCount)
+MonoLensDistortionCalibrator::MonoLensDistortionCalibrator(int frameWidth, int frameHeight, int charucoCols,
+														   int charucoRows, float charucoSquareLengthMM,
+														   float charucoMarkerLengthMM,
+														   eCharucoDictionaryType charucoDictionaryType,
+														   int desiredSampleCount)
 	: m_calibrationState(new MonoLensDistortionCalibrationState)
-	, m_distortionView(distortionView)
 {
-	auto markerConfig= markerObjectSystem->getTypedDefinition();
-	m_patternFinder= new CalibrationPatternFinder_Charuco(
-		distortionView, markerConfig->getCharucoRows(), markerConfig->getCharucoCols(),
-		markerConfig->getCharucoSquareLengthMM(), markerConfig->getCharucoMarkerLengthMM(),
-		markerConfig->getCharucoDictionaryType());
+	m_patternFinder= new CalibrationPatternFinder_Charuco(frameWidth, frameHeight, charucoCols, charucoRows,
+														  charucoSquareLengthMM, charucoMarkerLengthMM,
+														  charucoDictionaryType);
 
-	frameWidth= distortionView->getFrameWidth();
-	frameHeight= distortionView->getFrameHeight();
+	this->frameWidth= (float)frameWidth;
+	this->frameHeight= (float)frameHeight;
 
-	m_calibrationState->init(m_patternFinder, distortionView->getVideoSourceComponent(), desiredBoardCount);
+	m_calibrationState->init(m_patternFinder, frameWidth, frameHeight, desiredSampleCount);
 }
 
-MonoLensDistortionCalibrator::~MonoLensDistortionCalibrator() { delete m_patternFinder; }
+MonoLensDistortionCalibrator::~MonoLensDistortionCalibrator()
+{
+	if (m_calibrationState->asyncComputeTask != nullptr)
+	{
+		m_calibrationState->asyncComputeTask->join();
+		delete m_calibrationState->asyncComputeTask;
+	}
+
+	delete m_patternFinder;
+	delete m_calibrationState;
+}
+
+void MonoLensDistortionCalibrator::update(float deltaSeconds, const cv::Mat* grayscaleFrame,
+										  const float minSeperationDist)
+{
+	// Feed the latest grayscale frame to the pattern finder
+	m_patternFinder->setGrayscaleFrame(grayscaleFrame);
+
+	if (hasSampledAllCalibrationPatterns())
+		return;
+
+	// Update the pattern capture state
+	findNewCalibrationPattern(minSeperationDist);
+
+	// Update the image point stability timer.
+	// Once the pattern has been held valid (in a new location) for the stability
+	// duration, capture it as a calibration sample.
+	if (areCurrentImagePointsValid())
+	{
+		if (!m_calibrationState->areImagePointsStable)
+		{
+			m_calibrationState->imagePointsStabilityTimer+= deltaSeconds;
+			if (m_calibrationState->imagePointsStabilityTimer >= k_imagePointStabilityDuration)
+			{
+				m_calibrationState->areImagePointsStable= true;
+
+				// Capturing updates the finder's last-valid points, so the pattern has to
+				// move at least minSeperationDist away before the next capture can start
+				captureLastFoundCalibrationPattern();
+			}
+		}
+	}
+	else
+	{
+		m_calibrationState->imagePointsStabilityTimer= 0.f;
+		m_calibrationState->areImagePointsStable= false;
+	}
+}
 
 void MonoLensDistortionCalibrator::findNewCalibrationPattern(const float minSeperationDist)
 {
@@ -129,6 +184,11 @@ bool MonoLensDistortionCalibrator::areCurrentImagePointsValid() const
 	return m_patternFinder->areCurrentImagePointsValid();
 }
 
+bool MonoLensDistortionCalibrator::areCurrentImagePointsStable() const
+{
+	return m_calibrationState->areImagePointsStable;
+}
+
 float MonoLensDistortionCalibrator::computeCalibrationProgress() const
 {
 	const float samplePercentage=
@@ -139,24 +199,17 @@ float MonoLensDistortionCalibrator::computeCalibrationProgress() const
 
 void MonoLensDistortionCalibrator::resetCalibrationState() { m_calibrationState->resetCalibration(); }
 
-void MonoLensDistortionCalibrator::resetDistortionView()
-{
-	m_distortionView->applyMonoCameraIntrinsics(&m_calibrationState->originalCameraIntrinsics);
-	m_distortionView->setVideoDisplayMode(eVideoDisplayMode::mode_bgr);
-}
-
 void MonoLensDistortionCalibrator::computeCameraCalibration()
 {
 	assert(m_calibrationState->asyncComputeTask == nullptr);
 
-	CalibrationPatternFinder* patternFinder= m_patternFinder;
 	MonoLensDistortionCalibrationState* calibrationState= m_calibrationState;
 
 	// Spin up a worker thread to compute the camera calibration.
 	// The result of this is polled by getCameraCalibration().
 	calibrationState->asyncComputeTaskStatus= MonoLensDistortionCalibrationState::Running;
 	calibrationState->asyncComputeTask= new std::thread(
-		[patternFinder, calibrationState]
+		[calibrationState]
 		{
 			bool bSuccess= computeMonoLensCameraCalibration(
 				calibrationState->frameWidth, calibrationState->frameHeight, calibrationState->calibrationGeometry,
@@ -201,19 +254,3 @@ bool MonoLensDistortionCalibrator::getCameraCalibration(MikanMonoIntrinsics* out
 }
 
 float MonoLensDistortionCalibrator::getReprojectionError() const { return m_calibrationState->reprojectionError; }
-
-void MonoLensDistortionCalibrator::renderCalibrationState()
-{
-	IMkGraphicsContext* graphicsContext= m_distortionView->getGraphicsContext();
-
-	// Draw the most recently capture chessboard
-	m_patternFinder->renderCalibrationPattern2D();
-
-	// Draw the outlines of all of the chess boards
-	if (m_calibrationState->quadList.size() > 0)
-	{
-		drawQuadList2d(graphicsContext, frameWidth, frameHeight,
-					   (float*)m_calibrationState->quadList.data(), // cv::point2f is just two floats
-					   (int)m_calibrationState->quadList.size(), Colors::Yellow);
-	}
-}

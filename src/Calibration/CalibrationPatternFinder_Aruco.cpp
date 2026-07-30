@@ -1,21 +1,8 @@
 #include "CalibrationPatternFinder_Aruco.h"
-#include "CalibrationRenderHelpers.h"
-#include "CameraComponent.h"
 #include "CameraMath.h"
-#include "Colors.h"
-#include "IEditorWindow.h"
 #include "MathOpenCV.h"
 #include "MathUtility.h"
 #include "MathTypeConversion.h"
-#include "MarkerComponent.h"
-#include "MarkerObjectSystem.h"
-#include "MikanTextRenderer.h"
-#include "MikanObjectSystem.h"
-#include "ProjectManager.h"
-#include "StageComponent.h"
-#include "TextStyle.h"
-#include "TrackingVolumeComponent.h"
-#include "VideoFrameDistortionView.h"
 
 #include "opencv2/opencv.hpp"
 #include "opencv2/calib3d/calib3d.hpp"
@@ -33,20 +20,15 @@ public:
 	cv::Ptr<cv::aruco::ArucoDetector> detector;
 	std::vector<t_opencv_point2d_list> markerCorners;
 	std::vector<int> markerVisibleIds;
-	t_opencv_point2d_list charucoCorners;
-	std::vector<int> charucoIds;
 };
 
 //-- CalibrationPatternFinder_Aruco -----
 static void initArucoBoardData(ArucoBoardData* markerData, OpenCVCalibrationGeometry& opencvSolvePnPGeometry,
 							   OpenCVCalibrationGeometry& opencvLensCalibrationGeometry,
-							   OpenGLCalibrationGeometry& openglSolvePnPGeometry, MarkerObjectSystemPtr markerSystem,
-							   MarkerDefinitionConstPtr markerDefinition)
+							   OpenGLCalibrationGeometry& openglSolvePnPGeometry, float markerLengthMM,
+							   int desiredArucoId, eCharucoDictionaryType arucoDictionaryType)
 {
-	const int desiredArucoId= markerDefinition->getArucoId();
-	const float markerLengthMM= markerDefinition->getLengthMM();
-	ArucoDictionaryPtr dictionary=
-		CalibrationPatternFinder::getArucoDictionary(markerSystem->getTypedDefinition()->getArucoDictionaryType());
+	ArucoDictionaryPtr dictionary= CalibrationPatternFinder::getArucoDictionary(arucoDictionaryType);
 
 	// Use corner refinement to get the best possible corner locations
 	cv::aruco::DetectorParameters detectorParams;
@@ -85,42 +67,14 @@ static void initArucoBoardData(ArucoBoardData* markerData, OpenCVCalibrationGeom
 	}
 }
 
-CalibrationPatternFinder_Aruco::CalibrationPatternFinder_Aruco(CameraComponentConstPtr cameraComponent,
-															   VideoFrameDistortionView* distortionView)
-	: CalibrationPatternFinder(distortionView)
+CalibrationPatternFinder_Aruco::CalibrationPatternFinder_Aruco(int frameWidth, int frameHeight, float markerLengthMM,
+															   int desiredArucoId,
+															   eCharucoDictionaryType arucoDictionaryType)
+	: CalibrationPatternFinder(frameWidth, frameHeight)
 	, m_markerData(new ArucoBoardData())
 {
-	StageComponentConstPtr ownerStage= cameraComponent->getOwnerStageComponent();
-	assert(ownerStage != nullptr);
-	IEditorWindow* ownerWindow= ownerStage->getOwnerEditorWindow();
-	assert(ownerWindow != nullptr);
-	MarkerObjectSystemPtr markerSystem= ownerWindow->getProjectManager()->getSystemOfType<MarkerObjectSystem>();
-	assert(markerSystem != nullptr);
-	TrackingVolumeDefinitionConstPtr trackingVolume= ownerStage->getTrackingVolumeDefinitionConst();
-	assert(trackingVolume != nullptr);
-	MarkerDefinitionConstPtr originMarker= trackingVolume->getOriginMarker();
-	assert(originMarker != nullptr);
-
 	initArucoBoardData(m_markerData, m_opencvSolvePnPGeometry, m_opencvLensCalibrationGeometry,
-					   m_openglSolvePnPGeometry, markerSystem, originMarker);
-}
-
-CalibrationPatternFinder_Aruco::CalibrationPatternFinder_Aruco(CameraComponentConstPtr cameraComponent,
-															   VideoFrameDistortionView* distortionView,
-															   MarkerDefinitionConstPtr markerDefinition)
-	: CalibrationPatternFinder(distortionView)
-	, m_markerData(new ArucoBoardData())
-{
-	StageComponentConstPtr ownerStage= cameraComponent->getOwnerStageComponent();
-	assert(ownerStage != nullptr);
-	IEditorWindow* ownerWindow= ownerStage->getOwnerEditorWindow();
-	assert(ownerWindow != nullptr);
-	MarkerObjectSystemPtr markerSystem= ownerWindow->getProjectManager()->getSystemOfType<MarkerObjectSystem>();
-	assert(markerSystem != nullptr);
-	assert(markerDefinition != nullptr);
-
-	initArucoBoardData(m_markerData, m_opencvSolvePnPGeometry, m_opencvLensCalibrationGeometry,
-					   m_openglSolvePnPGeometry, markerSystem, markerDefinition);
+					   m_openglSolvePnPGeometry, markerLengthMM, desiredArucoId, arucoDictionaryType);
 }
 
 CalibrationPatternFinder_Aruco::~CalibrationPatternFinder_Aruco() { delete m_markerData; }
@@ -132,7 +86,7 @@ bool CalibrationPatternFinder_Aruco::findNewCalibrationPattern(const float minSe
 	m_currentImagePoints.clear();
 
 	// Fetch the source image buffer we are searching for the pattern in
-	cv::Mat* gsSourceBuffer= getGrayscaleVideoFrameInput();
+	const cv::Mat* gsSourceBuffer= getGrayscaleVideoFrameInput();
 	if (gsSourceBuffer == nullptr)
 		return false;
 
@@ -190,42 +144,4 @@ bool CalibrationPatternFinder_Aruco::fetchLastFoundCalibrationPattern(t_opencv_p
 	}
 
 	return false;
-}
-
-void CalibrationPatternFinder_Aruco::renderCalibrationPattern2D() const
-{
-	CalibrationPatternFinder::renderCalibrationPattern2D();
-
-	IMkGraphicsContext* graphicsContext= getDistortionView()->getGraphicsContext();
-
-	// Draw the marker corners, if any
-	TextStyle style= getDefaultTextStyle();
-	style.horizontalAlignment= eHorizontalTextAlignment::Middle;
-	style.verticalAlignment= eVerticalTextAlignment::Middle;
-	style.color= Colors::Yellow;
-
-	static int debugDrawIndex= -1;
-
-	for (int quadIndex= 0; quadIndex < m_markerData->markerCorners.size(); quadIndex++)
-	{
-		if (debugDrawIndex != -1 && debugDrawIndex != quadIndex)
-			continue;
-
-		const t_opencv_point2d_list& corners= m_markerData->markerCorners[quadIndex];
-
-		drawQuadList2d(graphicsContext, m_frameWidth, m_frameHeight,
-					   (float*)corners.data(), // cv::point2f is just two floats
-					   (int)corners.size(), Colors::Yellow);
-
-		if (quadIndex < m_markerData->markerVisibleIds.size())
-		{
-			int markerId= m_markerData->markerVisibleIds[quadIndex];
-
-			cv::Point2f quadCenter;
-			opencv_point2f_compute_average(corners, quadCenter);
-
-			drawTextAtTrackerPosition(graphicsContext, style, m_frameWidth, m_frameHeight,
-									  glm::vec2(quadCenter.x, quadCenter.y), L"%d", markerId);
-		}
-	}
 }

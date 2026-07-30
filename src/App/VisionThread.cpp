@@ -122,13 +122,23 @@ void VisionThread::refreshConfigOnThread()
 
 	// OSC
 	if (m_oscStreamer == nullptr)
+	{
 		m_oscStreamer= std::make_unique<OscStreamer>();
-	OscStreamerConfig oscConfig;
-	oscConfig.enabled= m_config->osc.enabled;
-	oscConfig.targetIp= m_config->osc.targetIp;
-	oscConfig.targetPort= m_config->osc.targetPort;
-	oscConfig.maxRateHz= m_config->osc.maxRateHz;
-	m_oscStreamer->configure(oscConfig);
+		if (!m_oscStreamer->startup())
+		{
+			MIKAN_MT_LOG_ERROR("VisionThread") << "OscStreamer startup failed - OSC output disabled";
+			m_oscStreamer= nullptr;
+		}
+	}
+	if (m_oscStreamer != nullptr)
+	{
+		OscStreamerConfig oscConfig;
+		oscConfig.enabled= m_config->osc.enabled;
+		oscConfig.targetIp= m_config->osc.targetIp;
+		oscConfig.targetPort= (uint16_t)m_config->osc.targetPort;
+		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
+		m_oscStreamer->setConfig(oscConfig);
+	}
 }
 
 void VisionThread::threadLoop()
@@ -169,7 +179,8 @@ void VisionThread::threadLoop()
 
 		// Undistort when calibrated (ML + preview both use the undistorted image)
 		cv::Mat* activeFrame= &bgrFrame;
-		if (m_undistorter != nullptr &&
+		if (m_bUndistortEnabled &&
+			m_undistorter != nullptr &&
 			bgrFrame.cols == m_undistorter->getFrameWidth() &&
 			bgrFrame.rows == m_undistorter->getFrameHeight())
 		{

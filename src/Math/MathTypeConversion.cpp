@@ -1,9 +1,11 @@
 #include "MathTypeConversion.h"
 #include "MathGLM.h"
 #include "Transform.h"
-#include "VRDeviceMath.h"
 #include <assert.h>
 
+#ifndef GLM_ENABLE_EXPERIMENTAL
+#define GLM_ENABLE_EXPERIMENTAL
+#endif
 #include "glm/gtx/euler_angles.hpp"
 
 // GLM types to OpenCV types
@@ -169,16 +171,6 @@ glm::dquat cv_quatd_to_glm_dquat(const cv::Quatd& in)
 	assert(is_double_nearly_equal(in.z, result.z, DBL_EPSILON));
 
 	return result;
-}
-
-// VRDevicePost to GLM types
-glm::vec3 VRDevicePosition_to_glm_vec3(const struct VRDevicePosition& in) { return glm::vec3(in.x, in.y, in.z); }
-
-glm::quat VRDeviceQuat_to_glm_quat(const struct VRDeviceQuat& in) { return glm::quat(in.w, in.x, in.y, in.z); }
-
-GlmTransform VRDevicePose_to_GlmTransform(const struct VRDevicePose& in)
-{
-	return GlmTransform(VRDevicePosition_to_glm_vec3(in.position), VRDeviceQuat_to_glm_quat(in.orientation));
 }
 
 // OpenCV to Mikan types

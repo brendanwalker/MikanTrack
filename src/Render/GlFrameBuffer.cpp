@@ -4,6 +4,8 @@
 
 #include "GL/glew.h"
 
+#include <cstdio>
+
 GlFrameBuffer::~GlFrameBuffer() { dispose(); }
 
 bool GlFrameBuffer::init(uint16_t width, uint16_t height)
@@ -49,7 +51,9 @@ bool GlFrameBuffer::init(uint16_t width, uint16_t height)
 
 	if (status != GL_FRAMEBUFFER_COMPLETE)
 	{
-		MIKAN_LOG_ERROR("GlFrameBuffer::init") << "Framebuffer incomplete, status: 0x" << std::hex << status << std::dec;
+		char statusHex[16];
+		snprintf(statusHex, sizeof(statusHex), "0x%04X", status);
+		MIKAN_LOG_ERROR("GlFrameBuffer::init") << "Framebuffer incomplete, status: " << statusHex;
 		dispose();
 		return false;
 	}

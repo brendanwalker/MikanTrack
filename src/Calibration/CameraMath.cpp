@@ -1,5 +1,4 @@
 #include "CameraMath.h"
-#include "CameraComponent.h"
 #include "Logger.h"
 #include "MikanMathTypes.h"
 #include "MikanVideoSourceTypes.h"
@@ -7,7 +6,6 @@
 #include "MathGLM.h"
 #include "MathUtility.h"
 #include "MathTypeConversion.h"
-#include "VideoSourceComponent.h"
 
 #include "opencv2/opencv.hpp"
 
@@ -37,33 +35,6 @@ glm::mat4 computeGLMCameraViewMatrix(const glm::mat4& poseXform)
 	return modelView;
 }
 
-bool computeOpenCVCameraExtrinsicMatrix(CameraComponentPtr cameraComponent, cv::Matx34f& out)
-{
-	// Extrinsic matrix is the inverse of the camera pose matrix
-	glm::mat4 glm_camera_xform;
-	if (cameraComponent->getStageSpaceAperturePose(glm_camera_xform))
-	{
-		const glm::mat4 glm_mat= glm::inverse(glm_camera_xform);
-
-		out(0, 0)= glm_mat[0][0];
-		out(0, 1)= glm_mat[1][0];
-		out(0, 2)= glm_mat[2][0];
-		out(0, 3)= glm_mat[3][0];
-		out(1, 0)= glm_mat[0][1];
-		out(1, 1)= glm_mat[1][1];
-		out(1, 2)= glm_mat[2][1];
-		out(1, 3)= glm_mat[3][1];
-		out(2, 0)= glm_mat[0][2];
-		out(2, 1)= glm_mat[1][2];
-		out(2, 2)= glm_mat[2][2];
-		out(2, 3)= glm_mat[3][2];
-
-		return true;
-	}
-
-	return false;
-}
-
 bool computeMonoLensCameraCalibration(const int frameWidth, const int frameHeight,
 									  const OpenCVCalibrationGeometry& opencvLensCalibrationGeometry,
 									  const std::vector<t_opencv_point2d_list>& cvImagePointsList,
@@ -75,22 +46,64 @@ bool computeMonoLensCameraCalibration(const int frameWidth, const int frameHeigh
 	// Initialize the output intrinsics with default values
 	outIntrinsics= MikanMonoIntrinsics();
 
-	// Each 2d image point set should have a corresponding 3d object point set
-	const size_t imagePointSetCount= cvImagePointsList.size();
-	std::vector<t_opencv_point3d_list> cvObjectPointsList(imagePointSetCount);
-	std::fill(cvObjectPointsList.begin(), cvObjectPointsList.end(), opencvLensCalibrationGeometry.points);
+	// Each 2d image point set needs a corresponding 3d object point set.
+	// The calibration geometry point list is indexed by corner id (charuco corner ids
+	// are assigned in row-major board order), so build each sample's object point list
+	// by looking up the ids of the corners that were actually detected.
+	// This allows partial-board captures instead of assuming every corner was seen.
+	const t_opencv_point3d_list& geometryPoints= opencvLensCalibrationGeometry.points;
+	std::vector<t_opencv_point2d_list> cvValidImagePointsList;
+	std::vector<t_opencv_point3d_list> cvObjectPointsList;
+	for (size_t sampleIndex= 0; sampleIndex < cvImagePointsList.size() && sampleIndex < cvImagePointIDs.size();
+		 ++sampleIndex)
+	{
+		const t_opencv_point2d_list& imagePoints= cvImagePointsList[sampleIndex];
+		const t_opencv_pointID_list& imagePointIDs= cvImagePointIDs[sampleIndex];
+
+		// A sample needs at least 6 point correspondences to constrain the solve
+		// (relaxed from requiring every corner on the board)
+		if (imagePoints.size() < 6 || imagePoints.size() != imagePointIDs.size())
+			continue;
+
+		t_opencv_point3d_list objectPoints;
+		objectPoints.reserve(imagePoints.size());
+		bool bValidSample= true;
+		for (const int pointID : imagePointIDs)
+		{
+			if (pointID < 0 || pointID >= (int)geometryPoints.size())
+			{
+				bValidSample= false;
+				break;
+			}
+
+			objectPoints.push_back(geometryPoints[pointID]);
+		}
+
+		if (!bValidSample)
+			continue;
+
+		cvValidImagePointsList.push_back(imagePoints);
+		cvObjectPointsList.push_back(objectPoints);
+	}
+
+	if (cvValidImagePointsList.size() == 0)
+	{
+		MIKAN_MT_LOG_ERROR("computeCameraCalibration") << "No valid image point samples to calibrate with";
+		return false;
+	}
 
 	// Compute an initial guess for the distorted camera intrinsic matrix
 	// using correspondence between the object points and the image points
 	cv::Size cvImageSize(frameWidth, frameHeight);
-	cv::Matx33d cvDistortedIntrinsicMatrix= cv::initCameraMatrix2D(cvObjectPointsList, cvImagePointsList, cvImageSize);
+	cv::Matx33d cvDistortedIntrinsicMatrix=
+		cv::initCameraMatrix2D(cvObjectPointsList, cvValidImagePointsList, cvImageSize);
 
 	// Refine the camera intrinsic matrix and compute distortion parameters
 	cv::Mat cvDistCoeffsRowVector;
 	try
 	{
 		outReprojectionError= cv::calibrateCamera(
-			cvObjectPointsList, cvImagePointsList, cvImageSize,
+			cvObjectPointsList, cvValidImagePointsList, cvImageSize,
 			cvDistortedIntrinsicMatrix,         // Input/Output camera intrinsic matrix
 			cvDistCoeffsRowVector,              // Output distortion coefficients
 			cv::noArray(), cv::noArray(),       // best fit board poses as rvec/tvec pairs
@@ -258,47 +271,6 @@ void extractCameraIntrinsicMatrixParameters(const cv::Matx33f& intrinsic_matrix,
 	out_principal_point_x= intrinsic_matrix(0, 2);
 	out_principal_point_y= intrinsic_matrix(1, 2);
 	out_skew= intrinsic_matrix(0, 1);
-}
-
-bool computeOpenCVCameraRectification(VideoSourceComponentPtr videoSource, VideoFrameSection section,
-									  cv::Matx33d& rotationOut, cv::Matx34d& projectionOut)
-{
-	MikanVideoSourceIntrinsics tracker_intrinsics;
-	videoSource->getCameraIntrinsics(tracker_intrinsics);
-
-	MikanMatrix3d rectification_rotation;
-	MikanMatrix4x3d rectification_projection;
-	bool validRectification= false;
-
-	if (tracker_intrinsics.intrinsics_type == MikanIntrinsicsType::STEREO_CAMERA_INTRINSICS)
-	{
-		const auto& stereoIntrinsics= tracker_intrinsics.getStereoIntrinsics();
-
-		if (section == VideoFrameSection::Left)
-		{
-			rectification_rotation= stereoIntrinsics.left_rectification_rotation;
-			rectification_projection= stereoIntrinsics.left_rectification_projection;
-			validRectification= true;
-		}
-		else if (section == VideoFrameSection::Right)
-		{
-			rectification_rotation= stereoIntrinsics.right_rectification_rotation;
-			rectification_projection= stereoIntrinsics.right_rectification_projection;
-			validRectification= true;
-		}
-	}
-
-	if (validRectification)
-	{
-		rotationOut= MikanMatrix3d_to_cv_mat33d(rectification_rotation);
-		projectionOut= MikanMatrix4x3d_to_cv_mat34d(rectification_projection);
-
-		return true;
-	}
-	else
-	{
-		return false;
-	}
 }
 
 void createDefautMonoIntrinsics(int pixelWidth, int pixelHeight, MikanMonoIntrinsics& outIntrinsics)

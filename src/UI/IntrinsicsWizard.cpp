@@ -1,0 +1,248 @@
+#include "IntrinsicsWizard.h"
+
+#include "opencv2/imgproc.hpp"
+
+#include "AppConfig.h"
+#include "CalibrationPatternFinder_Charuco.h"
+#include "Logger.h"
+#include "MonoLensDistortionCalibrator.h"
+#include "PatternExport.h"
+#include "PathUtils.h"
+#include "VisionThread.h"
+
+IntrinsicsWizard::IntrinsicsWizard(AppConfig* config, VisionThread* visionThread)
+	: m_config(config)
+	, m_visionThread(visionThread)
+{
+}
+
+IntrinsicsWizard::~IntrinsicsWizard()= default;
+
+void IntrinsicsWizard::enter()
+{
+	m_bActive= true;
+	m_bWantsClose= false;
+	m_state= eState::SelectBoardParams;
+
+	m_boardCols= m_config->charucoBoard.cols;
+	m_boardRows= m_config->charucoBoard.rows;
+	m_squareLengthMM= (float)m_config->charucoBoard.squareLengthMM;
+	m_markerLengthMM= (float)m_config->charucoBoard.markerLengthMM;
+
+	// Raw distorted frames are required for intrinsics samples
+	m_visionThread->setTrackingEnabled(false);
+	m_visionThread->setUndistortEnabled(false);
+}
+
+void IntrinsicsWizard::exit()
+{
+	m_calibrator= nullptr;
+	m_bActive= false;
+
+	m_visionThread->setTrackingEnabled(true);
+	m_visionThread->setUndistortEnabled(true);
+	m_visionThread->requestConfigRefresh();
+}
+
+void IntrinsicsWizard::beginCapture(int frameWidth, int frameHeight)
+{
+	m_calibrator= std::make_unique<MonoLensDistortionCalibrator>(
+		frameWidth, frameHeight,
+		m_boardCols, m_boardRows,
+		m_squareLengthMM, m_markerLengthMM,
+		eCharucoDictionaryType::DICT_6X6, // matches the exported board
+		12);
+	m_state= eState::Capture;
+}
+
+void IntrinsicsWizard::applyResultToConfig()
+{
+	MikanMonoIntrinsics monoIntrinsics;
+	if (m_calibrator->getCameraCalibration(&monoIntrinsics))
+	{
+		m_config->intrinsics.present= true;
+		m_config->intrinsics.intrinsics= monoIntrinsics;
+		m_config->intrinsics.reprojectionError= m_calibrator->getReprojectionError();
+		m_config->charucoBoard.cols= m_boardCols;
+		m_config->charucoBoard.rows= m_boardRows;
+		m_config->charucoBoard.squareLengthMM= m_squareLengthMM;
+		m_config->charucoBoard.markerLengthMM= m_markerLengthMM;
+		m_config->markDirty();
+		m_config->save();
+	}
+}
+
+bool IntrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview, ImDrawList* overlayDrawList,
+							  const ImageToScreenMapping& mapping)
+{
+	if (!m_bActive)
+		return false;
+
+	// Feed detection during capture
+	if (m_state == eState::Capture && m_calibrator != nullptr && !bgrPreview.empty())
+	{
+		cv::cvtColor(bgrPreview, m_grayFrame, cv::COLOR_BGR2GRAY);
+		m_calibrator->update(deltaSeconds, &m_grayFrame);
+
+		if (m_calibrator->hasSampledAllCalibrationPatterns())
+		{
+			m_calibrator->computeCameraCalibration();
+			m_state= eState::Solving;
+		}
+	}
+
+	if (m_state == eState::Solving && m_calibrator->getIsCameraCalibrationComplete())
+	{
+		MikanMonoIntrinsics monoIntrinsics;
+		if (m_calibrator->getCameraCalibration(&monoIntrinsics) && monoIntrinsics.pixel_width > 0)
+		{
+			applyResultToConfig();
+			// Show the live undistorted view for verification
+			m_visionThread->setUndistortEnabled(true);
+			m_visionThread->requestConfigRefresh();
+			m_state= eState::TestUndistort;
+		}
+		else
+		{
+			m_state= eState::Failed;
+		}
+	}
+
+	if (m_state == eState::Capture && overlayDrawList != nullptr)
+		drawPatternOverlay(overlayDrawList, mapping);
+
+	drawWizardWindow(deltaSeconds, bgrPreview);
+
+	return !m_bWantsClose;
+}
+
+void IntrinsicsWizard::drawPatternOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping)
+{
+	CalibrationPatternFinder_Charuco* finder= m_calibrator->getPatternFinder();
+	if (finder == nullptr || !finder->areCurrentImagePointsValid())
+		return;
+
+	t_opencv_point2d_list imagePoints;
+	t_opencv_pointID_list imagePointIDs;
+	cv::Point2f boundingQuad[4];
+	if (!finder->fetchLastFoundCalibrationPattern(imagePoints, imagePointIDs, boundingQuad))
+		return;
+
+	const bool bStable= m_calibrator->areCurrentImagePointsStable();
+	const ImU32 pointColor= bStable ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 220, 60, 255);
+
+	for (const cv::Point2f& point : imagePoints)
+		drawList->AddCircleFilled(mapping.toScreen(point.x, point.y), 3.f, pointColor);
+
+	for (int i= 0; i < 4; ++i)
+	{
+		const cv::Point2f& c0= boundingQuad[i];
+		const cv::Point2f& c1= boundingQuad[(i + 1) % 4];
+		drawList->AddLine(mapping.toScreen(c0.x, c0.y), mapping.toScreen(c1.x, c1.y), pointColor, 2.f);
+	}
+}
+
+void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPreview)
+{
+	ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
+	if (!ImGui::Begin("Intrinsics Calibration", nullptr, ImGuiWindowFlags_NoCollapse))
+	{
+		ImGui::End();
+		return;
+	}
+
+	switch (m_state)
+	{
+		case eState::SelectBoardParams:
+		{
+			ImGui::TextWrapped(
+				"Calibrate the camera lens using a printed charuco board. "
+				"Print the board at 100%% scale, measure a square to confirm its size, "
+				"then capture it from 12 different angles/positions.");
+
+			ImGui::InputInt("Columns", &m_boardCols);
+			ImGui::InputInt("Rows", &m_boardRows);
+			ImGui::InputFloat("Square size (mm)", &m_squareLengthMM, 0.f, 0.f, "%.1f");
+			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.1f");
+
+			if (ImGui::Button("Export board PNG..."))
+			{
+				const std::filesystem::path exportPath=
+					PathUtils::getResourceDirectory() / "calibration" / "charuco_board.png";
+				if (generateCharucoBoardPng(exportPath, m_boardCols, m_boardRows, m_squareLengthMM, m_markerLengthMM,
+											eCharucoDictionaryType::DICT_6X6, 10.f))
+				{
+					MIKAN_LOG_INFO("IntrinsicsWizard") << "Exported charuco board to " << exportPath;
+				}
+			}
+
+			ImGui::Separator();
+			const bool bHasVideo= !bgrPreview.empty();
+			if (!bHasVideo)
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start a video stream first");
+			ImGui::BeginDisabled(!bHasVideo);
+			if (ImGui::Button("Begin Capture", ImVec2(-1, 0)))
+				beginCapture(bgrPreview.cols, bgrPreview.rows);
+			ImGui::EndDisabled();
+			break;
+		}
+
+		case eState::Capture:
+		{
+			const float progress= m_calibrator->computeCalibrationProgress();
+			const int captured= (int)(progress * (float)m_calibrator->getDesiredPatternCount() + 0.5f);
+			ImGui::Text("Captured %d / %d boards", captured, m_calibrator->getDesiredPatternCount());
+			ImGui::ProgressBar(progress, ImVec2(-1, 0));
+
+			if (m_calibrator->areCurrentImagePointsValid())
+			{
+				if (m_calibrator->areCurrentImagePointsStable())
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Hold steady - capturing...");
+				else
+					ImGui::Text("Board found - move to a new position and hold");
+			}
+			else
+			{
+				ImGui::TextDisabled("Show the charuco board to the camera");
+			}
+
+			if (ImGui::Button("Restart"))
+				m_calibrator->resetCalibrationState();
+			break;
+		}
+
+		case eState::Solving:
+			ImGui::Text("Solving camera calibration...");
+			break;
+
+		case eState::TestUndistort:
+		{
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration complete");
+			ImGui::Text("Reprojection error: %.3f px", m_config->intrinsics.reprojectionError);
+			ImGui::TextWrapped(
+				"The preview now shows the undistorted image. "
+				"Straight lines in the scene should look straight.");
+
+			if (ImGui::Button("Accept", ImVec2(-1, 0)))
+				m_bWantsClose= true;
+			if (ImGui::Button("Redo Capture"))
+			{
+				m_visionThread->setUndistortEnabled(false);
+				m_state= eState::SelectBoardParams;
+			}
+			break;
+		}
+
+		case eState::Failed:
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Calibration solve failed");
+			if (ImGui::Button("Try Again"))
+				m_state= eState::SelectBoardParams;
+			break;
+	}
+
+	ImGui::Separator();
+	if (ImGui::Button("Cancel / Close"))
+		m_bWantsClose= true;
+
+	ImGui::End();
+}

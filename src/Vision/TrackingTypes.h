@@ -82,7 +82,9 @@ struct TrackedHand
 	eHandSide side= eHandSide::Left;
 	int slotId= -1;
 	float presence= 0.f;        // landmark model presence/confidence score
-	float handednessScore= 0.f; // raw model handedness (>0.5 == "left" in model terms)
+	float handednessScore= 0.f; // raw model handedness (per opencv_zoo mp_handpose.py:
+	                            // 0=left .. 1=right in model terms, assuming a
+	                            // mirrored/selfie view; see flipHandedness)
 
 	// Landmarks in full-frame pixels; z is MediaPipe relative depth
 	// (same scale as x/y pixels, relative to the wrist)
@@ -109,6 +111,12 @@ struct TrackedArm
 
 	glm::vec2 elbowPixel{0.f};
 	glm::vec2 wristPixel{0.f};
+
+	// Optional depth hint from the pose model's world landmarks:
+	// elbow z minus wrist z in meters (camera +Z forward). Used by
+	// LandmarkTo3D when back-projecting the elbow.
+	bool hasElbowZHint= false;
+	float elbowZOffsetFromWrist= 0.f;
 
 	bool hasCameraSpace= false;
 	glm::vec3 elbowCamera{0.f};

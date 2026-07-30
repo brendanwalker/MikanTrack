@@ -3,6 +3,8 @@
 
 #include "GL/glew.h"
 
+#include <cstdio>
+
 bool checkGlError(const char* label)
 {
 	bool bFoundError= false;
@@ -30,8 +32,9 @@ bool checkGlError(const char* label)
 			break;
 		}
 
-		MIKAN_LOG_ERROR("checkGlError") << label << " - " << errorString << " (0x" << std::hex << errorCode << std::dec
-										<< ")";
+		char errorCodeHex[16];
+		snprintf(errorCodeHex, sizeof(errorCodeHex), "0x%04X", errorCode);
+		MIKAN_LOG_ERROR("checkGlError") << label << " - " << errorString << " (" << errorCodeHex << ")";
 
 		bFoundError= true;
 		errorCode= glGetError();

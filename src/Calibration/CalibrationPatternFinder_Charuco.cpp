@@ -1,13 +1,10 @@
 #include "CalibrationPatternFinder_Charuco.h"
-#include "CalibrationRenderHelpers.h"
 #include "CameraMath.h"
-#include "Colors.h"
 #include "MathOpenCV.h"
 #include "MathUtility.h"
 #include "MathTypeConversion.h"
-#include "MikanTextRenderer.h"
-#include "TextStyle.h"
-#include "VideoFrameDistortionView.h"
+
+#include <algorithm>
 
 #include "opencv2/opencv.hpp"
 #include "opencv2/calib3d/calib3d.hpp"
@@ -30,15 +27,17 @@ public:
 	std::vector<int> charucoIds;
 	std::vector<t_opencv_point2d_list> markerCorners;
 	std::vector<int> markerVisibleIds;
+
+	// Corner ids from the last valid capture (parallel to m_lastValidImagePoints)
+	std::vector<int> lastValidCharucoIds;
 };
 
 //-- CalibrationPatternFinder_Charuco -----
-CalibrationPatternFinder_Charuco::CalibrationPatternFinder_Charuco(VideoFrameDistortionView* distortionView,
-																   int charucoRows, int charucoCols,
-																   float charucoSquareLengthMM,
+CalibrationPatternFinder_Charuco::CalibrationPatternFinder_Charuco(int frameWidth, int frameHeight, int charucoCols,
+																   int charucoRows, float charucoSquareLengthMM,
 																   float charucoMarkerLengthMM,
 																   eCharucoDictionaryType charucoDictionaryType)
-	: CalibrationPatternFinder(distortionView)
+	: CalibrationPatternFinder(frameWidth, frameHeight)
 	, m_markerData(new CharucoBoardData())
 {
 	m_opencvLensCalibrationGeometry.points.clear();
@@ -86,14 +85,16 @@ CalibrationPatternFinder_Charuco::~CalibrationPatternFinder_Charuco() { delete m
 bool CalibrationPatternFinder_Charuco::findNewCalibrationPattern(const float minSeperationDist)
 {
 	const int cornerCount= (m_markerData->cols - 1) * (m_markerData->rows - 1);
-	const float newLocationErrorSum= (float)cornerCount * minSeperationDist;
+	// Accept partial board detections with at least half of the corners visible
+	// (computeMonoLensCameraCalibration needs at least 6 point correspondences per sample)
+	const int minCornerCount= int_max(cornerCount / 2, 6);
 
 	// Clear out the previous images points
 	bool bImagePointsValid= false;
 	m_currentImagePoints.clear();
 
 	// Fetch the source image buffer we are searching for the pattern in
-	cv::Mat* gsSourceBuffer= getGrayscaleVideoFrameInput();
+	const cv::Mat* gsSourceBuffer= getGrayscaleVideoFrameInput();
 	if (gsSourceBuffer == nullptr)
 		return false;
 
@@ -110,23 +111,38 @@ bool CalibrationPatternFinder_Charuco::findNewCalibrationPattern(const float min
 		m_currentImagePoints= m_markerData->charucoCorners;
 
 		// Append the new chessboard corner pixels into the image_points matrix
-		if (m_currentImagePoints.size() == cornerCount)
+		if ((int)m_currentImagePoints.size() >= minCornerCount)
 		{
 			// If there was a prior image point set,
 			// see if this new set is far enough away to be considered unique
 			if (m_lastValidImagePoints.size() > 0 && minSeperationDist > 0.f)
 			{
+				// Compare only the corners that were detected in both captures,
+				// matched up by their charuco corner ids
 				float error_sum= 0.f;
+				int sharedCornerCount= 0;
 
-				for (int corner_index= 0; corner_index < cornerCount; ++corner_index)
+				for (size_t corner_index= 0; corner_index < m_currentImagePoints.size(); ++corner_index)
 				{
-					float squared_error=
-						(float)(cv::norm(m_currentImagePoints[corner_index] - m_lastValidImagePoints[corner_index]));
+					const int cornerId= m_markerData->charucoIds[corner_index];
+					const auto it= std::find(m_markerData->lastValidCharucoIds.begin(),
+											 m_markerData->lastValidCharucoIds.end(), cornerId);
+					if (it != m_markerData->lastValidCharucoIds.end())
+					{
+						const size_t lastValidIndex=
+							(size_t)std::distance(m_markerData->lastValidCharucoIds.begin(), it);
+						float squared_error= (float)(cv::norm(m_currentImagePoints[corner_index]
+															  - m_lastValidImagePoints[lastValidIndex]));
 
-					error_sum+= squared_error;
+						error_sum+= squared_error;
+						++sharedCornerCount;
+					}
 				}
 
-				bImagePointsValid= error_sum >= newLocationErrorSum;
+				// It's a new location if the shared corners moved far enough on average,
+				// or if the two detections share no corners at all
+				bImagePointsValid=
+					sharedCornerCount == 0 || error_sum >= (float)sharedCornerCount * minSeperationDist;
 			}
 			else
 			{
@@ -157,10 +173,11 @@ bool CalibrationPatternFinder_Charuco::fetchLastFoundCalibrationPattern(t_opencv
 		const int cornerCount= (int)m_currentImagePoints.size();
 
 		// Keep track of the corners of all of the chessboards we sample
+		// (indices are clamped since partial board detections may have fewer corners)
 		outBoundingQuad[0]= m_currentImagePoints[0];
-		outBoundingQuad[1]= m_currentImagePoints[cornerCols - 1];
+		outBoundingQuad[1]= m_currentImagePoints[int_min(cornerCols - 1, cornerCount - 1)];
 		outBoundingQuad[2]= m_currentImagePoints[cornerCount - 1];
-		outBoundingQuad[3]= m_currentImagePoints[cornerCount - cornerCols];
+		outBoundingQuad[3]= m_currentImagePoints[int_max(cornerCount - cornerCols, 0)];
 
 		outImagePoints.clear();
 		for (const auto& imagePoint : m_currentImagePoints)
@@ -172,52 +189,10 @@ bool CalibrationPatternFinder_Charuco::fetchLastFoundCalibrationPattern(t_opencv
 
 		// Remember the last valid captured points
 		m_lastValidImagePoints= m_currentImagePoints;
+		m_markerData->lastValidCharucoIds= m_markerData->charucoIds;
 
 		return true;
 	}
 
 	return false;
-}
-
-void CalibrationPatternFinder_Charuco::renderCalibrationPattern2D() const
-{
-	CalibrationPatternFinder::renderCalibrationPattern2D();
-
-	IMkGraphicsContext* graphicsContext= getDistortionView()->getGraphicsContext();
-
-	// Draw the marker corners, if any
-	TextStyle style= getDefaultTextStyle();
-	style.horizontalAlignment= eHorizontalTextAlignment::Middle;
-	style.verticalAlignment= eVerticalTextAlignment::Middle;
-	style.color= Colors::Yellow;
-
-	static int debugDrawIndex= -1;
-
-	for (int quadIndex= 0; quadIndex < m_markerData->markerCorners.size(); quadIndex++)
-	{
-		if (debugDrawIndex != -1 && debugDrawIndex != quadIndex)
-			continue;
-
-		const t_opencv_point2d_list& corners= m_markerData->markerCorners[quadIndex];
-
-		drawQuadList2d(graphicsContext, m_frameWidth, m_frameHeight,
-					   (float*)corners.data(), // cv::point2f is just two floats
-					   (int)corners.size(), Colors::Yellow);
-
-		if (quadIndex < m_markerData->markerVisibleIds.size())
-		{
-			int markerId= m_markerData->markerVisibleIds[quadIndex];
-
-			cv::Point2f quadCenter;
-			opencv_point2f_compute_average(corners, quadCenter);
-
-			drawTextAtTrackerPosition(graphicsContext, style, m_frameWidth, m_frameHeight,
-									  glm::vec2(quadCenter.x, quadCenter.y), L"%d", markerId);
-		}
-	}
-}
-
-void CalibrationPatternFinder_Charuco::renderSolvePnPPattern3D(const glm::mat4& xform) const
-{
-	CalibrationPatternFinder::renderSolvePnPPattern3D(xform);
 }

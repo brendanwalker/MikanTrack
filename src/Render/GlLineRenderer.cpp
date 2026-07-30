@@ -8,6 +8,7 @@
 #include "glm/gtc/type_ptr.hpp"
 
 #include <cassert>
+#include <cstddef>
 
 static const int k_max_segments= 0x8000;
 static const int k_max_points= 0x8000;

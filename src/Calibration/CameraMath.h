@@ -2,8 +2,6 @@
 
 // -- includes -----
 #include "OpenCVFwd.h"
-#include "ComponentFwd.h"
-#include "VideoDisplayConstants.h"
 
 #include "glm/ext/quaternion_float.hpp"
 #include "glm/ext/matrix_float4x4.hpp"
@@ -30,7 +28,6 @@ struct OpenGLCalibrationGeometry
 
 // -- interface -----
 glm::mat4 computeGLMCameraViewMatrix(const glm::mat4& poseXform);
-bool computeOpenCVCameraExtrinsicMatrix(CameraComponentPtr cameraComponent, cv::Matx34f& out);
 
 bool computeMonoLensCameraCalibration(const int frameWidth, const int frameHeight,
 									  const OpenCVCalibrationGeometry& opencvLensCalibrationGeometry,
@@ -51,8 +48,6 @@ void extractCameraIntrinsicMatrixParameters(const struct MikanMatrix3d& intrinsi
 void extractCameraIntrinsicMatrixParameters(const cv::Matx33f& intrinsic_matrix, float& out_focal_length_x,
 											float& out_focal_length_y, float& out_principal_point_x,
 											float& out_principal_point_y, float& out_skew);
-bool computeOpenCVCameraRectification(VideoSourceComponentPtr videoSource, VideoFrameSection section,
-									  cv::Matx33d& rotationOut, cv::Matx34d& projectionOut);
 
 void createDefautMonoIntrinsics(int pixelWidth, int pixelHeight, struct MikanMonoIntrinsics& outIntrinsics);
 
