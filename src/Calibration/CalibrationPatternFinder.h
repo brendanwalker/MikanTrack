@@ -55,6 +55,17 @@ public:
 	virtual eCalibrationPatternType getCalibrationPatternType() const= 0;
 	virtual bool findNewCalibrationPattern(const float minSeperationDist= 0.f)= 0;
 	virtual bool estimateNewCalibrationPatternPose(glm::dmat4& outCameraToPatternXform);
+
+	// Side-effect-free read of the currently detected pattern (for UI overlays).
+	// Does NOT commit the points as the last-valid capture, so it never
+	// interferes with the min-separation check in findNewCalibrationPattern.
+	virtual bool getCurrentCalibrationPattern(t_opencv_point2d_list& outImagePoints,
+											  cv::Point2f outBoundingQuad[4]) const= 0;
+
+	// Fetches the current pattern AND commits it as the last-valid capture:
+	// the pattern must then move at least minSeperationDist away before
+	// findNewCalibrationPattern reports valid points again. Only call this
+	// when actually capturing a calibration sample.
 	virtual bool fetchLastFoundCalibrationPattern(t_opencv_point2d_list& outImagePoints,
 												  t_opencv_pointID_list& outImagePointIDs,
 												  cv::Point2f outBoundingQuad[4])= 0;

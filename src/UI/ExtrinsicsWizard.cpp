@@ -198,13 +198,13 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 void ExtrinsicsWizard::drawMarkerOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping)
 {
 	CalibrationPatternFinder_Aruco* finder= m_poseSampler != nullptr ? m_poseSampler->getPatternFinder() : nullptr;
-	if (finder == nullptr || !finder->areCurrentImagePointsValid())
+	if (finder == nullptr)
 		return;
 
+	// Side-effect-free read (fetchLastFoundCalibrationPattern commits capture state)
 	t_opencv_point2d_list imagePoints;
-	t_opencv_pointID_list imagePointIDs;
 	cv::Point2f boundingQuad[4];
-	if (!finder->fetchLastFoundCalibrationPattern(imagePoints, imagePointIDs, boundingQuad))
+	if (!finder->getCurrentCalibrationPattern(imagePoints, boundingQuad))
 		return;
 
 	const ImU32 color= IM_COL32(80, 255, 120, 255);

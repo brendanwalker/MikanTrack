@@ -1,6 +1,7 @@
 #include <string>
 
 #include "opencv2/core.hpp"
+#include "opencv2/objdetect/charuco_detector.hpp"
 
 #include "App.h"
 #include "CalibrationPatternFinder_Charuco.h"
@@ -60,6 +61,44 @@ static int runApp(int argc, char** argv)
 				cv::Mat grayFrame(720, 1280, CV_8UC1, cv::Scalar(128));
 				for (int frame= 0; frame < 5; ++frame)
 					calibrator.update(0.033f, &grayFrame);
+
+				// 5: Regression test for the capture stall: render a synthetic
+				// charuco board and run the wizard loop (update + overlay read
+				// each frame). The overlay read must not commit capture state,
+				// so the stability timer must fire and progress must advance.
+				MIKAN_LOG_INFO("test-charuco") << "5: capture progress with a rendered board + overlay reads";
+				{
+					const cv::aruco::Dictionary dictionary=
+						cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+					const cv::aruco::CharucoBoard board(cv::Size(11, 8), 0.016f, 0.012f, dictionary);
+					cv::Mat boardImage;
+					board.generateImage(cv::Size(1100, 800), boardImage, 40, 1);
+
+					MonoLensDistortionCalibrator boardCalibrator(1100, 800, 11, 8, 16.f, 12.f,
+																 eCharucoDictionaryType::DICT_6X6, 12);
+
+					t_opencv_point2d_list overlayPoints;
+					cv::Point2f overlayQuad[4];
+					for (int frame= 0; frame < 40; ++frame) // 2s at 50ms > 1s stability window
+					{
+						boardCalibrator.update(0.05f, &boardImage);
+						// Mimic the wizard overlay read every frame
+						boardCalibrator.getPatternFinder()->getCurrentCalibrationPattern(overlayPoints, overlayQuad);
+					}
+
+					if (boardCalibrator.computeCalibrationProgress() <= 0.f)
+					{
+						MIKAN_LOG_ERROR("test-charuco")
+							<< "REGRESSION: capture progress stuck at 0 with overlay reads active";
+						result= 1;
+					}
+					else
+					{
+						MIKAN_LOG_INFO("test-charuco")
+							<< "Captured " << boardCalibrator.computeCalibrationProgress() * 12.f
+							<< " samples from static board (expected 1)";
+					}
+				}
 
 				MIKAN_LOG_INFO("test-charuco") << "All steps passed";
 			}

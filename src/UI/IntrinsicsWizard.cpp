@@ -154,13 +154,14 @@ bool IntrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview, ImD
 void IntrinsicsWizard::drawPatternOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping)
 {
 	CalibrationPatternFinder_Charuco* finder= m_calibrator->getPatternFinder();
-	if (finder == nullptr || !finder->areCurrentImagePointsValid())
+	if (finder == nullptr)
 		return;
 
+	// Side-effect-free read: fetchLastFoundCalibrationPattern would commit the
+	// points as the last capture and stall the min-separation check
 	t_opencv_point2d_list imagePoints;
-	t_opencv_pointID_list imagePointIDs;
 	cv::Point2f boundingQuad[4];
-	if (!finder->fetchLastFoundCalibrationPattern(imagePoints, imagePointIDs, boundingQuad))
+	if (!finder->getCurrentCalibrationPattern(imagePoints, boundingQuad))
 		return;
 
 	const bool bStable= m_calibrator->areCurrentImagePointsStable();

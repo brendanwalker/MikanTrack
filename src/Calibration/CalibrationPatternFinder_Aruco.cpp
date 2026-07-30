@@ -115,29 +115,39 @@ bool CalibrationPatternFinder_Aruco::findNewCalibrationPattern(const float minSe
 	return bFoundMarkers;
 }
 
+bool CalibrationPatternFinder_Aruco::getCurrentCalibrationPattern(t_opencv_point2d_list& outImagePoints,
+																  cv::Point2f outBoundingQuad[4]) const
+{
+	if (!areCurrentImagePointsValid())
+		return false;
+
+	// The marker's four corners are the bounding quad
+	outBoundingQuad[0]= m_currentImagePoints[0];
+	outBoundingQuad[1]= m_currentImagePoints[1];
+	outBoundingQuad[2]= m_currentImagePoints[2];
+	outBoundingQuad[3]= m_currentImagePoints[3];
+
+	outImagePoints.clear();
+	for (const auto& imagePoint : m_currentImagePoints)
+	{
+		outImagePoints.push_back(imagePoint);
+	}
+
+	return true;
+}
+
 bool CalibrationPatternFinder_Aruco::fetchLastFoundCalibrationPattern(t_opencv_point2d_list& outImagePoints,
 																	  t_opencv_pointID_list& outImagePointIDs,
 																	  cv::Point2f outBoundingQuad[4])
 {
 	// If it's a valid new location, append it to the board list
-	if (areCurrentImagePointsValid())
+	if (getCurrentCalibrationPattern(outImagePoints, outBoundingQuad))
 	{
-		// Keep track of the corners of all of the chessboards we sample
-		outBoundingQuad[0]= m_currentImagePoints[0];
-		outBoundingQuad[1]= m_currentImagePoints[1];
-		outBoundingQuad[2]= m_currentImagePoints[2];
-		outBoundingQuad[3]= m_currentImagePoints[3];
-
-		outImagePoints.clear();
-		for (const auto& imagePoint : m_currentImagePoints)
-		{
-			outImagePoints.push_back(imagePoint);
-		}
-
 		outImagePointIDs.clear();
 		outImagePointIDs.push_back(m_markerData->desiredArucoId);
 
-		// Remember the last valid captured points
+		// Remember the last valid captured points; only committed on capture
+		// so overlay reads can't interfere with the min-separation check
 		m_lastValidImagePoints= m_currentImagePoints;
 
 		return true;

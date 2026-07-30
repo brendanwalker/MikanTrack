@@ -14,7 +14,7 @@ public:
 	static constexpr float k_imagePointStabilityDuration= 1.0f; // seconds
 	// Minimum average pixel distance the pattern corners must move from the last
 	// captured sample to be considered a new board location
-	static constexpr float k_defaultMinSeperationDist= 100.f; // pixels
+	static constexpr float k_defaultMinSeperationDist= 10.f; // pixels
 
 	MonoLensDistortionCalibrator(int frameWidth, int frameHeight, int charucoCols, int charucoRows,
 								 float charucoSquareLengthMM, float charucoMarkerLengthMM,

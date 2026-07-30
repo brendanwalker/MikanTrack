@@ -161,33 +161,44 @@ bool CalibrationPatternFinder_Charuco::findNewCalibrationPattern(const float min
 	return bImagePointsValid;
 }
 
+bool CalibrationPatternFinder_Charuco::getCurrentCalibrationPattern(t_opencv_point2d_list& outImagePoints,
+																	cv::Point2f outBoundingQuad[4]) const
+{
+	if (!areCurrentImagePointsValid())
+		return false;
+
+	// The number of corners in a row is one less than the number of squares
+	const int cornerCols= m_markerData->cols - 1;
+	const int cornerCount= (int)m_currentImagePoints.size();
+
+	// Bounding quad of the detected corners
+	// (indices are clamped since partial board detections may have fewer corners)
+	outBoundingQuad[0]= m_currentImagePoints[0];
+	outBoundingQuad[1]= m_currentImagePoints[int_min(cornerCols - 1, cornerCount - 1)];
+	outBoundingQuad[2]= m_currentImagePoints[cornerCount - 1];
+	outBoundingQuad[3]= m_currentImagePoints[int_max(cornerCount - cornerCols, 0)];
+
+	outImagePoints.clear();
+	for (const auto& imagePoint : m_currentImagePoints)
+	{
+		outImagePoints.push_back(imagePoint);
+	}
+
+	return true;
+}
+
 bool CalibrationPatternFinder_Charuco::fetchLastFoundCalibrationPattern(t_opencv_point2d_list& outImagePoints,
 																		t_opencv_pointID_list& outImagePointIDs,
 																		cv::Point2f outBoundingQuad[4])
 {
 	// If it's a valid new location, append it to the board list
-	if (areCurrentImagePointsValid())
+	if (getCurrentCalibrationPattern(outImagePoints, outBoundingQuad))
 	{
-		// The number of corners in a row is one less than the number of squares
-		const int cornerCols= m_markerData->cols - 1;
-		const int cornerCount= (int)m_currentImagePoints.size();
-
-		// Keep track of the corners of all of the chessboards we sample
-		// (indices are clamped since partial board detections may have fewer corners)
-		outBoundingQuad[0]= m_currentImagePoints[0];
-		outBoundingQuad[1]= m_currentImagePoints[int_min(cornerCols - 1, cornerCount - 1)];
-		outBoundingQuad[2]= m_currentImagePoints[cornerCount - 1];
-		outBoundingQuad[3]= m_currentImagePoints[int_max(cornerCount - cornerCols, 0)];
-
-		outImagePoints.clear();
-		for (const auto& imagePoint : m_currentImagePoints)
-		{
-			outImagePoints.push_back(imagePoint);
-		}
-
 		outImagePointIDs= m_markerData->charucoIds;
 
-		// Remember the last valid captured points
+		// Remember the last valid captured points; the min-separation check in
+		// findNewCalibrationPattern compares against these, so this must only
+		// happen when a sample is actually captured
 		m_lastValidImagePoints= m_currentImagePoints;
 		m_markerData->lastValidCharucoIds= m_markerData->charucoIds;
 
