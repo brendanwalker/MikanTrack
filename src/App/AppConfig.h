@@ -50,6 +50,7 @@ struct TrackingConfig
 {
 	bool flipHandedness= true;
 	bool usePoseModel= true;
+	bool poseHandSeededRoi= false; // overhead rigs: seed pose ROI from tracked hands
 	int detectorIntervalFrames= 30;
 	int poseFrameDivider= 2;
 	float smoothingMinCutoff= 1.0f;

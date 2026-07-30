@@ -22,6 +22,15 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 	bChanged|= ImGui::Checkbox("Use pose model (elbows)", &tracking.usePoseModel);
 
+	ImGui::BeginDisabled(!tracking.usePoseModel);
+	bChanged|= ImGui::Checkbox("Hand-seeded pose ROI", &tracking.poseHandSeededRoi);
+	ImGui::SetItemTooltip(
+		"Overhead-rig experiment: skip the person detector (which never fires\n"
+		"on top-down views) and aim the pose model at a crop built from the\n"
+		"tracked hand positions. If the pose model still fails, the hand-derived\n"
+		"forearm fallback is used as usual.");
+	ImGui::EndDisabled();
+
 	bChanged|= ImGui::SliderInt("Detector interval", &tracking.detectorIntervalFrames, 5, 120);
 	ImGui::SetItemTooltip("Palm detector re-runs at least every N frames");
 

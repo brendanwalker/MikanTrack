@@ -266,6 +266,56 @@ void HandTrackingPipeline::runPoseStage(const cv::Mat& bgrFrame, TrackingFrameRe
 		roi= m_trackedPoseRoi;
 		haveRoi= true;
 	}
+	else if (m_config.poseHandSeededRoi)
+	{
+		// Overhead-rig mode: seed the pose crop from the tracked hands instead
+		// of the person detector (which never fires on top-down views).
+		// Crop geometry (see PoseLandmarkModel): square of radius
+		// |hip - fullBody| centered on hipCenter, rotated so hip->fullBody
+		// points up. bodyDir runs from the knuckles through the wrist, i.e.
+		// up the forearm toward the elbows/shoulders.
+		glm::vec2 wristSum(0.f);
+		glm::vec2 bodyDirSum(0.f);
+		float handLengthSum= 0.f;
+		int activeHands= 0;
+		for (const HandSlot& slot : m_slots)
+		{
+			if (!slot.active)
+				continue;
+
+			const glm::vec2 wrist= glm::vec2(slot.imagePoints[(int)eHandLandmark::WRIST]);
+			const glm::vec2 mcpCentroid=
+				(glm::vec2(slot.imagePoints[(int)eHandLandmark::INDEX_MCP]) +
+				 glm::vec2(slot.imagePoints[(int)eHandLandmark::MIDDLE_MCP]) +
+				 glm::vec2(slot.imagePoints[(int)eHandLandmark::RING_MCP]) +
+				 glm::vec2(slot.imagePoints[(int)eHandLandmark::PINKY_MCP])) *
+				0.25f;
+
+			const glm::vec2 handSegment= wrist - mcpCentroid;
+			const float handLength= glm::length(handSegment);
+			if (handLength < 1.f)
+				continue;
+
+			wristSum+= wrist;
+			bodyDirSum+= handSegment / handLength;
+			handLengthSum+= handLength;
+			++activeHands;
+		}
+
+		if (activeHands > 0 && glm::length(bodyDirSum) > 0.1f)
+		{
+			const glm::vec2 wristMid= wristSum / (float)activeHands;
+			const glm::vec2 bodyDir= glm::normalize(bodyDirSum);
+			const float handLength= handLengthSum / (float)activeHands;
+
+			// Center the crop ~3 hand-lengths up the forearms with a 4
+			// hand-length radius: spans from just past the fingertips to
+			// roughly the shoulders
+			roi.hipCenter= wristMid + bodyDir * (3.f * handLength);
+			roi.fullBodyPoint= roi.hipCenter + bodyDir * (4.f * handLength);
+			haveRoi= true;
+		}
+	}
 	else
 	{
 		m_poseDetector.detect(bgrFrame, m_personDetections);

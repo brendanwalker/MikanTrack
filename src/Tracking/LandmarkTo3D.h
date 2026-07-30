@@ -1,5 +1,6 @@
 #pragma once
 
+#include "glm/ext/matrix_double4x4.hpp"
 #include "glm/ext/vector_float3.hpp"
 
 #include "MikanVideoSourceTypes.h"
@@ -42,6 +43,16 @@ public:
 	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms
 	void process(TrackingFrameResult& ioResult);
 
+	// Recomputes fallback (hand-derived) elbows in world space, after
+	// applyWorldTransform has run. The forearm is extended from the hand's
+	// world-space orientation with an anatomical length derived from the
+	// calibrated hand scale, and the elbow is clamped to at-or-above the
+	// table plane (world z >= 0) - a hand resting on the table physically
+	// has its elbow at about table height, so the clamp is usually the
+	// right answer, not just a guard. Camera-space and pixel positions are
+	// back-filled for the overlay.
+	void refineFallbackArms(TrackingFrameResult& ioResult, const glm::dmat4& markerFromCamera);
+
 private:
 	glm::vec3 backProject(float u, float v, float z) const;
 	void processHand(TrackedHand& hand, float dtSeconds);
@@ -57,6 +68,11 @@ private:
 	bool m_bSmoothingEnabled= true;
 	HandOneEuroBank m_filterBank;
 
+	// World-space elbow filters for the refined fallback path (separate from
+	// the camera-space elbow filters so the two estimates don't share state)
+	std::array<OneEuroFilterVec3, 2> m_worldElbowFilters;
+
 	double m_lastTimestampMs= -1.0;
+	float m_lastDtSeconds= 1.f / 60.f;
 	bool m_bSideWasTracked[2]= {false, false};
 };

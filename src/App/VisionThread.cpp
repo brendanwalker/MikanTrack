@@ -70,6 +70,7 @@ void VisionThread::refreshConfigOnThread()
 		HandTrackingPipelineConfig pipelineConfig;
 		pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
 		pipelineConfig.usePoseModel= m_config->tracking.usePoseModel;
+		pipelineConfig.poseHandSeededRoi= m_config->tracking.poseHandSeededRoi;
 		pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
 		pipelineConfig.poseFrameDivider= m_config->tracking.poseFrameDivider;
 		pipelineConfig.preferredEp= m_config->tracking.onnxEp;
@@ -86,6 +87,7 @@ void VisionThread::refreshConfigOnThread()
 		HandTrackingPipelineConfig pipelineConfig= m_pipeline->getConfig();
 		pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
 		pipelineConfig.usePoseModel= m_config->tracking.usePoseModel;
+		pipelineConfig.poseHandSeededRoi= m_config->tracking.poseHandSeededRoi;
 		pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
 		pipelineConfig.poseFrameDivider= m_config->tracking.poseFrameDivider;
 		m_pipeline->setConfig(pipelineConfig);
@@ -207,7 +209,13 @@ void VisionThread::threadLoop()
 
 				// Camera space -> marker/world space (needs extrinsics)
 				if (m_config->extrinsics.present)
+				{
 					applyWorldTransform(result, m_config->extrinsics.markerFromCamera);
+
+					// Recompute fallback elbows in world space with the
+					// table-plane clamp (fixes below-the-table elbows)
+					m_landmarkTo3D->refineFallbackArms(result, m_config->extrinsics.markerFromCamera);
+				}
 			}
 
 			if (m_oscStreamer != nullptr)

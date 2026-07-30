@@ -25,6 +25,12 @@ struct HandTrackingPipelineConfig
 	// MediaPipe's handedness classifier assumes a mirrored/selfie view; with
 	// an unmirrored (rear/webcam) feed the label must be flipped
 	bool flipHandedness= true;
+	// Overhead-rig experiment: BlazePose's person detector is trained on
+	// upright people and essentially never fires on a top-down view. When
+	// enabled, the pose ROI is seeded from the tracked hand positions
+	// (extended up the forearm direction) instead of running the person
+	// detector. The pose-confidence gate and arm fallback still apply.
+	bool poseHandSeededRoi= false;
 
 	// run the palm detector at least every N frames even with 2 active slots
 	// (drift guard); it always runs when fewer than 2 slots are active
