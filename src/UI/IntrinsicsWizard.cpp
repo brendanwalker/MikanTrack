@@ -164,8 +164,13 @@ void IntrinsicsWizard::drawPatternOverlay(ImDrawList* drawList, const ImageToScr
 	if (!finder->getCurrentCalibrationPattern(imagePoints, boundingQuad))
 		return;
 
-	const bool bStable= m_calibrator->areCurrentImagePointsStable();
-	const ImU32 pointColor= bStable ? IM_COL32(80, 255, 120, 255) : IM_COL32(255, 220, 60, 255);
+	// Yellow -> green as the hold-steady window fills; capture fires when full
+	const float stability= m_calibrator->getStabilityFraction();
+	const ImU32 pointColor= IM_COL32(
+		(int)(255.f + (80.f - 255.f) * stability),
+		(int)(220.f + (255.f - 220.f) * stability),
+		(int)(60.f + (120.f - 60.f) * stability),
+		255);
 
 	for (const cv::Point2f& point : imagePoints)
 		drawList->AddCircleFilled(mapping.toScreen(point.x, point.y), 3.f, pointColor);
@@ -246,14 +251,13 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 
 			if (m_calibrator->areCurrentImagePointsValid())
 			{
-				if (m_calibrator->areCurrentImagePointsStable())
-					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Hold steady - capturing...");
-				else
-					ImGui::Text("Board found - move to a new position and hold");
+				const float stability= m_calibrator->getStabilityFraction();
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Hold steady... %d%%", (int)(stability * 100.f));
+				ImGui::ProgressBar(stability, ImVec2(-1, 4), "");
 			}
 			else
 			{
-				ImGui::TextDisabled("Show the charuco board to the camera");
+				ImGui::TextDisabled("Show the board / move it to a new position");
 			}
 
 			if (ImGui::Button("Restart"))

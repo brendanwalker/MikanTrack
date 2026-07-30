@@ -34,7 +34,6 @@ struct MonoLensDistortionCalibrationState
 
 	// Image point stability state
 	float imagePointsStabilityTimer;
-	bool areImagePointsStable;
 
 	// Async Calibration Compute
 	std::thread* asyncComputeTask;
@@ -67,7 +66,6 @@ struct MonoLensDistortionCalibrationState
 
 		// Reset the stability state
 		imagePointsStabilityTimer= 0.f;
-		areImagePointsStable= false;
 
 		// Reset the async task state
 		asyncComputeTask= nullptr;
@@ -123,26 +121,26 @@ void MonoLensDistortionCalibrator::update(float deltaSeconds, const cv::Mat* gra
 
 	// Update the image point stability timer.
 	// Once the pattern has been held valid (in a new location) for the stability
-	// duration, capture it as a calibration sample.
+	// duration, capture it as a calibration sample and restart the hold cycle.
+	//
+	// The timer MUST reset on capture (not just when the points go invalid):
+	// a fast board move or a disjoint partial-board detection can produce a
+	// valid detection on the very next frame after a capture, and waiting for
+	// an invalid frame to reset the hold state would stall capture forever.
 	if (areCurrentImagePointsValid())
 	{
-		if (!m_calibrationState->areImagePointsStable)
+		m_calibrationState->imagePointsStabilityTimer+= deltaSeconds;
+		if (m_calibrationState->imagePointsStabilityTimer >= k_imagePointStabilityDuration)
 		{
-			m_calibrationState->imagePointsStabilityTimer+= deltaSeconds;
-			if (m_calibrationState->imagePointsStabilityTimer >= k_imagePointStabilityDuration)
-			{
-				m_calibrationState->areImagePointsStable= true;
-
-				// Capturing updates the finder's last-valid points, so the pattern has to
-				// move at least minSeperationDist away before the next capture can start
-				captureLastFoundCalibrationPattern();
-			}
+			// Capturing updates the finder's last-valid points, so the pattern has to
+			// move at least minSeperationDist away before the next capture can start
+			captureLastFoundCalibrationPattern();
+			m_calibrationState->imagePointsStabilityTimer= 0.f;
 		}
 	}
 	else
 	{
 		m_calibrationState->imagePointsStabilityTimer= 0.f;
-		m_calibrationState->areImagePointsStable= false;
 	}
 }
 
@@ -184,9 +182,9 @@ bool MonoLensDistortionCalibrator::areCurrentImagePointsValid() const
 	return m_patternFinder->areCurrentImagePointsValid();
 }
 
-bool MonoLensDistortionCalibrator::areCurrentImagePointsStable() const
+float MonoLensDistortionCalibrator::getStabilityFraction() const
 {
-	return m_calibrationState->areImagePointsStable;
+	return std::min(m_calibrationState->imagePointsStabilityTimer / k_imagePointStabilityDuration, 1.f);
 }
 
 float MonoLensDistortionCalibrator::computeCalibrationProgress() const

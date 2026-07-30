@@ -1,6 +1,7 @@
 #include <string>
 
 #include "opencv2/core.hpp"
+#include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
 
 #include "App.h"
@@ -97,6 +98,39 @@ static int runApp(int argc, char** argv)
 						MIKAN_LOG_INFO("test-charuco")
 							<< "Captured " << boardCalibrator.computeCalibrationProgress() * 12.f
 							<< " samples from static board (expected 1)";
+					}
+
+					// 6: Regression test for the stuck-green stall: right after a
+					// capture, present the board >= 100px away with NO invalid
+					// frame in between (fast board move). The hold cycle must
+					// restart and produce a second capture.
+					MIKAN_LOG_INFO("test-charuco") << "6: second capture after an immediate fast board move";
+					{
+						cv::Mat shiftedImage;
+						const cv::Mat translation= (cv::Mat_<double>(2, 3) << 1, 0, 150, 0, 1, 0);
+						cv::warpAffine(boardImage, shiftedImage, translation, boardImage.size(),
+									   cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(255));
+
+						for (int frame= 0; frame < 40; ++frame)
+						{
+							boardCalibrator.update(0.05f, &shiftedImage);
+							boardCalibrator.getPatternFinder()->getCurrentCalibrationPattern(overlayPoints,
+																							 overlayQuad);
+						}
+
+						const float capturedSamples= boardCalibrator.computeCalibrationProgress() * 12.f;
+						if (capturedSamples < 2.f)
+						{
+							MIKAN_LOG_ERROR("test-charuco")
+								<< "REGRESSION: no capture after fast board move (stuck hold state), samples="
+								<< capturedSamples;
+							result= 1;
+						}
+						else
+						{
+							MIKAN_LOG_INFO("test-charuco")
+								<< "Captured " << capturedSamples << " samples after fast move (expected 2)";
+						}
 					}
 				}
 

@@ -34,7 +34,9 @@ public:
 
 	bool hasSampledAllCalibrationPatterns() const;
 	bool areCurrentImagePointsValid() const;
-	bool areCurrentImagePointsStable() const;
+	// 0..1 progress of the current "hold steady" window; capture fires at 1
+	// and the fraction restarts for the next sample
+	float getStabilityFraction() const;
 	float computeCalibrationProgress() const;
 	void resetCalibrationState();
 
