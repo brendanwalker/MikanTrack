@@ -5,7 +5,9 @@
 #include "opencv2/objdetect/charuco_detector.hpp"
 
 #include "App.h"
+#include "ArucoMarkerPoseSampler.h"
 #include "CalibrationPatternFinder_Charuco.h"
+#include "ExtrinsicsWizard.h"
 #include "HandTrackingPipeline.h"
 #include "Logger.h"
 #include "MonoLensDistortionCalibrator.h"
@@ -144,6 +146,129 @@ static int runApp(int argc, char** argv)
 			catch (const std::exception& e)
 			{
 				MIKAN_LOG_ERROR("test-charuco") << "std::exception: " << e.what();
+				result= 1;
+			}
+
+			log_dispose();
+			return result;
+		}
+
+		if (std::string(argv[i]) == "--test-extrinsics")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-extrinsics.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+			try
+			{
+				// Ground truth: 1280x720 pinhole camera 0.8m directly above a
+				// 100mm aruco marker at the world origin, looking straight down.
+				// OpenCV camera axes: x=world X, y=-world Y, z=-world Z (down).
+				const double fx= 800.0, fy= 800.0, cx= 640.0, cy= 360.0;
+				const double cameraHeight= 0.8;
+
+				MikanMonoIntrinsics intrinsics;
+				intrinsics.pixel_width= 1280;
+				intrinsics.pixel_height= 720;
+				intrinsics.undistorted_camera_matrix.x0= fx;
+				intrinsics.undistorted_camera_matrix.y1= fy;
+				intrinsics.undistorted_camera_matrix.z0= cx;
+				intrinsics.undistorted_camera_matrix.z1= cy;
+				intrinsics.distorted_camera_matrix= intrinsics.undistorted_camera_matrix;
+
+				// Project a world point on the table into the image
+				auto projectTablePoint= [&](double worldX, double worldY) -> cv::Point2f {
+					const double camX= worldX, camY= -worldY, camZ= cameraHeight;
+					return cv::Point2f((float)(fx * camX / camZ + cx), (float)(fy * camY / camZ + cy));
+				};
+
+				// Render the marker into the synthetic camera image.
+				// generateImageMarker corner order matches detection order
+				// (top-left, top-right, bottom-right, bottom-left); lay the
+				// marker's top edge along -worldY so it appears upright.
+				const int markerImageSize= 400;
+				cv::Mat markerImage;
+				cv::aruco::generateImageMarker(
+					cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250), 0, markerImageSize, markerImage, 1);
+
+				const double halfLenM= 0.05; // 100mm marker
+				const std::vector<cv::Point2f> sourceCorners= {
+					{0.f, 0.f}, {(float)markerImageSize, 0.f},
+					{(float)markerImageSize, (float)markerImageSize}, {0.f, (float)markerImageSize}};
+				const std::vector<cv::Point2f> imageCorners= {
+					projectTablePoint(-halfLenM, halfLenM), projectTablePoint(halfLenM, halfLenM),
+					projectTablePoint(halfLenM, -halfLenM), projectTablePoint(-halfLenM, -halfLenM)};
+
+				cv::Mat cameraImage(720, 1280, CV_8UC1, cv::Scalar(255));
+				const cv::Mat homography= cv::getPerspectiveTransform(sourceCorners, imageCorners);
+				cv::warpPerspective(markerImage, cameraImage, homography, cameraImage.size(), cv::INTER_LINEAR,
+									cv::BORDER_TRANSPARENT);
+
+				// Run the real sampler on the synthetic image
+				ArucoMarkerPoseSampler sampler(intrinsics, 1280, 720, 100.f, 0, eCharucoDictionaryType::DICT_6X6, 12);
+				sampler.setGrayscaleFrame(&cameraImage);
+				for (int sample= 0; sample < 12; ++sample)
+				{
+					if (sampler.computeApertureRelativeMarkerXform())
+						sampler.sampleLastApertureRelativeMarkerXform();
+				}
+
+				glm::dmat4 cameraFromMarker;
+				if (!sampler.hasFinishedSampling() || !sampler.computeCalibratedMarkerPose(cameraFromMarker))
+				{
+					MIKAN_LOG_ERROR("test-extrinsics") << "Sampler failed to detect the synthetic marker";
+					result= 1;
+				}
+				else
+				{
+					const double markerDistance= glm::length(glm::dvec3(cameraFromMarker[3]));
+					MIKAN_LOG_INFO("test-extrinsics") << "Marker distance: " << markerDistance << " (expected 0.8)";
+
+					// Wizard math: recovered camera height must be positive ~0.8
+					const glm::dmat4 worldFromCamera= ExtrinsicsWizard::computeWorldFromCameraPose(cameraFromMarker);
+					const double recoveredHeight= worldFromCamera[3].z;
+					MIKAN_LOG_INFO("test-extrinsics") << "Camera height: " << recoveredHeight << " (expected +0.8)";
+
+					if (fabs(markerDistance - cameraHeight) > 0.02 || fabs(recoveredHeight - cameraHeight) > 0.02)
+					{
+						MIKAN_LOG_ERROR("test-extrinsics") << "REGRESSION: pose/height mismatch";
+						result= 1;
+					}
+
+					// Ray-cast a known table point through the wizard math and
+					// verify the recovered world position (hand-scale path)
+					const cv::Point2f testPixel= projectTablePoint(0.10, 0.05);
+					glm::dvec3 hitCameraSpace;
+					if (!ExtrinsicsWizard::raycastPixelOntoPlane(intrinsics, cameraFromMarker,
+																 glm::vec2(testPixel.x, testPixel.y), hitCameraSpace))
+					{
+						MIKAN_LOG_ERROR("test-extrinsics") << "REGRESSION: table-plane raycast failed";
+						result= 1;
+					}
+					else
+					{
+						const glm::dvec3 hitWorld= glm::dvec3(worldFromCamera * glm::dvec4(hitCameraSpace, 1.0));
+						MIKAN_LOG_INFO("test-extrinsics")
+							<< "Raycast hit world (" << hitWorld.x << ", " << hitWorld.y << ", " << hitWorld.z
+							<< ") (expected 0.10, 0.05, 0)";
+						if (fabs(hitWorld.x - 0.10) > 0.01 || fabs(hitWorld.y - 0.05) > 0.01 ||
+							fabs(hitWorld.z) > 0.01)
+						{
+							MIKAN_LOG_ERROR("test-extrinsics") << "REGRESSION: raycast world position mismatch";
+							result= 1;
+						}
+					}
+				}
+
+				if (result == 0)
+					MIKAN_LOG_INFO("test-extrinsics") << "All extrinsics checks passed";
+			}
+			catch (const cv::Exception& e)
+			{
+				MIKAN_LOG_ERROR("test-extrinsics") << "cv::Exception: " << e.what();
 				result= 1;
 			}
 

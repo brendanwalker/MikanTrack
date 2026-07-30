@@ -44,15 +44,32 @@ public:
 	bool update(float deltaSeconds, const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult,
 				ImDrawList* overlayDrawList, const ImageToScreenMapping& mapping);
 
+	// -- Pure math helpers (static for the --test-extrinsics self test) -----
+
+	// GL-convention camera space -> Z-up world space (origin at the marker,
+	// +Z = marker plane normal toward the camera), given the sampler's
+	// camera-from-marker transform. The solvePnP object points lie in the
+	// marker's local XZ plane, so the plane normal is the marker's +/-Y axis.
+	static glm::dmat4 computeWorldFromCameraPose(const glm::dmat4& cameraFromMarker);
+
+	// Intersects the camera ray through an (undistorted) pixel with the
+	// marker/table plane. Returns the hit point in GL camera space, meters.
+	static bool raycastPixelOntoPlane(const struct MikanMonoIntrinsics& intrinsics,
+									  const glm::dmat4& cameraFromMarker,
+									  const glm::vec2& pixel,
+									  glm::dvec3& outPoint);
+
 private:
 	void drawWizardWindow(const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult);
 	void drawMarkerOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping);
 	void beginPoseCapture(int frameWidth, int frameHeight);
 	bool areMarkerParamsValid(std::string& outError) const;
+
+	// Uses the wizard's captured pose; valid once m_bHasCameraPose
+	glm::dmat4 computeWorldFromCamera() const;
 	void updateHandScaleCapture(const TrackingFrameResult& trackingResult);
 
-	// Intersects the camera ray through an (undistorted) pixel with the marker
-	// plane; returns false if the ray is parallel. GL camera space, meters.
+	// Member wrappers over the static helpers using the wizard's current state
 	bool raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const;
 
 	AppConfig* m_config;

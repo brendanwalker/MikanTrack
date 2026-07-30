@@ -86,10 +86,30 @@ bool ExtrinsicsWizard::areMarkerParamsValid(std::string& outError) const
 	return true;
 }
 
-bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const
+glm::dmat4 ExtrinsicsWizard::computeWorldFromCameraPose(const glm::dmat4& cameraFromMarker)
+{
+	// The solvePnP object points lie in the marker's local XZ plane, so the
+	// marker's plane normal is its local +/-Y axis. Build the world frame so
+	// +Z is the normal pointing toward the camera (up out of the table):
+	//   world X = marker X, world Z = upSign * marker Y, world Y = -upSign * marker Z
+	const glm::dvec3 cameraInMarker= glm::dvec3(glm::inverse(cameraFromMarker)[3]);
+	const double upSign= cameraInMarker.y >= 0.0 ? 1.0 : -1.0;
+
+	glm::dmat4 worldFromMarker(1.0);
+	worldFromMarker[0]= glm::dvec4(1, 0, 0, 0);        // marker X -> world X
+	worldFromMarker[1]= glm::dvec4(0, 0, upSign, 0);   // marker Y -> world Z (up)
+	worldFromMarker[2]= glm::dvec4(0, -upSign, 0, 0);  // marker Z -> world Y (right-handed)
+
+	// GL camera space -> marker space -> Z-up world space
+	return worldFromMarker * glm::inverse(cameraFromMarker);
+}
+
+bool ExtrinsicsWizard::raycastPixelOntoPlane(const MikanMonoIntrinsics& intrinsics,
+											 const glm::dmat4& cameraFromMarker,
+											 const glm::vec2& pixel,
+											 glm::dvec3& outPoint)
 {
 	// Undistorted pinhole ray in OpenCV camera space, flipped to GL convention
-	const MikanMonoIntrinsics& intrinsics= m_config->intrinsics.intrinsics;
 	const double fx= intrinsics.undistorted_camera_matrix.x0;
 	const double fy= intrinsics.undistorted_camera_matrix.y1;
 	const double cx= intrinsics.undistorted_camera_matrix.z0;
@@ -101,9 +121,11 @@ bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::
 	const double cvY= ((double)pixel.y - cy) / fy;
 	const glm::dvec3 rayDir= glm::normalize(glm::dvec3(cvX, -cvY, -1.0)); // GL camera space
 
-	// Marker plane in GL camera space
-	const glm::dvec3 planeOrigin= glm::dvec3(m_cameraFromMarker[3]);
-	const glm::dvec3 planeNormal= glm::normalize(glm::dvec3(glm::dmat3(m_cameraFromMarker) * glm::dvec3(0, 0, 1)));
+	// Marker/table plane in GL camera space. The plane normal is the marker's
+	// local Y axis (the solvePnP object points span the marker's XZ plane) -
+	// the sign doesn't matter for the intersection
+	const glm::dvec3 planeOrigin= glm::dvec3(cameraFromMarker[3]);
+	const glm::dvec3 planeNormal= glm::normalize(glm::dvec3(glm::dmat3(cameraFromMarker) * glm::dvec3(0, 1, 0)));
 
 	const double denominator= glm::dot(rayDir, planeNormal);
 	if (fabs(denominator) < 1e-6)
@@ -115,6 +137,16 @@ bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::
 
 	outPoint= rayDir * t;
 	return true;
+}
+
+glm::dmat4 ExtrinsicsWizard::computeWorldFromCamera() const
+{
+	return computeWorldFromCameraPose(m_cameraFromMarker);
+}
+
+bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const
+{
+	return raycastPixelOntoPlane(m_config->intrinsics.intrinsics, m_cameraFromMarker, pixel, outPoint);
 }
 
 void ExtrinsicsWizard::updateHandScaleCapture(const TrackingFrameResult& trackingResult)
@@ -299,10 +331,10 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			const glm::dvec3 markerPos= glm::dvec3(m_cameraFromMarker[3]);
 			ImGui::Text("Marker distance: %.2f m", glm::length(markerPos));
 
-			// Camera height above the marker plane
-			const glm::dmat4 markerFromCamera= glm::inverse(m_cameraFromMarker);
-			const glm::dvec3 cameraInWorld= glm::dvec3(markerFromCamera[3]);
-			ImGui::Text("Camera height over table: %.2f m", cameraInWorld.z);
+			// Camera height above the marker/table plane (world +Z is the
+			// marker plane normal)
+			const glm::dmat4 worldFromCamera= computeWorldFromCamera();
+			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
 			ImGui::TextWrapped("Sanity check these numbers against your physical setup.");
 
 			if (ImGui::Button("Looks Right - Measure Hand Scale", ImVec2(-1, 0)))
@@ -343,8 +375,8 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 		{
 			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration ready");
 
-			const glm::dmat4 markerFromCamera= glm::inverse(m_cameraFromMarker);
-			ImGui::Text("Camera height over table: %.2f m", glm::dvec3(markerFromCamera[3]).z);
+			const glm::dmat4 worldFromCamera= computeWorldFromCamera();
+			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
 			if (m_measuredHandScale > 0.0)
 				ImGui::Text("Hand scale (wrist->knuckle): %.1f cm", m_measuredHandScale * 100.0);
 			else
@@ -352,7 +384,7 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 
 			if (ImGui::Button("Accept & Save", ImVec2(-1, 0)))
 			{
-				// The sampler's pose is in GL camera convention, but
+				// worldFromCamera maps GL camera space to the Z-up world, but
 				// SpaceTransforms/LandmarkTo3D work in OpenCV camera convention
 				// (+Y down, +Z forward). Right-multiply the GL->CV axis flip so
 				// the stored transform maps CV-convention camera points to world.
@@ -363,7 +395,7 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 					glm::dvec4(0, 0, 0, 1));
 
 				m_config->extrinsics.present= true;
-				m_config->extrinsics.markerFromCamera= markerFromCamera * cvFromGlFlip;
+				m_config->extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
 				m_config->extrinsics.markerId= m_markerId;
 				m_config->extrinsics.markerLengthMM= m_markerLengthMM;
 				if (m_measuredHandScale > 0.0)
