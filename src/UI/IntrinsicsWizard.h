@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 
 #include "opencv2/core/mat.hpp"
 
@@ -42,6 +43,7 @@ private:
 	void drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPreview);
 	void drawPatternOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping);
 	void beginCapture(int frameWidth, int frameHeight);
+	bool areBoardParamsValid(std::string& outError) const;
 	void applyResultToConfig();
 
 	AppConfig* m_config;
@@ -59,4 +61,7 @@ private:
 	int m_boardRows= 8;
 	float m_squareLengthMM= 16.f;
 	float m_markerLengthMM= 12.f;
+
+	// Shown in the Failed state (e.g. cv::Exception message)
+	std::string m_lastErrorMessage;
 };

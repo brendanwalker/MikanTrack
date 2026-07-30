@@ -50,14 +50,40 @@ void ExtrinsicsWizard::exit()
 
 void ExtrinsicsWizard::beginPoseCapture(int frameWidth, int frameHeight)
 {
-	m_poseSampler= std::make_unique<ArucoMarkerPoseSampler>(
-		m_config->intrinsics.intrinsics,
-		frameWidth, frameHeight,
-		m_markerLengthMM,
-		m_markerId,
-		eCharucoDictionaryType::DICT_6X6,
-		12);
-	m_state= eState::CaptureCameraPose;
+	// Guard OpenCV parameter asserts (invalid marker size/id) - surface the
+	// error instead of crashing the app
+	try
+	{
+		m_poseSampler= std::make_unique<ArucoMarkerPoseSampler>(
+			m_config->intrinsics.intrinsics,
+			frameWidth, frameHeight,
+			m_markerLengthMM,
+			m_markerId,
+			eCharucoDictionaryType::DICT_6X6,
+			12);
+		m_state= eState::CaptureCameraPose;
+	}
+	catch (const cv::Exception& e)
+	{
+		MIKAN_LOG_ERROR("ExtrinsicsWizard::beginPoseCapture") << "OpenCV error creating pose sampler: " << e.what();
+		m_poseSampler= nullptr;
+	}
+}
+
+bool ExtrinsicsWizard::areMarkerParamsValid(std::string& outError) const
+{
+	// DICT_6X6_250 has marker ids 0..249
+	if (m_markerId < 0 || m_markerId > 249)
+	{
+		outError= "Marker ID must be 0-249 (DICT_6X6_250)";
+		return false;
+	}
+	if (m_markerLengthMM <= 0.f)
+	{
+		outError= "Marker size must be positive";
+		return false;
+	}
+	return true;
 }
 
 bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const
@@ -220,21 +246,35 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			ImGui::InputInt("Marker ID", &m_markerId);
 			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.0f");
 
+			std::string paramError;
+			const bool bParamsValid= areMarkerParamsValid(paramError);
+			if (!bParamsValid)
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
+
+			ImGui::BeginDisabled(!bParamsValid);
 			if (ImGui::Button("Export marker PNG..."))
 			{
 				const std::filesystem::path exportPath=
 					PathUtils::getResourceDirectory() / "calibration" / "aruco_marker.png";
-				if (generateArucoMarkerPng(exportPath, m_markerId, eCharucoDictionaryType::DICT_6X6, 1000))
+				try
 				{
-					MIKAN_LOG_INFO("ExtrinsicsWizard") << "Exported aruco marker to " << exportPath;
+					if (generateArucoMarkerPng(exportPath, m_markerId, eCharucoDictionaryType::DICT_6X6, 1000))
+					{
+						MIKAN_LOG_INFO("ExtrinsicsWizard") << "Exported aruco marker to " << exportPath;
+					}
+				}
+				catch (const cv::Exception& e)
+				{
+					MIKAN_LOG_ERROR("ExtrinsicsWizard") << "OpenCV error exporting marker: " << e.what();
 				}
 			}
+			ImGui::EndDisabled();
 
 			ImGui::Separator();
 			const bool bHasVideo= !bgrPreview.empty();
 			if (!bHasVideo)
 				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start a video stream first");
-			ImGui::BeginDisabled(!bHasVideo);
+			ImGui::BeginDisabled(!bHasVideo || !bParamsValid);
 			if (ImGui::Button("Capture Camera Pose", ImVec2(-1, 0)))
 				beginPoseCapture(bgrPreview.cols, bgrPreview.rows);
 			ImGui::EndDisabled();

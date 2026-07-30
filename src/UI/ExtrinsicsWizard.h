@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "glm/ext/matrix_double4x4.hpp"
@@ -47,6 +48,7 @@ private:
 	void drawWizardWindow(const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult);
 	void drawMarkerOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping);
 	void beginPoseCapture(int frameWidth, int frameHeight);
+	bool areMarkerParamsValid(std::string& outError) const;
 	void updateHandScaleCapture(const TrackingFrameResult& trackingResult);
 
 	// Intersects the camera ray through an (undistorted) pixel with the marker

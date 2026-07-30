@@ -46,13 +46,46 @@ void IntrinsicsWizard::exit()
 
 void IntrinsicsWizard::beginCapture(int frameWidth, int frameHeight)
 {
-	m_calibrator= std::make_unique<MonoLensDistortionCalibrator>(
-		frameWidth, frameHeight,
-		m_boardCols, m_boardRows,
-		m_squareLengthMM, m_markerLengthMM,
-		eCharucoDictionaryType::DICT_6X6, // matches the exported board
-		12);
-	m_state= eState::Capture;
+	// cv::aruco::CharucoBoard throws cv::Exception on invalid board geometry
+	// (cols/rows < 2, marker <= 0, square <= marker) - never let that
+	// propagate out of the UI as a crash
+	try
+	{
+		m_calibrator= std::make_unique<MonoLensDistortionCalibrator>(
+			frameWidth, frameHeight,
+			m_boardCols, m_boardRows,
+			m_squareLengthMM, m_markerLengthMM,
+			eCharucoDictionaryType::DICT_6X6, // matches the exported board
+			12);
+		m_state= eState::Capture;
+	}
+	catch (const cv::Exception& e)
+	{
+		m_lastErrorMessage= e.what();
+		MIKAN_LOG_ERROR("IntrinsicsWizard::beginCapture") << "OpenCV error creating calibrator: " << e.what();
+		m_calibrator= nullptr;
+		m_state= eState::Failed;
+	}
+}
+
+bool IntrinsicsWizard::areBoardParamsValid(std::string& outError) const
+{
+	if (m_boardCols < 3 || m_boardRows < 3)
+	{
+		outError= "Board must be at least 3x3 squares";
+		return false;
+	}
+	if (m_markerLengthMM <= 0.f)
+	{
+		outError= "Marker size must be positive";
+		return false;
+	}
+	if (m_squareLengthMM <= m_markerLengthMM)
+	{
+		outError= "Square size must be larger than marker size";
+		return false;
+	}
+	return true;
 }
 
 void IntrinsicsWizard::applyResultToConfig()
@@ -104,6 +137,8 @@ bool IntrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview, ImD
 		}
 		else
 		{
+			m_lastErrorMessage= "Camera calibration solve did not converge - "
+								"try recapturing with better board coverage";
 			m_state= eState::Failed;
 		}
 	}
@@ -165,22 +200,36 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 			ImGui::InputFloat("Square size (mm)", &m_squareLengthMM, 0.f, 0.f, "%.1f");
 			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.1f");
 
+			std::string paramError;
+			const bool bParamsValid= areBoardParamsValid(paramError);
+			if (!bParamsValid)
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
+
+			ImGui::BeginDisabled(!bParamsValid);
 			if (ImGui::Button("Export board PNG..."))
 			{
 				const std::filesystem::path exportPath=
 					PathUtils::getResourceDirectory() / "calibration" / "charuco_board.png";
-				if (generateCharucoBoardPng(exportPath, m_boardCols, m_boardRows, m_squareLengthMM, m_markerLengthMM,
-											eCharucoDictionaryType::DICT_6X6, 10.f))
+				try
 				{
-					MIKAN_LOG_INFO("IntrinsicsWizard") << "Exported charuco board to " << exportPath;
+					if (generateCharucoBoardPng(exportPath, m_boardCols, m_boardRows, m_squareLengthMM,
+												m_markerLengthMM, eCharucoDictionaryType::DICT_6X6, 10.f))
+					{
+						MIKAN_LOG_INFO("IntrinsicsWizard") << "Exported charuco board to " << exportPath;
+					}
+				}
+				catch (const cv::Exception& e)
+				{
+					MIKAN_LOG_ERROR("IntrinsicsWizard") << "OpenCV error exporting board: " << e.what();
 				}
 			}
+			ImGui::EndDisabled();
 
 			ImGui::Separator();
 			const bool bHasVideo= !bgrPreview.empty();
 			if (!bHasVideo)
 				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start a video stream first");
-			ImGui::BeginDisabled(!bHasVideo);
+			ImGui::BeginDisabled(!bHasVideo || !bParamsValid);
 			if (ImGui::Button("Begin Capture", ImVec2(-1, 0)))
 				beginCapture(bgrPreview.cols, bgrPreview.rows);
 			ImGui::EndDisabled();
@@ -234,9 +283,14 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		}
 
 		case eState::Failed:
-			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Calibration solve failed");
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Calibration failed");
+			if (!m_lastErrorMessage.empty())
+				ImGui::TextWrapped("%s", m_lastErrorMessage.c_str());
 			if (ImGui::Button("Try Again"))
+			{
+				m_lastErrorMessage.clear();
 				m_state= eState::SelectBoardParams;
+			}
 			break;
 	}
 
