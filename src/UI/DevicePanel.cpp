@@ -62,7 +62,7 @@ void DevicePanel::applyModeSelection()
 	if (!newModeName.empty() && newModeName != m_videoCapture->getCurrentVideoModeName())
 	{
 		m_videoCapture->setVideoModeByName(newModeName);
-		m_config->video.modeName= m_videoCapture->getCurrentVideoModeName();
+		m_config->camera(0).video.modeName= m_videoCapture->getCurrentVideoModeName();
 		m_config->markDirty();
 	}
 
@@ -91,9 +91,9 @@ void DevicePanel::draw()
 				m_selectedDeviceIndex= i;
 				if (m_videoCapture->openDeviceByPath(m_devicePaths[i]))
 				{
-					m_config->video.devicePath= m_devicePaths[i];
-					m_config->video.deviceName= m_deviceNames[i];
-					m_config->video.modeName= m_videoCapture->getCurrentVideoModeName();
+					m_config->camera(0).video.devicePath= m_devicePaths[i];
+					m_config->camera(0).video.deviceName= m_deviceNames[i];
+					m_config->camera(0).video.modeName= m_videoCapture->getCurrentVideoModeName();
 					m_config->markDirty();
 					refreshModeOptions();
 					m_videoCapture->startStream();

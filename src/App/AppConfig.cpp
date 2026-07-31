@@ -12,7 +12,7 @@
 
 using json= nlohmann::json;
 
-static constexpr int k_configVersion= 1;
+static constexpr int k_configVersion= 2;
 static constexpr float k_autoSaveCooldownSeconds= 3.f;
 
 // -- json helpers ----
@@ -62,6 +62,75 @@ static void distortionFromJson(const json& j, MikanDistortionCoefficients& d)
 	d.k5= j[4]; d.k6= j[5]; d.p1= j[6]; d.p2= j[7];
 }
 
+// -- camera profile (de)serialization ----
+static void cameraProfileFromJson(const json& j, CameraProfile& profile)
+{
+	const json& v= j.value("video", json::object());
+	profile.video.deviceName= v.value("deviceName", "");
+	profile.video.devicePath= v.value("devicePath", "");
+	profile.video.modeName= v.value("modeName", "");
+
+	const json& in= j.value("intrinsics", json::object());
+	profile.intrinsics.present= in.value("present", false);
+	profile.intrinsics.reprojectionError= in.value("reprojectionError", 0.0);
+	MikanMonoIntrinsics& mono= profile.intrinsics.intrinsics;
+	mono.pixel_width= in.value("width", 0.0);
+	mono.pixel_height= in.value("height", 0.0);
+	mono.aspect_ratio= in.value("aspectRatio", 0.0);
+	mono.hfov= in.value("hfov", 0.0);
+	mono.vfov= in.value("vfov", 0.0);
+	mono.znear= in.value("znear", 0.1);
+	mono.zfar= in.value("zfar", 20.0);
+	if (in.contains("distortedCameraMatrix"))
+		matrix3dFromJson(in["distortedCameraMatrix"], mono.distorted_camera_matrix);
+	if (in.contains("undistortedCameraMatrix"))
+		matrix3dFromJson(in["undistortedCameraMatrix"], mono.undistorted_camera_matrix);
+	if (in.contains("distortion"))
+		distortionFromJson(in["distortion"], mono.distortion_coefficients);
+
+	const json& ex= j.value("extrinsics", json::object());
+	profile.extrinsics.present= ex.value("present", false);
+	profile.extrinsics.markerId= ex.value("markerId", 0);
+	profile.extrinsics.markerLengthMM= ex.value("markerLengthMm", 100.0);
+	if (ex.contains("markerFromCamera"))
+		dmat4FromJson(ex["markerFromCamera"], profile.extrinsics.markerFromCamera);
+}
+
+static json cameraProfileToJson(const CameraProfile& profile)
+{
+	const MikanMonoIntrinsics& mono= profile.intrinsics.intrinsics;
+	return {
+		{"video",
+		 {
+			 {"deviceName", profile.video.deviceName},
+			 {"devicePath", profile.video.devicePath},
+			 {"modeName", profile.video.modeName},
+		 }},
+		{"intrinsics",
+		 {
+			 {"present", profile.intrinsics.present},
+			 {"reprojectionError", profile.intrinsics.reprojectionError},
+			 {"width", mono.pixel_width},
+			 {"height", mono.pixel_height},
+			 {"aspectRatio", mono.aspect_ratio},
+			 {"hfov", mono.hfov},
+			 {"vfov", mono.vfov},
+			 {"znear", mono.znear},
+			 {"zfar", mono.zfar},
+			 {"distortedCameraMatrix", matrix3dToJson(mono.distorted_camera_matrix)},
+			 {"undistortedCameraMatrix", matrix3dToJson(mono.undistorted_camera_matrix)},
+			 {"distortion", distortionToJson(mono.distortion_coefficients)},
+		 }},
+		{"extrinsics",
+		 {
+			 {"present", profile.extrinsics.present},
+			 {"markerId", profile.extrinsics.markerId},
+			 {"markerLengthMm", profile.extrinsics.markerLengthMM},
+			 {"markerFromCamera", dmat4ToJson(profile.extrinsics.markerFromCamera)},
+		 }},
+	};
+}
+
 // -- AppConfig ----
 std::string AppConfig::getConfigFilePath()
 {
@@ -98,35 +167,32 @@ bool AppConfig::load()
 		json j;
 		file >> j;
 
-		const json& v= j.value("video", json::object());
-		video.deviceName= v.value("deviceName", "");
-		video.devicePath= v.value("devicePath", "");
-		video.modeName= v.value("modeName", "");
+		cameras.clear();
+		if (j.contains("cameras") && j["cameras"].is_array())
+		{
+			for (const json& cameraJson : j["cameras"])
+			{
+				CameraProfile profile;
+				cameraProfileFromJson(cameraJson, profile);
+				cameras.push_back(profile);
+			}
+		}
+		else
+		{
+			// v1 migration: the old schema kept a single camera's video/
+			// intrinsics/extrinsics at the top level - fold into cameras[0]
+			CameraProfile profile;
+			cameraProfileFromJson(j, profile);
+			cameras.push_back(profile);
+			MIKAN_LOG_INFO("AppConfig::load") << "Migrated v1 single-camera config to camera list";
+		}
+		if (cameras.empty())
+			cameras.emplace_back();
 
-		const json& in= j.value("intrinsics", json::object());
-		intrinsics.present= in.value("present", false);
-		intrinsics.reprojectionError= in.value("reprojectionError", 0.0);
-		MikanMonoIntrinsics& mono= intrinsics.intrinsics;
-		mono.pixel_width= in.value("width", 0.0);
-		mono.pixel_height= in.value("height", 0.0);
-		mono.aspect_ratio= in.value("aspectRatio", 0.0);
-		mono.hfov= in.value("hfov", 0.0);
-		mono.vfov= in.value("vfov", 0.0);
-		mono.znear= in.value("znear", 0.1);
-		mono.zfar= in.value("zfar", 20.0);
-		if (in.contains("distortedCameraMatrix"))
-			matrix3dFromJson(in["distortedCameraMatrix"], mono.distorted_camera_matrix);
-		if (in.contains("undistortedCameraMatrix"))
-			matrix3dFromJson(in["undistortedCameraMatrix"], mono.undistorted_camera_matrix);
-		if (in.contains("distortion"))
-			distortionFromJson(in["distortion"], mono.distortion_coefficients);
-
-		const json& ex= j.value("extrinsics", json::object());
-		extrinsics.present= ex.value("present", false);
-		extrinsics.markerId= ex.value("markerId", 0);
-		extrinsics.markerLengthMM= ex.value("markerLengthMm", 100.0);
-		if (ex.contains("markerFromCamera"))
-			dmat4FromJson(ex["markerFromCamera"], extrinsics.markerFromCamera);
+		const json& fu= j.value("fusion", json::object());
+		fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
+		fusion.softmaxTemperature= fu.value("softmaxTemperature", 8.f);
+		fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
 
 		const json& hs= j.value("handScale", json::object());
 		handScale.present= hs.value("present", false);
@@ -155,6 +221,8 @@ bool AppConfig::load()
 	catch (const std::exception& e)
 	{
 		MIKAN_LOG_ERROR("AppConfig::load") << "Failed to parse " << path << ": " << e.what();
+		if (cameras.empty())
+			cameras.emplace_back();
 		return false;
 	}
 
@@ -167,33 +235,15 @@ bool AppConfig::save() const
 	json j;
 	j["configVersion"]= k_configVersion;
 
-	j["video"]= {
-		{"deviceName", video.deviceName},
-		{"devicePath", video.devicePath},
-		{"modeName", video.modeName},
-	};
+	json camerasJson= json::array();
+	for (const CameraProfile& profile : cameras)
+		camerasJson.push_back(cameraProfileToJson(profile));
+	j["cameras"]= camerasJson;
 
-	const MikanMonoIntrinsics& mono= intrinsics.intrinsics;
-	j["intrinsics"]= {
-		{"present", intrinsics.present},
-		{"reprojectionError", intrinsics.reprojectionError},
-		{"width", mono.pixel_width},
-		{"height", mono.pixel_height},
-		{"aspectRatio", mono.aspect_ratio},
-		{"hfov", mono.hfov},
-		{"vfov", mono.vfov},
-		{"znear", mono.znear},
-		{"zfar", mono.zfar},
-		{"distortedCameraMatrix", matrix3dToJson(mono.distorted_camera_matrix)},
-		{"undistortedCameraMatrix", matrix3dToJson(mono.undistorted_camera_matrix)},
-		{"distortion", distortionToJson(mono.distortion_coefficients)},
-	};
-
-	j["extrinsics"]= {
-		{"present", extrinsics.present},
-		{"markerId", extrinsics.markerId},
-		{"markerLengthMm", extrinsics.markerLengthMM},
-		{"markerFromCamera", dmat4ToJson(extrinsics.markerFromCamera)},
+	j["fusion"]= {
+		{"stalenessWindowMs", fusion.stalenessWindowMs},
+		{"softmaxTemperature", fusion.softmaxTemperature},
+		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
 	};
 
 	j["handScale"]= {

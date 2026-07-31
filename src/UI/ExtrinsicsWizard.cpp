@@ -28,8 +28,8 @@ void ExtrinsicsWizard::enter()
 	m_bWantsClose= false;
 	m_state= eState::VerifySetup;
 
-	m_markerId= m_config->extrinsics.markerId;
-	m_markerLengthMM= (float)m_config->extrinsics.markerLengthMM;
+	m_markerId= m_config->camera(0).extrinsics.markerId;
+	m_markerLengthMM= (float)m_config->camera(0).extrinsics.markerLengthMM;
 	m_bHasCameraPose= false;
 	m_handScaleSamples.clear();
 	m_measuredHandScale= 0.0;
@@ -55,7 +55,7 @@ void ExtrinsicsWizard::beginPoseCapture(int frameWidth, int frameHeight)
 	try
 	{
 		m_poseSampler= std::make_unique<ArucoMarkerPoseSampler>(
-			m_config->intrinsics.intrinsics,
+			m_config->camera(0).intrinsics.intrinsics,
 			frameWidth, frameHeight,
 			m_markerLengthMM,
 			m_markerId,
@@ -146,7 +146,7 @@ glm::dmat4 ExtrinsicsWizard::computeWorldFromCamera() const
 
 bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const
 {
-	return raycastPixelOntoPlane(m_config->intrinsics.intrinsics, m_cameraFromMarker, pixel, outPoint);
+	return raycastPixelOntoPlane(m_config->camera(0).intrinsics.intrinsics, m_cameraFromMarker, pixel, outPoint);
 }
 
 void ExtrinsicsWizard::updateHandScaleCapture(const TrackingFrameResult& trackingResult)
@@ -257,7 +257,7 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 		return;
 	}
 
-	if (!m_config->intrinsics.present)
+	if (!m_config->camera(0).intrinsics.present)
 	{
 		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Camera intrinsics must be calibrated first");
 		if (ImGui::Button("Close"))
@@ -394,10 +394,10 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 					glm::dvec4(0, 0, -1, 0),
 					glm::dvec4(0, 0, 0, 1));
 
-				m_config->extrinsics.present= true;
-				m_config->extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
-				m_config->extrinsics.markerId= m_markerId;
-				m_config->extrinsics.markerLengthMM= m_markerLengthMM;
+				m_config->camera(0).extrinsics.present= true;
+				m_config->camera(0).extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
+				m_config->camera(0).extrinsics.markerId= m_markerId;
+				m_config->camera(0).extrinsics.markerLengthMM= m_markerLengthMM;
 				if (m_measuredHandScale > 0.0)
 				{
 					m_config->handScale.present= true;

@@ -46,7 +46,7 @@ void MainWindow::tryRestoreVideoDeviceFromConfig()
 	AppConfig* config= m_app->getConfig();
 	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
 
-	if (config->video.devicePath.empty())
+	if (config->camera(0).video.devicePath.empty())
 		return;
 
 	// Match by path first, then by friendly name
@@ -57,26 +57,26 @@ void MainWindow::tryRestoreVideoDeviceFromConfig()
 		std::string path, name;
 		if (!videoCapture->getDevicePath(i, path) || !videoCapture->getDeviceFriendlyName(i, name))
 			continue;
-		if (path == config->video.devicePath)
+		if (path == config->camera(0).video.devicePath)
 		{
 			pathToOpen= path;
 			break;
 		}
-		if (pathToOpen.empty() && !config->video.deviceName.empty() && name == config->video.deviceName)
+		if (pathToOpen.empty() && !config->camera(0).video.deviceName.empty() && name == config->camera(0).video.deviceName)
 			pathToOpen= path;
 	}
 
 	if (pathToOpen.empty())
 	{
-		MIKAN_LOG_INFO("MainWindow") << "Persisted video device not found: " << config->video.deviceName;
+		MIKAN_LOG_INFO("MainWindow") << "Persisted video device not found: " << config->camera(0).video.deviceName;
 		return;
 	}
 
 	if (!videoCapture->openDeviceByPath(pathToOpen))
 		return;
 
-	if (!config->video.modeName.empty())
-		videoCapture->setVideoModeByName(config->video.modeName);
+	if (!config->camera(0).video.modeName.empty())
+		videoCapture->setVideoModeByName(config->camera(0).video.modeName);
 
 	m_devicePanel->refreshDeviceList();
 	m_devicePanel->refreshModeOptions();
@@ -146,7 +146,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 			if (ImGui::MenuItem("Intrinsics Wizard...", nullptr, false, !bWizardActive))
 				m_intrinsicsWizard->enter();
 			if (ImGui::MenuItem("Extrinsics + Hand Scale Wizard...", nullptr, false,
-								!bWizardActive && m_app->getConfig()->intrinsics.present))
+								!bWizardActive && m_app->getConfig()->camera(0).intrinsics.present))
 				m_extrinsicsWizard->enter();
 			ImGui::EndMenu();
 		}
@@ -197,12 +197,12 @@ void MainWindow::update(float deltaSeconds)
 		AppConfig* config= m_app->getConfig();
 
 		// markerFromCamera maps GL-convention camera space -> world space
-		const glm::mat4 cameraToWorld= glm::mat4(config->extrinsics.markerFromCamera);
+		const glm::mat4 cameraToWorld= glm::mat4(config->camera(0).extrinsics.markerFromCamera);
 		m_scene3dPanel->draw(
 			m_latestPreview.result,
 			cameraToWorld,
-			config->extrinsics.present,
-			config->intrinsics.present ? &config->intrinsics.intrinsics : nullptr);
+			config->camera(0).extrinsics.present,
+			config->camera(0).intrinsics.present ? &config->camera(0).intrinsics.intrinsics : nullptr);
 	}
 
 	// Wizards (drawn last, on top)

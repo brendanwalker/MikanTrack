@@ -88,12 +88,12 @@ void VisionThread::refreshConfigOnThread()
 	}
 
 	// 3D projection (needs calibrated intrinsics)
-	if (m_config->intrinsics.present)
+	if (m_config->camera(0).intrinsics.present)
 	{
 		if (m_landmarkTo3D == nullptr)
 			m_landmarkTo3D= std::make_unique<LandmarkTo3D>();
 		m_landmarkTo3D->configure(
-			m_config->intrinsics.intrinsics,
+			m_config->camera(0).intrinsics.intrinsics,
 			m_config->handScale.refLengthMeters,
 			m_config->tracking.smoothingEnabled,
 			m_config->tracking.smoothingMinCutoff,
@@ -101,13 +101,13 @@ void VisionThread::refreshConfigOnThread()
 
 		// Undistortion for the ML input + preview
 		if (m_undistorter == nullptr ||
-			m_undistorter->getFrameWidth() != (int)m_config->intrinsics.intrinsics.pixel_width ||
-			m_undistorter->getFrameHeight() != (int)m_config->intrinsics.intrinsics.pixel_height)
+			m_undistorter->getFrameWidth() != (int)m_config->camera(0).intrinsics.intrinsics.pixel_width ||
+			m_undistorter->getFrameHeight() != (int)m_config->camera(0).intrinsics.intrinsics.pixel_height)
 		{
 			m_undistorter= std::make_unique<CVVideoFrameProcessor>(
-				m_config->intrinsics.intrinsics,
-				(int)m_config->intrinsics.intrinsics.pixel_width,
-				(int)m_config->intrinsics.intrinsics.pixel_height);
+				m_config->camera(0).intrinsics.intrinsics,
+				(int)m_config->camera(0).intrinsics.intrinsics.pixel_width,
+				(int)m_config->camera(0).intrinsics.intrinsics.pixel_height);
 		}
 	}
 	else
@@ -202,13 +202,13 @@ void VisionThread::threadLoop()
 				m_landmarkTo3D->process(result);
 
 				// Camera space -> marker/world space (needs extrinsics)
-				if (m_config->extrinsics.present)
+				if (m_config->camera(0).extrinsics.present)
 				{
-					applyWorldTransform(result, m_config->extrinsics.markerFromCamera);
+					applyWorldTransform(result, m_config->camera(0).extrinsics.markerFromCamera);
 
 					// Recompute fallback elbows in world space with the
 					// table-plane clamp (fixes below-the-table elbows)
-					m_landmarkTo3D->refineFallbackArms(result, m_config->extrinsics.markerFromCamera);
+					m_landmarkTo3D->refineFallbackArms(result, m_config->camera(0).extrinsics.markerFromCamera);
 				}
 			}
 

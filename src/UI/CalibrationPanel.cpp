@@ -22,16 +22,16 @@ CalibrationPanel::DrawResult CalibrationPanel::draw(bool bWizardActive)
 	}
 
 	ImGui::SeparatorText("Camera Intrinsics");
-	if (m_config->intrinsics.present)
+	if (m_config->camera(0).intrinsics.present)
 	{
 		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
 		ImGui::Text("%.0fx%.0f  reproj %.3f px",
-					m_config->intrinsics.intrinsics.pixel_width,
-					m_config->intrinsics.intrinsics.pixel_height,
-					m_config->intrinsics.reprojectionError);
+					m_config->camera(0).intrinsics.intrinsics.pixel_width,
+					m_config->camera(0).intrinsics.intrinsics.pixel_height,
+					m_config->camera(0).intrinsics.reprojectionError);
 		ImGui::Text("hfov %.1f  vfov %.1f",
-					m_config->intrinsics.intrinsics.hfov,
-					m_config->intrinsics.intrinsics.vfov);
+					m_config->camera(0).intrinsics.intrinsics.hfov,
+					m_config->camera(0).intrinsics.intrinsics.vfov);
 	}
 	else
 	{
@@ -43,10 +43,10 @@ CalibrationPanel::DrawResult CalibrationPanel::draw(bool bWizardActive)
 	ImGui::EndDisabled();
 
 	ImGui::SeparatorText("Camera Extrinsics + Hand Scale");
-	if (m_config->extrinsics.present)
+	if (m_config->camera(0).extrinsics.present)
 	{
 		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
-		ImGui::Text("Camera height: %.2f m", m_config->extrinsics.markerFromCamera[3].z);
+		ImGui::Text("Camera height: %.2f m", m_config->camera(0).extrinsics.markerFromCamera[3].z);
 	}
 	else
 	{
@@ -57,11 +57,11 @@ CalibrationPanel::DrawResult CalibrationPanel::draw(bool bWizardActive)
 	else
 		ImGui::TextDisabled("Hand scale: default %.1f cm", m_config->handScale.refLengthMeters * 100.0);
 
-	ImGui::BeginDisabled(bWizardActive || !m_config->intrinsics.present);
+	ImGui::BeginDisabled(bWizardActive || !m_config->camera(0).intrinsics.present);
 	if (ImGui::Button("Calibrate Extrinsics...", ImVec2(-1, 0)))
 		result.bLaunchExtrinsicsWizard= true;
 	ImGui::EndDisabled();
-	if (!m_config->intrinsics.present)
+	if (!m_config->camera(0).intrinsics.present)
 		ImGui::TextDisabled("(requires intrinsics)");
 
 	ImGui::End();

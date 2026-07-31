@@ -93,9 +93,9 @@ void IntrinsicsWizard::applyResultToConfig()
 	MikanMonoIntrinsics monoIntrinsics;
 	if (m_calibrator->getCameraCalibration(&monoIntrinsics))
 	{
-		m_config->intrinsics.present= true;
-		m_config->intrinsics.intrinsics= monoIntrinsics;
-		m_config->intrinsics.reprojectionError= m_calibrator->getReprojectionError();
+		m_config->camera(0).intrinsics.present= true;
+		m_config->camera(0).intrinsics.intrinsics= monoIntrinsics;
+		m_config->camera(0).intrinsics.reprojectionError= m_calibrator->getReprojectionError();
 		m_config->charucoBoard.cols= m_boardCols;
 		m_config->charucoBoard.rows= m_boardRows;
 		m_config->charucoBoard.squareLengthMM= m_squareLengthMM;
@@ -272,7 +272,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		case eState::TestUndistort:
 		{
 			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration complete");
-			ImGui::Text("Reprojection error: %.3f px", m_config->intrinsics.reprojectionError);
+			ImGui::Text("Reprojection error: %.3f px", m_config->camera(0).intrinsics.reprojectionError);
 			ImGui::TextWrapped(
 				"The preview now shows the undistorted image. "
 				"Straight lines in the scene should look straight.");

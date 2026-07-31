@@ -1,7 +1,9 @@
 #pragma once
 
 #include <array>
+#include <cassert>
 #include <string>
+#include <vector>
 
 #include "glm/ext/matrix_double4x4.hpp"
 
@@ -64,18 +66,54 @@ struct OscConfig
 	int maxRateHz= 60;
 };
 
-class AppConfig
+// Everything specific to one physical camera. Each camera calibrates
+// intrinsics + extrinsics against the same printed marker, so all cameras
+// share one world frame (which is what makes multi-camera fusion possible).
+struct CameraProfile
 {
-public:
 	VideoConfig video;
 	IntrinsicsConfig intrinsics;
 	ExtrinsicsConfig extrinsics;
+};
+
+struct FusionConfig
+{
+	// A camera's last result older than this is excluded from fusion
+	double stalenessWindowMs= 66.0;
+	// Softmax sharpness for the per-landmark visibility weights: higher
+	// values let the better view dominate faster
+	float softmaxTemperature= 8.f;
+	// Two cameras' world wrists further apart than this can't be the same
+	// physical hand (cross-camera handedness-conflict gate)
+	float wristMatchMaxDistM= 0.25f;
+};
+
+class AppConfig
+{
+public:
+	// invariant: never empty (default-constructed with one camera)
+	std::vector<CameraProfile> cameras= std::vector<CameraProfile>(1);
 	HandScaleConfig handScale;
 	CharucoBoardConfig charucoBoard;
 	TrackingConfig tracking;
 	OscConfig osc;
+	FusionConfig fusion;
 
-	// Loads from the default config path; returns false (and keeps defaults) if missing/corrupt
+	CameraProfile& camera(size_t index)
+	{
+		assert(index < cameras.size());
+		return cameras[index];
+	}
+	const CameraProfile& camera(size_t index) const
+	{
+		assert(index < cameras.size());
+		return cameras[index];
+	}
+	size_t cameraCount() const { return cameras.size(); }
+
+	// Loads from the default config path; returns false (and keeps defaults)
+	// if missing/corrupt. Migrates v1 single-camera configs into cameras[0].
+	// Guarantees cameras.size() >= 1 afterwards.
 	bool load();
 	bool save() const;
 
