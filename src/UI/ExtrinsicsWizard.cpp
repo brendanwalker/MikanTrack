@@ -192,10 +192,11 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 							  const TrackingFrameResult& trackingResult, ImDrawList* overlayDrawList,
 							  const ImageToScreenMapping& mapping)
 {
-	(void)deltaSeconds;
-
 	if (!m_bActive)
 		return false;
+
+	if (m_state == eState::CaptureHandScale && m_handScaleCountdown > 0.f)
+		m_handScaleCountdown-= deltaSeconds;
 
 	// Marker pose sampling
 	if ((m_state == eState::CaptureCameraPose || m_state == eState::VerifySetup) &&
@@ -223,7 +224,7 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 
 	drawWizardWindow(bgrPreview, trackingResult);
 
-	if (m_state == eState::CaptureHandScale)
+	if (m_state == eState::CaptureHandScale && m_handScaleCountdown <= 0.f)
 		updateHandScaleCapture(trackingResult);
 
 	return !m_bWantsClose;
@@ -342,6 +343,7 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			if (ImGui::Button("Looks Right - Measure Hand Scale", ImVec2(-1, 0)))
 			{
 				m_handScaleSamples.clear();
+				m_handScaleCountdown= k_handScaleCountdownSeconds;
 				m_visionThread->setTrackingEnabled(m_cameraIndex, true); // hand landmarks needed now
 				m_state= eState::CaptureHandScale;
 			}
@@ -356,8 +358,24 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 				"Lay your hand FLAT on the table next to the marker, fingers relaxed. "
 				"Hold still while samples are collected.");
 
-			ImGui::ProgressBar(
-				(float)m_handScaleSamples.size() / (float)k_handScaleSampleCount, ImVec2(-1, 0));
+			if (m_handScaleCountdown > 0.f)
+			{
+				// Big countdown so the hand can settle before sampling begins
+				char countdownText[16];
+				snprintf(countdownText, sizeof(countdownText), "%d", (int)ceilf(m_handScaleCountdown));
+				ImGui::SetWindowFontScale(3.f);
+				const float textWidth= ImGui::CalcTextSize(countdownText).x;
+				ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
+				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
+				ImGui::SetWindowFontScale(1.f);
+				ImGui::ProgressBar(
+					1.f - m_handScaleCountdown / k_handScaleCountdownSeconds, ImVec2(-1, 4), "");
+			}
+			else
+			{
+				ImGui::ProgressBar(
+					(float)m_handScaleSamples.size() / (float)k_handScaleSampleCount, ImVec2(-1, 0));
+			}
 
 			bool bHandVisible= false;
 			for (const TrackedHand& hand : trackingResult.hands)
@@ -412,6 +430,7 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			if (ImGui::Button("Redo Hand Scale"))
 			{
 				m_handScaleSamples.clear();
+				m_handScaleCountdown= k_handScaleCountdownSeconds;
 				m_state= eState::CaptureHandScale;
 			}
 			break;

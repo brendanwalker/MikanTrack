@@ -41,6 +41,13 @@ struct HandFusionConfig
 // visibility score (presence x how face-on the palm is to that camera).
 // Validated approach from WannaKhrop/multicamera-hand-tracking.
 //
+// Left/Right assignment happens HERE, not per camera: observations from all
+// cameras are clustered by world wrist proximity (one cluster = one physical
+// hand), then clusters are assigned sides by weighted per-camera classifier
+// votes plus temporal continuity of the fused tracks. A camera that sees only
+// one hand routinely mislabels it (nothing to disambiguate against) - trusting
+// per-camera labels collapses both physical hands into one fusion slot.
+//
 // A single fresh candidate passes through exactly (the N=1 identity path).
 // Owns the post-fusion one-euro smoothing (per-camera LandmarkTo3D must run
 // with smoothing disabled to avoid double-filtering).
@@ -61,6 +68,19 @@ public:
 	// (-1 when the side wasn't tracked)
 	int getDominantCamera(eHandSide side) const { return m_dominantCamera[(int)side]; }
 
+	// Stereo hand-scale estimation: when two cameras observe the same physical
+	// hand, the two view rays through its wrist triangulate the true depth,
+	// which implies a correction factor for the configured hand scale (each
+	// camera's depth estimate scales linearly with the assumed wrist->knuckle
+	// length). Returns true and the correction from the last fuse when a valid
+	// two-camera observation was available (factor ~1 = scale is correct,
+	// <1 = configured hand scale is too large).
+	bool getStereoScaleSample(float& outCorrectionFactor) const
+	{
+		outCorrectionFactor= m_stereoScaleCorrection;
+		return m_bStereoScaleFresh;
+	}
+
 	// -- Pure scoring helpers (exposed for the --test-fusion self test) -----
 
 	// Palm plane normal from the world landmarks (unnormalized direction;
@@ -80,10 +100,23 @@ private:
 		const TrackedHand* hand= nullptr;
 		const TrackedArm* arm= nullptr;
 		float baseScore= 0.f; // presence x mean visibility (candidate ranking)
+		// per-camera classifier side vote weight (presence x label confidence)
+		float sideVoteWeight= 0.f;
 		std::array<float, HAND_LANDMARK_COUNT> landmarkScore{};
 	};
 
-	void fuseSide(eHandSide side, std::vector<HandCandidate>& candidates, TrackedHand& outHand, TrackedArm& outArm);
+	// One physical hand: all cameras' observations of it
+	struct HandCluster
+	{
+		std::vector<HandCandidate> candidates;
+		glm::vec3 wristWorld{0.f}; // best candidate's wrist (cluster anchor)
+		float bestScore= 0.f;
+	};
+
+	// Affinity of a cluster for a side: classifier votes + temporal continuity
+	float sideAffinity(const HandCluster& cluster, eHandSide side) const;
+	void updateStereoScale(const HandCluster& cluster);
+	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, TrackedArm& outArm);
 	void applySmoothing(TrackingFrameResult& ioFused);
 
 	HandFusionConfig m_config;
@@ -94,5 +127,12 @@ private:
 	double m_lastTimestampMs= -1.0;
 	bool m_bSideWasTracked[2]= {false, false};
 
+	// Temporal side-assignment prior: last fused wrist position per side
+	glm::vec3 m_lastFusedWrist[2]= {glm::vec3(0.f), glm::vec3(0.f)};
+	bool m_bLastFusedWristValid[2]= {false, false};
+
 	int m_dominantCamera[2]= {-1, -1};
+
+	float m_stereoScaleCorrection= 1.f;
+	bool m_bStereoScaleFresh= false;
 };

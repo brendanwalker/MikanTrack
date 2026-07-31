@@ -201,6 +201,10 @@ void VisionThread::refreshConfigOnThread()
 		context.lastResult.cameraIndex= context.cameraIndex;
 	}
 
+	// Config hand scale is the baseline the stereo correction applies to;
+	// a refresh (e.g. after saving a new calibrated scale) resets the EMA
+	m_autoScaleFactor= 1.f;
+
 	// Fusion
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
@@ -369,6 +373,23 @@ void VisionThread::threadLoop()
 			m_fusion.fuse(fusionCandidates, newestTimestampMs, outputResult);
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
 			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
+
+			// Stereo auto hand-scale: slow EMA over the triangulated
+			// correction, applied live to every camera's 3D projection
+			float scaleSample= 1.f;
+			if (m_config->tracking.autoHandScaleFromStereo && m_fusion.getStereoScaleSample(scaleSample))
+			{
+				constexpr float kScaleEmaAlpha= 0.02f;
+				const float ema= m_autoScaleFactor.load() * (1.f - kScaleEmaAlpha) + scaleSample * kScaleEmaAlpha;
+				m_autoScaleFactor= ema;
+
+				const float effectiveRefLength= (float)m_config->handScale.refLengthMeters * ema;
+				for (const std::unique_ptr<CameraContext>& context : m_cameras)
+				{
+					if (context->landmarkTo3D != nullptr)
+						context->landmarkTo3D->setRefLengthMeters(effectiveRefLength);
+				}
+			}
 		}
 		else
 		{

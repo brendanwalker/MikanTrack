@@ -52,6 +52,9 @@ struct TrackingConfig
 {
 	bool flipHandedness= true;
 	int detectorIntervalFrames= 30;
+	// With two calibrated cameras, continuously refine the hand scale from
+	// stereo wrist triangulation (overrides the wizard-measured scale live)
+	bool autoHandScaleFromStereo= true;
 	float smoothingMinCutoff= 1.0f;
 	float smoothingBeta= 0.05f;
 	bool smoothingEnabled= true;

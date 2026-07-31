@@ -95,5 +95,9 @@ private:
 	// Hand-scale sampling
 	std::vector<double> m_handScaleSamples;
 	double m_measuredHandScale= 0.0;
+	// Countdown before sampling starts, so the hand can settle into a flat
+	// pose after clicking the button
+	float m_handScaleCountdown= 0.f;
 	static constexpr int k_handScaleSampleCount= 12;
+	static constexpr float k_handScaleCountdownSeconds= 3.f;
 };

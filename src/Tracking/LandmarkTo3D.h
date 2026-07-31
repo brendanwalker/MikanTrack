@@ -43,6 +43,14 @@ public:
 	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms
 	void process(TrackingFrameResult& ioResult);
 
+	// Live hand-scale override (stereo auto-scale); does not touch filter state
+	void setRefLengthMeters(float refLengthMeters)
+	{
+		if (refLengthMeters > 1e-4f)
+			m_refLengthMeters= refLengthMeters;
+	}
+	float getRefLengthMeters() const { return m_refLengthMeters; }
+
 	// Recomputes fallback (hand-derived) elbows in world space, after
 	// applyWorldTransform has run. The forearm is extended from the hand's
 	// world-space orientation with an anatomical length derived from the

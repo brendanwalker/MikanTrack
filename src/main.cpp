@@ -438,6 +438,77 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (e) Handedness-mislabel recovery: camera 1 sees only the LEFT hand
+			// (decisively labeled), camera 2 sees only the RIGHT hand but its
+			// classifier MISLABELS it Left (weakly). Fusion must output two
+			// separate hands, not collapse them into one side slot.
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
+				TrackedHand leftHand= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
+				leftHand.side= eHandSide::Left;
+				leftHand.presence= 0.9f;
+				leftHand.handednessScore= 0.05f; // decisive Left
+
+				TrackedHand rightHandMislabeled= makeHand(wristTruth + glm::vec3(0.3f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
+				rightHandMislabeled.side= eHandSide::Left; // WRONG label from camera 2
+				rightHandMislabeled.presence= 0.7f;
+				rightHandMislabeled.handednessScore= 0.52f; // indecisive
+
+				CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, leftHand);
+				CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, rightHandMislabeled);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				const bool bLeftTracked= fused.hands[(int)eHandSide::Left].tracked;
+				const bool bRightTracked= fused.hands[(int)eHandSide::Right].tracked;
+				float leftDist= 1e9f, rightDist= 1e9f;
+				if (bLeftTracked)
+					leftDist= rmsError(fused.hands[(int)eHandSide::Left], leftHand);
+				if (bRightTracked)
+					rightDist= rmsError(fused.hands[(int)eHandSide::Right], rightHandMislabeled);
+
+				MIKAN_LOG_INFO("test-fusion") << "(e) mislabel recovery: L tracked=" << bLeftTracked
+					<< " R tracked=" << bRightTracked << " Lerr mm=" << leftDist * 1000.f
+					<< " Rerr mm=" << rightDist * 1000.f;
+				if (!bLeftTracked || !bRightTracked || leftDist > 0.01f || rightDist > 0.01f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(e) FAILED: two physical hands must fuse to two sides despite a mislabel";
+					result= 1;
+				}
+			}
+
+			// (f) Stereo hand-scale: both cameras observe the same hand with a
+			// 20% depth overestimate (configured hand scale too large). The
+			// wrist-ray triangulation must recover correction ~1/1.2.
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
+				const float depthError= 1.2f;
+				const glm::vec3 wristA= cam1Pos + depthError * (wristTruth - cam1Pos);
+				const glm::vec3 wristB= cam2Pos + depthError * (wristTruth - cam2Pos);
+
+				TrackedHand handA= makeHand(wristA, u, v, glm::vec3(0), 0.f);
+				TrackedHand handB= makeHand(wristB, u, v, glm::vec3(0), 0.f);
+
+				CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
+				CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				float correction= 0.f;
+				const bool bHasSample= fusion.getStereoScaleSample(correction);
+				const float expected= 1.f / depthError;
+				MIKAN_LOG_INFO("test-fusion") << "(f) stereo scale: correction=" << correction
+					<< " (expected " << expected << ")";
+				if (!bHasSample || fabsf(correction - expected) > 0.01f)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(f) FAILED: triangulated scale correction mismatch";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

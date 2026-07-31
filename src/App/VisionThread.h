@@ -71,6 +71,11 @@ public:
 	// Per-side camera index that dominated the last fusion (-1 = untracked)
 	int getDominantCamera(eHandSide side) const { return m_dominantCamera[(int)side].load(); }
 
+	// Stereo auto hand-scale: current correction factor over the configured
+	// hand scale (1 = unchanged), refined from cross-camera wrist
+	// triangulation when enabled and both cameras see the same hand
+	float getAutoHandScaleFactor() const { return m_autoScaleFactor.load(); }
+
 	// Re-reads config (cameras/intrinsics/extrinsics/hand scale/tracking/
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
@@ -129,6 +134,7 @@ private:
 	std::atomic_bool m_bConfigRefreshRequested{true};
 	std::atomic<float> m_lastInferenceMs{0.f};
 	std::atomic<int> m_dominantCamera[2]= {-1, -1};
+	std::atomic<float> m_autoScaleFactor{1.f};
 
 	// Fused result handoff (mutex-guarded, latest-wins)
 	std::mutex m_fusedMutex;
