@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "VisionThread.h" // VisionPreviewFrame
 
@@ -23,12 +24,13 @@ public:
 	// Per-frame UI update (inside an active ImGui frame)
 	void update(float deltaSeconds);
 
-	// Reopens the device/mode persisted in the config (called once at startup)
+	// Reopens each configured camera's device/mode (called once at startup)
 	void tryRestoreVideoDeviceFromConfig();
 
 private:
 	void drawDockspaceAndMenuBar();
-	void drawStatusBar();
+	// Restores one camera's persisted device by path, then by friendly name
+	bool restoreCameraDevice(int cameraIndex);
 
 	App* m_app;
 
@@ -39,9 +41,10 @@ private:
 	std::unique_ptr<IntrinsicsWizard> m_intrinsicsWizard;
 	std::unique_ptr<ExtrinsicsWizard> m_extrinsicsWizard;
 
-	// Latest preview from the vision thread (kept between updates so the UI
-	// still has an image when no new frame arrived this tick)
-	VisionPreviewFrame m_latestPreview;
+	// Latest per-camera previews + the fused result (kept between updates so
+	// the UI still has data when no new frame arrived this tick)
+	std::vector<VisionPreviewFrame> m_latestPreviews;
+	TrackingFrameResult m_latestFused;
 
 	bool m_bShowLogPanel= true;
 	bool m_bDockLayoutInitialized= false;

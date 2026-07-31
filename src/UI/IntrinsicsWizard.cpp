@@ -18,8 +18,9 @@ IntrinsicsWizard::IntrinsicsWizard(AppConfig* config, VisionThread* visionThread
 
 IntrinsicsWizard::~IntrinsicsWizard()= default;
 
-void IntrinsicsWizard::enter()
+void IntrinsicsWizard::enter(int cameraIndex)
 {
+	m_cameraIndex= cameraIndex;
 	m_bActive= true;
 	m_bWantsClose= false;
 	m_state= eState::SelectBoardParams;
@@ -29,9 +30,10 @@ void IntrinsicsWizard::enter()
 	m_squareLengthMM= (float)m_config->charucoBoard.squareLengthMM;
 	m_markerLengthMM= (float)m_config->charucoBoard.markerLengthMM;
 
-	// Raw distorted frames are required for intrinsics samples
-	m_visionThread->setTrackingEnabled(false);
-	m_visionThread->setUndistortEnabled(false);
+	// Raw distorted frames are required for intrinsics samples.
+	// Only this camera is affected - the others keep tracking.
+	m_visionThread->setTrackingEnabled(m_cameraIndex, false);
+	m_visionThread->setUndistortEnabled(m_cameraIndex, false);
 }
 
 void IntrinsicsWizard::exit()
@@ -39,8 +41,8 @@ void IntrinsicsWizard::exit()
 	m_calibrator= nullptr;
 	m_bActive= false;
 
-	m_visionThread->setTrackingEnabled(true);
-	m_visionThread->setUndistortEnabled(true);
+	m_visionThread->setTrackingEnabled(m_cameraIndex, true);
+	m_visionThread->setUndistortEnabled(m_cameraIndex, true);
 	m_visionThread->requestConfigRefresh();
 }
 
@@ -93,9 +95,9 @@ void IntrinsicsWizard::applyResultToConfig()
 	MikanMonoIntrinsics monoIntrinsics;
 	if (m_calibrator->getCameraCalibration(&monoIntrinsics))
 	{
-		m_config->camera(0).intrinsics.present= true;
-		m_config->camera(0).intrinsics.intrinsics= monoIntrinsics;
-		m_config->camera(0).intrinsics.reprojectionError= m_calibrator->getReprojectionError();
+		m_config->camera(m_cameraIndex).intrinsics.present= true;
+		m_config->camera(m_cameraIndex).intrinsics.intrinsics= monoIntrinsics;
+		m_config->camera(m_cameraIndex).intrinsics.reprojectionError= m_calibrator->getReprojectionError();
 		m_config->charucoBoard.cols= m_boardCols;
 		m_config->charucoBoard.rows= m_boardRows;
 		m_config->charucoBoard.squareLengthMM= m_squareLengthMM;
@@ -131,7 +133,7 @@ bool IntrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview, ImD
 		{
 			applyResultToConfig();
 			// Show the live undistorted view for verification
-			m_visionThread->setUndistortEnabled(true);
+			m_visionThread->setUndistortEnabled(m_cameraIndex, true);
 			m_visionThread->requestConfigRefresh();
 			m_state= eState::TestUndistort;
 		}
@@ -272,7 +274,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		case eState::TestUndistort:
 		{
 			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration complete");
-			ImGui::Text("Reprojection error: %.3f px", m_config->camera(0).intrinsics.reprojectionError);
+			ImGui::Text("Reprojection error: %.3f px", m_config->camera(m_cameraIndex).intrinsics.reprojectionError);
 			ImGui::TextWrapped(
 				"The preview now shows the undistorted image. "
 				"Straight lines in the scene should look straight.");
@@ -281,7 +283,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 				m_bWantsClose= true;
 			if (ImGui::Button("Redo Capture"))
 			{
-				m_visionThread->setUndistortEnabled(false);
+				m_visionThread->setUndistortEnabled(m_cameraIndex, false);
 				m_state= eState::SelectBoardParams;
 			}
 			break;

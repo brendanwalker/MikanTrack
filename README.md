@@ -26,6 +26,12 @@ streamed elbow as an IK hint and solve the arm with Two-Bone IK in-engine.
 - Two-hand tracking (21 landmarks each) + estimated elbows/forearms derived
   from the hand orientation and table plane (drawn dashed and sent with low
   confidence so consumers can treat them as IK hints)
+- **Multi-camera fusion**: add a second camera at a different angle (Device
+  panel -> Add Camera), calibrate it against the same printed marker, and the
+  per-landmark visibility-weighted blend rides through hand poses that defeat
+  a single view (e.g. clapping edge-on to an overhead camera). Verify camera
+  agreement with the dimmed per-camera skeletons toggle in the 3D view.
+  Prefer 720p per camera and separate USB controllers for two streams.
 - Live preview with skeleton wireframe overlay; alternate 3D scene view
   (marker grid, camera frustum, 3D skeletons, orbit camera)
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)

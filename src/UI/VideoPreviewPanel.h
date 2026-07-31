@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <vector>
 
 #include "opencv2/core/mat.hpp"
 
@@ -8,39 +9,56 @@
 #include "TrackingTypes.h"
 
 class GlTexture;
-class VisionThread;
 
-// Central video preview: streams the latest camera frame into a GlTexture,
-// displays it letterboxed inside the panel, and draws the tracking overlay.
+// Central video preview: all cameras rendered side by side, each letterboxed
+// in its own pane with its own tracking overlay and image->screen mapping.
+// The "active" camera (used by the calibration wizards) gets a highlight
+// border; wizards pin it via setActiveCamera().
 class VideoPreviewPanel
 {
 public:
 	VideoPreviewPanel();
 	~VideoPreviewPanel();
 
-	// Uploads a new BGR frame (call when the vision thread published one)
-	void setFrame(const cv::Mat& bgr);
+	void setCameraCount(size_t count);
+	size_t getCameraCount() const { return m_panes.size(); }
 
-	// Draws the panel; result is used for the overlay + HUD
-	void draw(const TrackingFrameResult& result, const char* executionProvider, bool bHasFrame);
+	// Uploads a new BGR frame for one camera
+	void setFrame(int cameraIndex, const cv::Mat& bgr);
 
-	// Mapping from full-frame image pixels to screen pixels for the most
-	// recently drawn image (valid after draw)
-	const ImageToScreenMapping& getImageToScreenMapping() const { return m_mapping; }
+	// Draws the panel. results/executionProviders/dominantSides are indexed
+	// by camera; dominantSides marks which sides this camera won in the last
+	// fusion (for the "FUSED L/R" badge), pass nullptr to skip.
+	void draw(const std::vector<const TrackingFrameResult*>& results,
+			  const std::vector<const char*>& executionProviders);
+
+	// Per-camera mapping from full-frame image pixels to screen pixels for the
+	// most recently drawn frame (valid after draw)
+	const ImageToScreenMapping& getImageToScreenMapping(int cameraIndex) const;
+
+	// Draw list for wizard overlays (nullptr when the panel isn't visible)
+	ImDrawList* getLastDrawList() const { return m_lastDrawList; }
+
+	void setActiveCamera(int cameraIndex) { m_activeCamera= cameraIndex; }
+	int getActiveCamera() const { return m_activeCamera; }
 
 	bool getShowDetectionBoxes() const { return m_bShowDetectionBoxes; }
 	void setShowDetectionBoxes(bool bShow) { m_bShowDetectionBoxes= bShow; }
 	bool getShowOverlay() const { return m_bShowOverlay; }
 	void setShowOverlay(bool bShow) { m_bShowOverlay= bShow; }
 
-	// Lets wizards draw additional overlay elements over the video image.
-	// Returns nullptr when the panel isn't visible.
-	ImDrawList* getLastDrawList() const { return m_lastDrawList; }
-
 private:
-	std::unique_ptr<GlTexture> m_texture;
-	ImageToScreenMapping m_mapping;
+	struct CameraPane
+	{
+		std::unique_ptr<GlTexture> texture;
+		ImageToScreenMapping mapping;
+		bool bHasFrame= false;
+	};
+
+	std::vector<std::unique_ptr<CameraPane>> m_panes;
+	ImageToScreenMapping m_fallbackMapping;
 	ImDrawList* m_lastDrawList= nullptr;
+	int m_activeCamera= 0;
 
 	bool m_bShowOverlay= true;
 	bool m_bShowDetectionBoxes= false;

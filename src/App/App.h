@@ -21,6 +21,10 @@ public:
 	int exec(int argc, char** argv);
 	void requestShutdown() { m_bShutdownRequested= true; }
 
+	// Applies a config camera-count change: restarts the vision thread (its
+	// context list is fixed while running) and resizes the capture slots
+	void applyCameraCountChange();
+
 	AppConfig* getConfig() { return m_config.get(); }
 	VideoCaptureSystem* getVideoCapture() { return m_videoCapture.get(); }
 	VisionThread* getVisionThread() { return m_visionThread.get(); }

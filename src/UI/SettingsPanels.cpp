@@ -3,10 +3,12 @@
 #include "imgui.h"
 
 #include "AppConfig.h"
+#include "Scene3dPanel.h"
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
 
-void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionThread, VideoPreviewPanel* previewPanel)
+void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionThread,
+									   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel)
 {
 	if (!ImGui::Begin("Tracking"))
 	{
@@ -28,6 +30,30 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bChanged|= ImGui::SliderFloat("Min cutoff", &tracking.smoothingMinCutoff, 0.1f, 5.f, "%.2f Hz");
 	bChanged|= ImGui::SliderFloat("Beta", &tracking.smoothingBeta, 0.f, 0.5f, "%.3f");
 
+	if (config->cameraCount() > 1)
+	{
+		ImGui::SeparatorText("Fusion");
+		FusionConfig& fusion= config->fusion;
+
+		float stalenessMs= (float)fusion.stalenessWindowMs;
+		if (ImGui::SliderFloat("Staleness window", &stalenessMs, 20.f, 200.f, "%.0f ms"))
+		{
+			fusion.stalenessWindowMs= stalenessMs;
+			bChanged= true;
+		}
+		ImGui::SetItemTooltip("A camera's last result older than this is\nexcluded from fusion");
+
+		bChanged|= ImGui::SliderFloat("Softmax temperature", &fusion.softmaxTemperature, 1.f, 30.f, "%.1f");
+		ImGui::SetItemTooltip("Higher = the better view dominates faster\n(30 approaches best-camera switching)");
+
+		// Which camera won each hand in the last fusion
+		const int leftCam= visionThread->getDominantCamera(eHandSide::Left);
+		const int rightCam= visionThread->getDominantCamera(eHandSide::Right);
+		ImGui::Text("Dominant camera  L: %s  R: %s",
+					leftCam >= 0 ? std::to_string(leftCam + 1).c_str() : "-",
+					rightCam >= 0 ? std::to_string(rightCam + 1).c_str() : "-");
+	}
+
 	ImGui::SeparatorText("Overlay");
 	bool bShowOverlay= previewPanel->getShowOverlay();
 	if (ImGui::Checkbox("Show skeleton overlay", &bShowOverlay))
@@ -35,10 +61,21 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bool bShowBoxes= previewPanel->getShowDetectionBoxes();
 	if (ImGui::Checkbox("Show detection boxes", &bShowBoxes))
 		previewPanel->setShowDetectionBoxes(bShowBoxes);
+	if (config->cameraCount() > 1)
+	{
+		bool bShowPerCamera= scene3dPanel->getShowPerCameraSkeletons();
+		if (ImGui::Checkbox("3D: per-camera skeletons", &bShowPerCamera))
+			scene3dPanel->setShowPerCameraSkeletons(bShowPerCamera);
+		ImGui::SetItemTooltip(
+			"Draws each camera's unfused skeleton dimmed in that camera's\n"
+			"color - use to verify the cameras agree in world space\n"
+			"(they should overlap within a few cm)");
+	}
 
 	ImGui::SeparatorText("Inference");
-	ImGui::Text("Execution provider: %s", visionThread->getActiveExecutionProvider());
-	ImGui::Text("Inference: %.1f ms", visionThread->getLastInferenceMs());
+	for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+		ImGui::Text("Camera %d EP: %s", cameraIndex + 1, visionThread->getActiveExecutionProvider(cameraIndex));
+	ImGui::Text("Inference (all cameras): %.1f ms", visionThread->getLastInferenceMs());
 
 	if (bChanged)
 	{

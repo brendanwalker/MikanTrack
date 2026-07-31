@@ -8,6 +8,7 @@
 #include "ArucoMarkerPoseSampler.h"
 #include "CalibrationPatternFinder_Charuco.h"
 #include "ExtrinsicsWizard.h"
+#include "HandFusion.h"
 #include "HandTrackingPipeline.h"
 #include "Logger.h"
 #include "MonoLensDistortionCalibrator.h"
@@ -271,6 +272,174 @@ static int runApp(int argc, char** argv)
 				MIKAN_LOG_ERROR("test-extrinsics") << "cv::Exception: " << e.what();
 				result= 1;
 			}
+
+			log_dispose();
+			return result;
+		}
+
+		if (std::string(argv[i]) == "--test-fusion")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-fusion.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+
+			// Ground-truth left hand: palm plane spanned by basis (u, v),
+			// hovering 10cm over the table around world (0.1, 0.05)
+			auto makeHand= [](const glm::vec3& wrist, const glm::vec3& u, const glm::vec3& v,
+							  const glm::vec3& noiseSeed, float noiseAmp) {
+				TrackedHand hand;
+				hand.tracked= true;
+				hand.hasWorldSpace= true;
+				hand.side= eHandSide::Left;
+				hand.presence= 0.9f;
+				for (int lm= 0; lm < HAND_LANDMARK_COUNT; ++lm)
+				{
+					// crude but plausible layout: fingers fan out along +v with
+					// spread along u, scaled to a ~17cm hand
+					const float along= 0.02f + 0.15f * (float)(lm % 4) / 4.f * (lm >= 1 ? 1.f : 0.f);
+					const float spread= ((float)(lm / 4) - 2.f) * 0.02f;
+					glm::vec3 point= wrist + v * along + u * spread;
+
+					// deterministic per-landmark pseudo-noise
+					const float phase= (float)lm * 1.7f;
+					point+= noiseAmp * glm::vec3(sinf(noiseSeed.x + phase), cosf(noiseSeed.y + phase * 1.3f),
+												 sinf(noiseSeed.z + phase * 0.7f));
+					hand.worldPoints[lm]= point;
+				}
+				return hand;
+			};
+
+			auto rmsError= [](const TrackedHand& a, const TrackedHand& b) {
+				float sum= 0.f;
+				for (int lm= 0; lm < HAND_LANDMARK_COUNT; ++lm)
+					sum+= glm::dot(a.worldPoints[lm] - b.worldPoints[lm], a.worldPoints[lm] - b.worldPoints[lm]);
+				return sqrtf(sum / (float)HAND_LANDMARK_COUNT);
+			};
+
+			auto makeCameraResult= [](int cameraIndex, const glm::vec3& cameraPosWorld, double timestampMs,
+									  const TrackedHand& hand) {
+				CameraFrameResult camera;
+				camera.cameraIndex= cameraIndex;
+				camera.valid= true;
+				camera.timestampMs= timestampMs;
+				camera.hasExtrinsics= true;
+				camera.markerFromCamera= glm::dmat4(1.0);
+				camera.markerFromCamera[3]= glm::dvec4(cameraPosWorld, 1.0);
+				camera.result.hands[(int)eHandSide::Left]= hand;
+				return camera;
+			};
+
+			HandFusionConfig fusionConfig;
+			fusionConfig.smoothingEnabled= false; // exactness for the pass-through checks
+			HandFusion fusion;
+			fusion.configure(fusionConfig);
+
+			const glm::vec3 wristTruth(0.10f, 0.05f, 0.10f);
+			const glm::vec3 cam1Pos(0.f, 0.f, 0.8f);   // overhead
+			const glm::vec3 cam2Pos(0.f, -0.6f, 0.6f); // 45 degrees
+			const double now= 10'000.0;
+
+			// (a) Palm face-up (visible to both): fused should beat both noisy inputs
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 1, 0); // palm normal = +Z (toward overhead cam)
+				const TrackedHand truth= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
+				const TrackedHand noisyA= makeHand(wristTruth, u, v, glm::vec3(1.f, 2.f, 3.f), 0.004f);
+				const TrackedHand noisyB= makeHand(wristTruth, u, v, glm::vec3(7.f, 5.f, 9.f), 0.004f);
+
+				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, noisyA);
+				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now - 5.0, noisyB);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				const float errA= rmsError(noisyA, truth);
+				const float errB= rmsError(noisyB, truth);
+				const float errFused= rmsError(fused.hands[(int)eHandSide::Left], truth);
+				MIKAN_LOG_INFO("test-fusion") << "(a) rms error mm: camA=" << errA * 1000.f
+					<< " camB=" << errB * 1000.f << " fused=" << errFused * 1000.f;
+				if (!fused.hands[(int)eHandSide::Left].tracked || errFused > std::min(errA, errB) * 1.05f)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(a) FAILED: fused should beat both noisy inputs";
+					result= 1;
+				}
+			}
+
+			// (b) Palm edge-on to the overhead camera, facing camera 2:
+			// weights must shift to camera 2
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 0, 1); // palm normal = -Y (toward cam2, edge-on to cam1)
+				const TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(1.f, 2.f, 3.f), 0.004f);
+				const TrackedHand handB= makeHand(wristTruth + glm::vec3(0.01f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
+
+				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
+				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				const float distToB= rmsError(fused.hands[(int)eHandSide::Left], handB);
+				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
+				MIKAN_LOG_INFO("test-fusion") << "(b) dominant camera=" << fusion.getDominantCamera(eHandSide::Left)
+					<< " distToEdgeOnCam mm=" << distToA * 1000.f << " distToFaceOnCam mm=" << distToB * 1000.f;
+				if (fusion.getDominantCamera(eHandSide::Left) != 1 || distToB >= distToA)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(b) FAILED: edge-on view should lose to the face-on camera";
+					result= 1;
+				}
+			}
+
+			// (c) Staleness: camera 2's result is 200ms old -> exact passthrough of camera 1
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
+				const TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
+				const TrackedHand handB= makeHand(wristTruth + glm::vec3(0.3f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
+
+				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
+				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now - 200.0, handB);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
+				MIKAN_LOG_INFO("test-fusion") << "(c) stale exclusion: distToFreshCam mm=" << distToA * 1000.f;
+				if (distToA > 1e-6f || fusion.getDominantCamera(eHandSide::Left) != 0)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(c) FAILED: stale camera should be excluded";
+					result= 1;
+				}
+			}
+
+			// (d) Handedness conflict: same side, wrists 0.5m apart -> keep the
+			// higher-scoring candidate only (no frankenhand averaging)
+			{
+				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
+				TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(0), 0.f); // palm normal +Z: face-on to cam1
+				handA.presence= 0.95f;
+				TrackedHand handB= makeHand(wristTruth + glm::vec3(0.5f, 0.f, 0.f), glm::vec3(1, 0, 0),
+											glm::vec3(0, 0, 1), glm::vec3(0), 0.f); // edge-on to its camera
+				handB.presence= 0.6f;
+
+				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
+				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
+
+				TrackingFrameResult fused;
+				fusion.fuse({&camA, &camB}, now, fused);
+
+				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
+				MIKAN_LOG_INFO("test-fusion") << "(d) conflict gate: distToBetterCam mm=" << distToA * 1000.f;
+				if (distToA > 1e-6f)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(d) FAILED: conflicting candidates must not be averaged";
+					result= 1;
+				}
+			}
+
+			if (result == 0)
+				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 
 			log_dispose();
 			return result;

@@ -21,48 +21,79 @@ CalibrationPanel::DrawResult CalibrationPanel::draw(bool bWizardActive)
 		return result;
 	}
 
-	ImGui::SeparatorText("Camera Intrinsics");
-	if (m_config->camera(0).intrinsics.present)
+	for (int cameraIndex= 0; cameraIndex < (int)m_config->cameraCount(); ++cameraIndex)
 	{
-		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
-		ImGui::Text("%.0fx%.0f  reproj %.3f px",
-					m_config->camera(0).intrinsics.intrinsics.pixel_width,
-					m_config->camera(0).intrinsics.intrinsics.pixel_height,
-					m_config->camera(0).intrinsics.reprojectionError);
-		ImGui::Text("hfov %.1f  vfov %.1f",
-					m_config->camera(0).intrinsics.intrinsics.hfov,
-					m_config->camera(0).intrinsics.intrinsics.vfov);
-	}
-	else
-	{
-		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Not calibrated");
-	}
-	ImGui::BeginDisabled(bWizardActive);
-	if (ImGui::Button("Calibrate Intrinsics...", ImVec2(-1, 0)))
-		result.bLaunchIntrinsicsWizard= true;
-	ImGui::EndDisabled();
+		const CameraProfile& profile= m_config->camera(cameraIndex);
 
-	ImGui::SeparatorText("Camera Extrinsics + Hand Scale");
-	if (m_config->camera(0).extrinsics.present)
-	{
-		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
-		ImGui::Text("Camera height: %.2f m", m_config->camera(0).extrinsics.markerFromCamera[3].z);
+		ImGui::PushID(cameraIndex);
+
+		char headerLabel[64];
+		snprintf(headerLabel, sizeof(headerLabel), "Camera %d", cameraIndex + 1);
+		if (ImGui::CollapsingHeader(headerLabel, ImGuiTreeNodeFlags_DefaultOpen))
+		{
+			ImGui::SeparatorText("Intrinsics");
+			if (profile.intrinsics.present)
+			{
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
+				ImGui::Text("%.0fx%.0f  reproj %.3f px",
+							profile.intrinsics.intrinsics.pixel_width,
+							profile.intrinsics.intrinsics.pixel_height,
+							profile.intrinsics.reprojectionError);
+				ImGui::Text("hfov %.1f  vfov %.1f",
+							profile.intrinsics.intrinsics.hfov,
+							profile.intrinsics.intrinsics.vfov);
+			}
+			else
+			{
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Not calibrated");
+			}
+			ImGui::BeginDisabled(bWizardActive);
+			if (ImGui::Button("Calibrate Intrinsics...", ImVec2(-1, 0)))
+			{
+				result.bLaunchIntrinsicsWizard= true;
+				result.cameraIndex= cameraIndex;
+			}
+			ImGui::EndDisabled();
+
+			ImGui::SeparatorText("Extrinsics");
+			if (profile.extrinsics.present)
+			{
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibrated");
+				ImGui::Text("Camera height: %.2f m", profile.extrinsics.markerFromCamera[3].z);
+			}
+			else
+			{
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Not calibrated");
+			}
+			ImGui::BeginDisabled(bWizardActive || !profile.intrinsics.present);
+			if (ImGui::Button("Calibrate Extrinsics...", ImVec2(-1, 0)))
+			{
+				result.bLaunchExtrinsicsWizard= true;
+				result.cameraIndex= cameraIndex;
+			}
+			ImGui::EndDisabled();
+			if (!profile.intrinsics.present)
+				ImGui::TextDisabled("(requires intrinsics)");
+		}
+
+		ImGui::PopID();
 	}
-	else
-	{
-		ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Not calibrated");
-	}
+
+	ImGui::SeparatorText("Hand Scale (global)");
 	if (m_config->handScale.present)
-		ImGui::Text("Hand scale: %.1f cm", m_config->handScale.refLengthMeters * 100.0);
+		ImGui::Text("Measured: %.1f cm", m_config->handScale.refLengthMeters * 100.0);
 	else
-		ImGui::TextDisabled("Hand scale: default %.1f cm", m_config->handScale.refLengthMeters * 100.0);
+		ImGui::TextDisabled("Default: %.1f cm", m_config->handScale.refLengthMeters * 100.0);
+	ImGui::TextDisabled("(measured in the extrinsics wizard)");
 
-	ImGui::BeginDisabled(bWizardActive || !m_config->camera(0).intrinsics.present);
-	if (ImGui::Button("Calibrate Extrinsics...", ImVec2(-1, 0)))
-		result.bLaunchExtrinsicsWizard= true;
-	ImGui::EndDisabled();
-	if (!m_config->camera(0).intrinsics.present)
-		ImGui::TextDisabled("(requires intrinsics)");
+	if ((int)m_config->cameraCount() > 1)
+	{
+		ImGui::Separator();
+		ImGui::TextWrapped(
+			"All cameras must calibrate extrinsics against the SAME printed "
+			"marker in the same spot - that shared marker defines the common "
+			"world space fusion happens in.");
+	}
 
 	ImGui::End();
 	return result;

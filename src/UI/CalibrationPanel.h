@@ -2,8 +2,9 @@
 
 class AppConfig;
 
-// Calibration status panel: shows intrinsics/extrinsics/hand-scale state and
-// launches the wizards (launch requests are returned to MainWindow).
+// Calibration status panel: per-camera intrinsics/extrinsics state plus the
+// global hand scale, and launches the wizards (launch requests are returned
+// to MainWindow with the camera they apply to).
 class CalibrationPanel
 {
 public:
@@ -13,6 +14,7 @@ public:
 	{
 		bool bLaunchIntrinsicsWizard= false;
 		bool bLaunchExtrinsicsWizard= false;
+		int cameraIndex= 0;
 	};
 
 	DrawResult draw(bool bWizardActive);

@@ -29,9 +29,10 @@ public:
 	IntrinsicsWizard(AppConfig* config, VisionThread* visionThread);
 	~IntrinsicsWizard();
 
-	void enter();
+	void enter(int cameraIndex);
 	void exit();
 	bool isActive() const { return m_bActive; }
+	int getCameraIndex() const { return m_cameraIndex; }
 
 	// Called each frame while active. bgrPreview is the newest preview frame
 	// (may be empty when no stream). Overlay drawing goes to the video panel's
@@ -50,6 +51,7 @@ private:
 	VisionThread* m_visionThread;
 
 	eState m_state= eState::SelectBoardParams;
+	int m_cameraIndex= 0;
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
 

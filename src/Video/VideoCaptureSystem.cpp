@@ -9,6 +9,7 @@
 #include <Mfidl.h>
 #include <Mfapi.h>
 
+#include <algorithm>
 #include <chrono>
 
 // Default video mode used when a freshly opened device has no mode selected yet
@@ -25,14 +26,87 @@ public:
 	void refreshConnectedDevices() { rebuildDeviceList(); }
 };
 
-// -- VideoCaptureSystem -----
-VideoCaptureSystem::VideoCaptureSystem()
-	: m_frameFreelist(k_frameBlockCount * 2)
-	, m_frameQueue(k_frameBlockCount * 2)
+// -- CameraSlot -----
+VideoCaptureSystem::CameraSlot::CameraSlot()
+	: frameFreelist(k_frameBlockCount * 2)
+	, frameQueue(k_frameBlockCount * 2)
 {
+	frameBlockStorage.reserve(k_frameBlockCount);
+	for (size_t i= 0; i < k_frameBlockCount; ++i)
+	{
+		frameBlockStorage.emplace_back(std::make_unique<VideoFrameBlock>());
+		frameFreelist.enqueue(frameBlockStorage.back().get());
+	}
 }
 
+VideoCaptureSystem::CameraSlot::~CameraSlot()
+{
+	if (device != nullptr)
+	{
+		device->stopVideoStream();
+		device->removeListener(this);
+		device->close();
+		device= nullptr;
+	}
+}
+
+void VideoCaptureSystem::CameraSlot::notifyVideoDeviceDisconnected(const IUsbVideoDevice* removedDevice)
+{
+	if (removedDevice == device)
+	{
+		// The manager is about to destroy this device (hotplug removal) and has
+		// already closed it. Drop our reference immediately (it's about to dangle)
+		// and flag the main thread to fire the disconnect callback from update().
+		// NOTE: don't call removeListener() here - the device is iterating its
+		// listener set and will be deleted right after this notification anyway.
+		device= nullptr;
+		bDeviceDisconnected= true;
+	}
+}
+
+void VideoCaptureSystem::CameraSlot::notifyVideoModePropertiesChanged(const IUsbVideoDevice* changedDevice)
+{
+	// Called on the main thread (video modes are only changed from the main thread)
+	if (changedDevice == device && owner != nullptr && owner->m_onVideoModeChanged)
+	{
+		owner->m_onVideoModeChanged(cameraIndex);
+	}
+}
+
+void VideoCaptureSystem::CameraSlot::notifyVideoFrameReceived(const UsbVideoFrameBuffer& bufferInfo)
+{
+	// Runs on this device's Media Foundation worker thread -
+	// keep this lock-free and allocation-light
+	VideoFrameBlock* block= nullptr;
+	if (frameFreelist.try_dequeue(block))
+	{
+		const double timestampMs=
+			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+		block->copyFrom(bufferInfo, nextFrameIndex++, timestampMs);
+		frameQueue.enqueue(block);
+	}
+	else
+	{
+		// No free blocks - the consumer is behind, drop the frame (no logging on the hot path)
+		droppedFrameCount.fetch_add(1, std::memory_order_relaxed);
+	}
+}
+
+// -- VideoCaptureSystem -----
+VideoCaptureSystem::VideoCaptureSystem()= default;
+
 VideoCaptureSystem::~VideoCaptureSystem() { shutdown(); }
+
+VideoCaptureSystem::CameraSlot* VideoCaptureSystem::getSlot(int cameraIndex)
+{
+	return cameraIndex >= 0 && cameraIndex < (int)m_slots.size() ? m_slots[cameraIndex].get() : nullptr;
+}
+
+const VideoCaptureSystem::CameraSlot* VideoCaptureSystem::getSlot(int cameraIndex) const
+{
+	return cameraIndex >= 0 && cameraIndex < (int)m_slots.size() ? m_slots[cameraIndex].get() : nullptr;
+}
 
 // -- Main thread API -----
 bool VideoCaptureSystem::startup()
@@ -52,16 +126,8 @@ bool VideoCaptureSystem::startup()
 		}
 	}
 
-	// Allocate the frame blocks and prime the freelist (once)
-	if (m_frameBlockStorage.empty())
-	{
-		m_frameBlockStorage.reserve(k_frameBlockCount);
-		for (size_t i= 0; i < k_frameBlockCount; ++i)
-		{
-			m_frameBlockStorage.emplace_back(std::make_unique<VideoFrameBlock>());
-			m_frameFreelist.enqueue(m_frameBlockStorage.back().get());
-		}
-	}
+	if (m_slots.empty())
+		setCameraSlotCount(1);
 
 	if (m_deviceManager == nullptr)
 	{
@@ -79,6 +145,24 @@ bool VideoCaptureSystem::startup()
 	return true;
 }
 
+void VideoCaptureSystem::setCameraSlotCount(size_t count)
+{
+	count= std::max<size_t>(count, 1);
+
+	// Shrink: closing devices is handled by the slot destructor
+	while (m_slots.size() > count)
+		m_slots.pop_back();
+
+	// Grow
+	while (m_slots.size() < count)
+	{
+		auto slot= std::make_unique<CameraSlot>();
+		slot->owner= this;
+		slot->cameraIndex= (int)m_slots.size();
+		m_slots.push_back(std::move(slot));
+	}
+}
+
 void VideoCaptureSystem::update(float deltaTime)
 {
 	// Pump hotplug notifications.
@@ -88,21 +172,25 @@ void VideoCaptureSystem::update(float deltaTime)
 		m_deviceManager->update(deltaTime);
 	}
 
-	// Forward device disconnects flagged by notifyVideoDeviceDisconnected()
-	if (m_bDeviceDisconnected.exchange(false))
+	// Forward device disconnects flagged by the slots' notifyVideoDeviceDisconnected()
+	for (const std::unique_ptr<CameraSlot>& slot : m_slots)
 	{
-		MIKAN_LOG_INFO("VideoCaptureSystem::update") << "Current video device was disconnected";
-
-		if (m_onDeviceDisconnected)
+		if (slot->bDeviceDisconnected.exchange(false))
 		{
-			m_onDeviceDisconnected();
+			MIKAN_LOG_INFO("VideoCaptureSystem::update")
+				<< "Video device for camera " << slot->cameraIndex << " was disconnected";
+
+			if (m_onDeviceDisconnected)
+			{
+				m_onDeviceDisconnected(slot->cameraIndex);
+			}
 		}
 	}
 }
 
 void VideoCaptureSystem::shutdown()
 {
-	closeDevice();
+	m_slots.clear(); // slot destructors close their devices
 
 	if (m_deviceManager != nullptr)
 	{
@@ -164,13 +252,34 @@ bool VideoCaptureSystem::getDeviceFriendlyName(size_t index, std::string& outFri
 }
 
 // -- Device open/close -----
-bool VideoCaptureSystem::openDeviceByPath(const std::string& devicePath)
+bool VideoCaptureSystem::isDevicePathOpenElsewhere(const std::string& devicePath, int excludeCameraIndex) const
 {
-	if (m_deviceManager == nullptr || devicePath.empty())
+	for (const std::unique_ptr<CameraSlot>& slot : m_slots)
+	{
+		if (slot->cameraIndex != excludeCameraIndex && slot->device != nullptr &&
+			devicePath == slot->device->getDevicePath())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool VideoCaptureSystem::openDeviceByPath(int cameraIndex, const std::string& devicePath)
+{
+	CameraSlot* slot= getSlot(cameraIndex);
+	if (slot == nullptr || m_deviceManager == nullptr || devicePath.empty())
 		return false;
 
-	// Close any previously open device first
-	closeDevice();
+	if (isDevicePathOpenElsewhere(devicePath, cameraIndex))
+	{
+		MIKAN_LOG_WARNING("VideoCaptureSystem::openDeviceByPath")
+			<< "Device already open in another camera slot: " << devicePath;
+		return false;
+	}
+
+	// Close any previously open device in this slot first
+	closeDevice(cameraIndex);
 
 	IUsbVideoDevice* device= m_deviceManager->getDeviceByPath(devicePath.c_str());
 	if (device == nullptr)
@@ -199,45 +308,62 @@ bool VideoCaptureSystem::openDeviceByPath(const std::string& devicePath)
 		return false;
 	}
 
-	// Listen for events from the video device
-	device->addListener(this);
+	// Listen for events from the video device (the slot is the listener)
+	device->addListener(slot);
 
-	m_currentDevice= device;
-	m_bDeviceDisconnected= false;
+	slot->device= device;
+	slot->bDeviceDisconnected= false;
 
 	MIKAN_LOG_INFO("VideoCaptureSystem::openDeviceByPath")
-		<< "Opened device: " << device->getFriendlyName() << " (" << device->getVideoModeName() << ")";
+		<< "Camera " << cameraIndex << " opened device: " << device->getFriendlyName()
+		<< " (" << device->getVideoModeName() << ")";
 
 	return true;
 }
 
-void VideoCaptureSystem::closeDevice()
+void VideoCaptureSystem::closeDevice(int cameraIndex)
 {
-	if (m_currentDevice != nullptr)
+	CameraSlot* slot= getSlot(cameraIndex);
+	if (slot != nullptr && slot->device != nullptr)
 	{
-		m_currentDevice->stopVideoStream();
-		m_currentDevice->removeListener(this);
-		m_currentDevice->close();
-		m_currentDevice= nullptr;
+		slot->device->stopVideoStream();
+		slot->device->removeListener(slot);
+		slot->device->close();
+		slot->device= nullptr;
 	}
 }
 
-std::string VideoCaptureSystem::getCurrentDevicePath() const
+bool VideoCaptureSystem::getIsDeviceOpen(int cameraIndex) const
 {
-	return m_currentDevice != nullptr ? m_currentDevice->getDevicePath() : "";
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr && slot->device != nullptr;
 }
 
-std::string VideoCaptureSystem::getCurrentDeviceFriendlyName() const
+IUsbVideoDevice* VideoCaptureSystem::getCurrentDevice(int cameraIndex) const
 {
-	return m_currentDevice != nullptr ? m_currentDevice->getFriendlyName() : "";
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr ? slot->device : nullptr;
+}
+
+std::string VideoCaptureSystem::getCurrentDevicePath(int cameraIndex) const
+{
+	const IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	return device != nullptr ? device->getDevicePath() : "";
+}
+
+std::string VideoCaptureSystem::getCurrentDeviceFriendlyName(int cameraIndex) const
+{
+	const IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	return device != nullptr ? device->getFriendlyName() : "";
 }
 
 // -- Video modes -----
-std::string VideoCaptureSystem::getCurrentVideoModeName() const
+std::string VideoCaptureSystem::getCurrentVideoModeName(int cameraIndex) const
 {
-	if (m_currentDevice != nullptr)
+	const IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	if (device != nullptr)
 	{
-		const char* szVideoModeName= m_currentDevice->getVideoModeName();
+		const char* szVideoModeName= device->getVideoModeName();
 		if (szVideoModeName != nullptr)
 		{
 			return szVideoModeName;
@@ -247,81 +373,96 @@ std::string VideoCaptureSystem::getCurrentVideoModeName() const
 	return "";
 }
 
-bool VideoCaptureSystem::setVideoModeByName(const std::string& videoModeName)
+bool VideoCaptureSystem::setVideoModeByName(int cameraIndex, const std::string& videoModeName)
 {
-	if (m_currentDevice == nullptr)
+	CameraSlot* slot= getSlot(cameraIndex);
+	if (slot == nullptr || slot->device == nullptr)
 		return false;
 
+	IUsbVideoDevice* device= slot->device;
+
 	// Early out if this is already the current mode
-	const char* szCurrentModeName= m_currentDevice->getVideoModeName();
+	const char* szCurrentModeName= device->getVideoModeName();
 	if (szCurrentModeName != nullptr && videoModeName == szCurrentModeName)
 		return true;
 
-	const bool bWasStreaming= isStreaming();
+	const bool bWasStreaming= isStreaming(cameraIndex);
 
 	// This closes the device if the mode actually changed
 	// (and fires notifyVideoModePropertiesChanged)
-	if (!m_currentDevice->setVideoModeByName(videoModeName.c_str()))
+	if (!device->setVideoModeByName(videoModeName.c_str()))
 	{
 		MIKAN_LOG_WARNING("VideoCaptureSystem::setVideoModeByName") << "Invalid video mode name: " << videoModeName;
 		return false;
 	}
 
 	// Re-open the device with the new mode
-	if (!m_currentDevice->open())
+	if (!device->open())
 	{
 		MIKAN_LOG_ERROR("VideoCaptureSystem::setVideoModeByName")
 			<< "Failed to re-open device after video mode change: " << videoModeName;
-		closeDevice();
+		closeDevice(cameraIndex);
 		return false;
 	}
 
 	// Resume streaming if we were streaming before the mode change
 	if (bWasStreaming)
 	{
-		startStream();
+		startStream(cameraIndex);
 	}
 
 	return true;
 }
 
 // -- Streaming -----
-bool VideoCaptureSystem::startStream()
+bool VideoCaptureSystem::startStream(int cameraIndex)
 {
-	if (m_currentDevice == nullptr)
+	IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	if (device == nullptr)
 		return false;
 
-	const eVideoStreamingStatus status= m_currentDevice->startVideoStream();
+	const eVideoStreamingStatus status= device->startVideoStream();
 
 	return status == eVideoStreamingStatus::started || status == eVideoStreamingStatus::pendingStart;
 }
 
-void VideoCaptureSystem::stopStream()
+void VideoCaptureSystem::stopStream(int cameraIndex)
 {
-	if (m_currentDevice != nullptr)
+	IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	if (device != nullptr)
 	{
-		m_currentDevice->stopVideoStream();
+		device->stopVideoStream();
 	}
 }
 
-bool VideoCaptureSystem::isStreaming() const
+bool VideoCaptureSystem::isStreaming(int cameraIndex) const
 {
-	return m_currentDevice != nullptr
-		   && m_currentDevice->getVideoStreamingStatus() == eVideoStreamingStatus::started;
+	const IUsbVideoDevice* device= getCurrentDevice(cameraIndex);
+	return device != nullptr && device->getVideoStreamingStatus() == eVideoStreamingStatus::started;
+}
+
+uint64_t VideoCaptureSystem::getDroppedFrameCount(int cameraIndex) const
+{
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr ? slot->droppedFrameCount.load(std::memory_order_relaxed) : 0;
 }
 
 // -- Inference thread API -----
-VideoFrameBlock* VideoCaptureSystem::tryPopFrame()
+VideoFrameBlock* VideoCaptureSystem::tryPopFrame(int cameraIndex)
 {
+	CameraSlot* slot= getSlot(cameraIndex);
+	if (slot == nullptr)
+		return nullptr;
+
 	// Drain to the newest available frame (latest-wins),
 	// recycling any stale frames back to the freelist
 	VideoFrameBlock* newestBlock= nullptr;
 	VideoFrameBlock* candidateBlock= nullptr;
-	while (m_frameQueue.try_dequeue(candidateBlock))
+	while (slot->frameQueue.try_dequeue(candidateBlock))
 	{
 		if (newestBlock != nullptr)
 		{
-			m_frameFreelist.enqueue(newestBlock);
+			slot->frameFreelist.enqueue(newestBlock);
 		}
 
 		newestBlock= candidateBlock;
@@ -330,11 +471,12 @@ VideoFrameBlock* VideoCaptureSystem::tryPopFrame()
 	return newestBlock;
 }
 
-void VideoCaptureSystem::releaseFrame(VideoFrameBlock* block)
+void VideoCaptureSystem::releaseFrame(int cameraIndex, VideoFrameBlock* block)
 {
-	if (block != nullptr)
+	CameraSlot* slot= getSlot(cameraIndex);
+	if (slot != nullptr && block != nullptr)
 	{
-		m_frameFreelist.enqueue(block);
+		slot->frameFreelist.enqueue(block);
 	}
 }
 
@@ -412,48 +554,5 @@ void VideoCaptureSystem::onConnectedDeviceListChanged()
 	if (m_onDeviceListChanged)
 	{
 		m_onDeviceListChanged();
-	}
-}
-
-// -- IUsbVideoDeviceListener -----
-void VideoCaptureSystem::notifyVideoDeviceDisconnected(const IUsbVideoDevice* device)
-{
-	if (device == m_currentDevice)
-	{
-		// The manager is about to destroy this device (hotplug removal) and has
-		// already closed it. Drop our reference immediately (it's about to dangle)
-		// and flag the main thread to fire the disconnect callback from update().
-		// NOTE: don't call removeListener() here - the device is iterating its
-		// listener set and will be deleted right after this notification anyway.
-		m_currentDevice= nullptr;
-		m_bDeviceDisconnected= true;
-	}
-}
-
-void VideoCaptureSystem::notifyVideoModePropertiesChanged(const IUsbVideoDevice* device)
-{
-	// Called on the main thread (video modes are only changed from the main thread)
-	if (device == m_currentDevice && m_onVideoModeChanged)
-	{
-		m_onVideoModeChanged();
-	}
-}
-
-void VideoCaptureSystem::notifyVideoFrameReceived(const UsbVideoFrameBuffer& bufferInfo)
-{
-	// Runs on the Media Foundation worker thread - keep this lock-free and allocation-light
-	VideoFrameBlock* block= nullptr;
-	if (m_frameFreelist.try_dequeue(block))
-	{
-		const double timestampMs=
-			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
-		block->copyFrom(bufferInfo, m_nextFrameIndex++, timestampMs);
-		m_frameQueue.enqueue(block);
-	}
-	else
-	{
-		// No free blocks - the consumer is behind, drop the frame (no logging on the hot path)
-		m_droppedFrameCount.fetch_add(1, std::memory_order_relaxed);
 	}
 }

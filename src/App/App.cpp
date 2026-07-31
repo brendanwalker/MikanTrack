@@ -132,6 +132,7 @@ bool App::startup()
 		MIKAN_LOG_ERROR("App::startup") << "VideoCaptureSystem startup failed";
 		return false;
 	}
+	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
 
 	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_config.get());
 	m_visionThread->start();
@@ -142,6 +143,19 @@ bool App::startup()
 	m_mainWindow->tryRestoreVideoDeviceFromConfig();
 
 	return true;
+}
+
+void App::applyCameraCountChange()
+{
+	MIKAN_LOG_INFO("App::applyCameraCountChange")
+		<< "Applying camera count change: " << m_config->cameraCount() << " cameras";
+
+	// Order matters: stop the consumer (vision thread) before touching the
+	// capture slots, then restart with the new context count
+	m_visionThread->stop();
+	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
+	m_visionThread->start();
+	m_config->markDirty();
 }
 
 void App::shutdown()

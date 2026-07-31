@@ -27,6 +27,14 @@ static const glm::mat4 k_glFromCvFlip(
 	glm::vec4(0, 0, -1, 0),
 	glm::vec4(0, 0, 0, 1));
 
+// Distinct tint per camera for frustums + dimmed per-camera skeletons
+static const glm::vec3 k_cameraColors[4]= {
+	glm::vec3(1.f, 0.9f, 0.3f),  // yellow
+	glm::vec3(0.4f, 0.9f, 1.f),  // cyan
+	glm::vec3(1.f, 0.5f, 0.9f),  // magenta
+	glm::vec3(0.6f, 1.f, 0.5f),  // green
+};
+
 Scene3dPanel::Scene3dPanel()
 	: m_frameBuffer(std::make_unique<GlFrameBuffer>())
 	, m_lineRenderer(std::make_unique<GlLineRenderer>())
@@ -37,8 +45,8 @@ Scene3dPanel::Scene3dPanel()
 
 Scene3dPanel::~Scene3dPanel()= default;
 
-void Scene3dPanel::draw(const TrackingFrameResult& result, const glm::mat4& cameraToWorld, bool bHasExtrinsics,
-						const MikanMonoIntrinsics* intrinsics)
+void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
+						const std::vector<const TrackingFrameResult*>& perCameraResults)
 {
 	if (!ImGui::Begin("3D Scene"))
 	{
@@ -62,7 +70,7 @@ void Scene3dPanel::draw(const TrackingFrameResult& result, const glm::mat4& came
 	}
 	m_frameBuffer->resize(fbWidth, fbHeight);
 
-	renderScene(result, cameraToWorld, bHasExtrinsics, intrinsics, (float)fbWidth / (float)fbHeight);
+	renderScene(fusedResult, cameras, perCameraResults, (float)fbWidth / (float)fbHeight);
 
 	// FBO textures are bottom-up; flip V
 	ImGui::Image(
@@ -92,8 +100,53 @@ void Scene3dPanel::draw(const TrackingFrameResult& result, const glm::mat4& came
 	ImGui::End();
 }
 
-void Scene3dPanel::renderScene(const TrackingFrameResult& result, const glm::mat4& cameraToWorld, bool bHasExtrinsics,
-							   const MikanMonoIntrinsics* intrinsics, float aspect)
+void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightness, const glm::vec3* colorOverride)
+{
+	// Hand skeletons (world space only in this panel)
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const TrackedHand& hand= result.hands[sideIndex];
+		if (!hand.tracked || !hand.hasWorldSpace)
+			continue;
+
+		const glm::vec3 baseColor=
+			colorOverride != nullptr ? *colorOverride
+									 : (hand.side == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red);
+		const glm::vec3 color= baseColor * brightness;
+
+		for (int i= 0; i < HAND_CONNECTION_COUNT; ++i)
+		{
+			drawSegment(*m_lineRenderer, k_displayFromWorld,
+						hand.worldPoints[HAND_CONNECTIONS[i][0]],
+						hand.worldPoints[HAND_CONNECTIONS[i][1]],
+						color);
+		}
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+		{
+			drawPoint(*m_lineRenderer, k_displayFromWorld, hand.worldPoints[i], Colors::White * brightness, 4.f);
+		}
+	}
+
+	// Forearms
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const TrackedArm& arm= result.arms[sideIndex];
+		if (!arm.valid || !arm.hasWorldSpace)
+			continue;
+
+		const glm::vec3 baseColor=
+			colorOverride != nullptr
+				? *colorOverride
+				: ((eHandSide)sideIndex == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red);
+		const glm::vec3 color= baseColor * brightness;
+
+		drawSegment(*m_lineRenderer, k_displayFromWorld, arm.elbowWorld, arm.wristWorld, color);
+		drawPoint(*m_lineRenderer, k_displayFromWorld, arm.elbowWorld, color, 6.f);
+	}
+}
+
+void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
+							   const std::vector<const TrackingFrameResult*>& perCameraResults, float aspect)
 {
 	m_camera->setPerspectiveProjection(50.f, aspect, 0.01f, 100.f);
 
@@ -108,73 +161,39 @@ void Scene3dPanel::renderScene(const TrackingFrameResult& result, const glm::mat
 	// Marker axes at the world origin
 	drawTransformedAxes(*m_lineRenderer, k_displayFromWorld, 0.1f);
 
-	// Camera frustum (cameraToWorld maps CV-convention camera space to world;
-	// the frustum helper draws in GL convention looking down -Z)
-	if (bHasExtrinsics && intrinsics != nullptr)
+	// One frustum per calibrated camera (cameraToWorld maps CV-convention
+	// camera space to world; the frustum helper draws in GL convention)
+	for (size_t cameraIndex= 0; cameraIndex < cameras.size(); ++cameraIndex)
 	{
-		const glm::mat4 cameraXform= k_displayFromWorld * cameraToWorld * k_glFromCvFlip;
+		const SceneCameraView& view= cameras[cameraIndex];
+		if (!view.bHasExtrinsics || view.intrinsics == nullptr)
+			continue;
+
+		const glm::vec3& color= k_cameraColors[cameraIndex % 4];
+		const glm::mat4 cameraXform= k_displayFromWorld * view.cameraToWorld * k_glFromCvFlip;
 		drawTransformedFrustum(
 			*m_lineRenderer, cameraXform,
-			(float)intrinsics->hfov, (float)intrinsics->vfov,
-			0.05f, 1.5f,
-			Colors::Yellow);
+			(float)view.intrinsics->hfov, (float)view.intrinsics->vfov,
+			0.05f, 0.5f,
+			color);
 		drawTransformedAxes(*m_lineRenderer, cameraXform, 0.05f);
 	}
 
-	// Hand skeletons
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	// Dimmed per-camera skeletons (world-space agreement check across cameras)
+	if (m_bShowPerCameraSkeletons)
 	{
-		const TrackedHand& hand= result.hands[sideIndex];
-		if (!hand.tracked)
-			continue;
-
-		const bool bUseWorld= hand.hasWorldSpace;
-		if (!bUseWorld && !hand.hasCameraSpace)
-			continue;
-
-		// World-space points draw under the display rotation. Camera-space
-		// points are OpenCV convention: with extrinsics map them to world,
-		// otherwise just flip to GL orientation so they display upright.
-		const glm::mat4 xform= bUseWorld
-			? k_displayFromWorld
-			: (k_displayFromWorld * (bHasExtrinsics ? cameraToWorld : k_glFromCvFlip));
-		const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points= bUseWorld ? hand.worldPoints : hand.cameraPoints;
-		const glm::vec3 color= hand.side == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red;
-
-		for (int i= 0; i < HAND_CONNECTION_COUNT; ++i)
+		for (size_t cameraIndex= 0; cameraIndex < perCameraResults.size(); ++cameraIndex)
 		{
-			drawSegment(*m_lineRenderer, xform,
-						points[HAND_CONNECTIONS[i][0]],
-						points[HAND_CONNECTIONS[i][1]],
-						color);
-		}
-		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
-		{
-			drawPoint(*m_lineRenderer, xform, points[i], Colors::White, 4.f);
+			if (perCameraResults[cameraIndex] != nullptr)
+			{
+				const glm::vec3 color= k_cameraColors[cameraIndex % 4];
+				drawSkeleton(*perCameraResults[cameraIndex], 0.45f, &color);
+			}
 		}
 	}
 
-	// Forearms
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const TrackedArm& arm= result.arms[sideIndex];
-		if (!arm.valid)
-			continue;
-
-		const bool bUseWorld= arm.hasWorldSpace;
-		if (!bUseWorld && !arm.hasCameraSpace)
-			continue;
-
-		const glm::mat4 xform= bUseWorld
-			? k_displayFromWorld
-			: (k_displayFromWorld * (bHasExtrinsics ? cameraToWorld : k_glFromCvFlip));
-		const glm::vec3& elbow= bUseWorld ? arm.elbowWorld : arm.elbowCamera;
-		const glm::vec3& wrist= bUseWorld ? arm.wristWorld : arm.wristCamera;
-		const glm::vec3 color= (eHandSide)sideIndex == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red;
-
-		drawSegment(*m_lineRenderer, xform, elbow, wrist, color);
-		drawPoint(*m_lineRenderer, xform, elbow, color, 6.f);
-	}
+	// Fused skeleton, full brightness
+	drawSkeleton(fusedResult, 1.f, nullptr);
 
 	m_lineRenderer->render3d(m_camera->getViewProjection());
 
