@@ -1,8 +1,8 @@
 # MikanMediaPipe
 
-Standalone Windows app for GPU hand + forearm tracking from an overhead webcam,
-streaming world-space landmark positions over OSC (built for consumption by
-Unreal Engine's OSC plugin).
+Standalone Windows app for GPU hand tracking from one or more webcams,
+streaming a parametric hand model (palm transform + finger bend angles) over
+OSC (built for consumption by Unreal Engine's OSC plugin).
 
 Runs the Google MediaPipe hand models (palm detection + hand landmark) via
 **ONNX Runtime with the DirectML execution provider** — real GPU inference on
@@ -13,27 +13,28 @@ frame-to-frame ROI tracking) is implemented in C++, ported from the
 capture, calibration and app scaffolding are borrowed from
 [MikanXR](https://github.com/MikanXR/MikanXR) (see `NOTICE.md`).
 
-Elbows/forearms are geometric estimates (extended up the forearm direction
-from the hand orientation, clamped to the calibrated table plane) rather than
-model measurements: BlazePose was tried and removed — its person detector
-never fires on top-down/overhead camera views. For avatar work, treat the
-streamed elbow as an IK hint and solve the arm with Two-Bone IK in-engine.
+Elbows are deliberately NOT estimated or streamed: a hand-only view doesn't
+contain enough information for a useful estimate (BlazePose was tried and
+removed — its person detector never fires on top-down views). Solve arms
+client-side with Two-Bone IK from the palm transform.
 
 ## Features
 
 - Webcam capture via Media Foundation (device/mode selection, hotplug,
   hardware-decode policy with vendor-MFT hang workarounds, NV12/YUY2 passthrough)
-- Two-hand tracking (21 landmarks each) + estimated elbows/forearms derived
-  from the hand orientation and table plane (drawn dashed and sent with low
-  confidence so consumers can treat them as IK hints)
+- Two-hand tracking as a parametric model: 6-DoF palm transform (solvePnP
+  over the articulated metric hand) + per-finger bend angles — low-noise,
+  scale-aware, EKF/IMU-fusion-ready
 - **Multi-camera fusion**: add a second camera at a different angle (Device
   panel -> Add Camera), calibrate it against the same printed marker, and the
-  per-landmark visibility-weighted blend rides through hand poses that defeat
-  a single view (e.g. clapping edge-on to an overhead camera). Verify camera
-  agreement with the dimmed per-camera skeletons toggle in the 3D view.
+  visibility-weighted pose/angle blend rides through hand poses that defeat
+  a single view (e.g. clapping edge-on to an overhead camera). Left/right is
+  resolved at the fusion level (world-space clustering + votes), and the two
+  views continuously refine the hand scale by stereo triangulation.
   Prefer 720p per camera and separate USB controllers for two streams.
-- Live preview with skeleton wireframe overlay; alternate 3D scene view
-  (marker grid, camera frustum, 3D skeletons, orbit camera)
+- Live preview with landmark overlay; alternate 3D scene view rendering the
+  forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
+  camera frustums, marker grid, orbit camera
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)
 - **Aruco extrinsics + hand-scale** wizard: a printed marker on the table
   defines the world origin; laying your hand flat next to it measures your
