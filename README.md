@@ -45,6 +45,11 @@ client-side with Two-Bone IK from the palm transform.
   depth into metric 3D
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
 - Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanMediaPipe/config.json`
+- **Diagnostic dump (F9)**: writes the last few seconds of tracking/fusion
+  history (per-camera hand states, fusion clusters and the L/R side-assignment
+  scores), the live config and each camera's current frame (raw + annotated
+  PNG) to `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
+  tracking misbehaves and attach the folder to a bug report
 
 ## Building
 

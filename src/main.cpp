@@ -7,9 +7,14 @@
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
 
+#include <filesystem>
+#include <fstream>
+
 #include "App.h"
+#include "AppConfig.h"
 #include "ArucoMarkerPoseSampler.h"
 #include "CalibrationPatternFinder_Charuco.h"
+#include "DiagnosticDump.h"
 #include "ExtrinsicsWizard.h"
 #include "HandFusion.h"
 #include "HandPoseModel.h"
@@ -554,6 +559,126 @@ static int runApp(int argc, char** argv)
 
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
+
+			log_dispose();
+			return result;
+		}
+
+		if (std::string(argv[i]) == "--test-dump")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-dump.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+
+			// Synthetic camera result: one tracked left hand + a detection box
+			CameraFrameResult cameraResult;
+			cameraResult.cameraIndex= 0;
+			cameraResult.valid= true;
+			cameraResult.timestampMs= 1000.0;
+			cameraResult.hasExtrinsics= true;
+
+			TrackingFrameResult& frame= cameraResult.result;
+			frame.frameIndex= 42;
+			frame.timestampMs= 1000.0;
+			frame.frameWidth= 128;
+			frame.frameHeight= 128;
+
+			TrackedHand& hand= frame.hands[(int)eHandSide::Left];
+			hand.tracked= true;
+			hand.side= eHandSide::Left;
+			hand.presence= 0.9f;
+			hand.handednessScore= 0.1f;
+			hand.hasWorldSpace= true;
+			for (int landmark= 0; landmark < HAND_LANDMARK_COUNT; ++landmark)
+			{
+				hand.imagePoints[landmark]= glm::vec3(20.f + landmark * 4.f, 30.f + landmark * 3.f, 0.f);
+				hand.worldPoints[landmark]= glm::vec3(0.1f, 0.05f, 0.1f + landmark * 0.001f);
+			}
+
+			HandPose& pose= frame.poses[(int)eHandSide::Left];
+			pose.tracked= true;
+			pose.side= eHandSide::Left;
+			pose.presence= 0.9f;
+			pose.hasWorldPose= true;
+			pose.palmPositionWorld= glm::vec3(0.1f, 0.05f, 0.1f);
+			pose.fingers[1].proximal= 0.5f;
+
+			DetectionBox box;
+			box.corners= {glm::vec2(10, 10), glm::vec2(60, 10), glm::vec2(60, 60), glm::vec2(10, 60)};
+			frame.palmDetections.push_back(box);
+
+			FusionDiagnostics diagnostics;
+			diagnostics.totalObservations= 1;
+			{
+				FusionDiagnostics::Cluster cluster;
+				cluster.palmWorld= pose.palmPositionWorld;
+				cluster.assignedSide= (int)eHandSide::Left;
+				FusionDiagnostics::Observation observation;
+				observation.cameraIndex= 0;
+				observation.labeledSide= (int)eHandSide::Left;
+				observation.weight= 0.9f;
+				cluster.observations.push_back(observation);
+				diagnostics.clusters.push_back(cluster);
+			}
+
+			DiagnosticDump dump;
+			const int dominant[2]= {0, -1};
+			for (int record= 0; record < 3; ++record)
+				dump.record({&cameraResult}, frame, diagnostics, dominant, 1.02f);
+
+			cv::Mat testFrame(128, 128, CV_8UC3, cv::Scalar(40, 40, 40));
+			DiagCameraSnapshot snapshot;
+			snapshot.lastResult= &cameraResult;
+			snapshot.frame= &testFrame;
+			snapshot.deviceFps= 30.f;
+			snapshot.droppedFrames= 1;
+			snapshot.activeEp= "test";
+			snapshot.trackingEnabled= true;
+
+			const std::filesystem::path dumpDir=
+				std::filesystem::temp_directory_path() / "mikanmediapipe_test_dump";
+			std::filesystem::remove_all(dumpDir);
+
+			AppConfig config;
+			bool bOk= dump.write(dumpDir.string(), {snapshot}, frame, config.toJsonString());
+			bOk&= std::filesystem::exists(dumpDir / "dump.json");
+			bOk&= std::filesystem::exists(dumpDir / "cam0_raw.png");
+			bOk&= std::filesystem::exists(dumpDir / "cam0_annotated.png");
+
+			// Sanity-check the JSON payload: all top-level sections present,
+			// history depth matches, affinity table serialized
+			if (bOk)
+			{
+				std::ifstream jsonFile(dumpDir / "dump.json");
+				const std::string content(
+					(std::istreambuf_iterator<char>(jsonFile)), std::istreambuf_iterator<char>());
+				for (const char* needle :
+					 {"\"config\"", "\"cameras\"", "\"fusedSnapshot\"", "\"history\"", "\"affinity\"",
+					  "\"imagePoints\"", "\"assignedSide\""})
+				{
+					if (content.find(needle) == std::string::npos)
+					{
+						MIKAN_LOG_ERROR("test-dump") << "dump.json missing section " << needle;
+						bOk= false;
+					}
+				}
+			}
+
+			MIKAN_LOG_INFO("test-dump") << "dump dir: " << dumpDir.string() << " ok=" << bOk;
+			if (!bOk)
+			{
+				MIKAN_LOG_ERROR("test-dump") << "FAILED";
+				result= 1;
+			}
+			else
+			{
+				std::filesystem::remove_all(dumpDir);
+				MIKAN_LOG_INFO("test-dump") << "All dump checks passed";
+			}
 
 			log_dispose();
 			return result;

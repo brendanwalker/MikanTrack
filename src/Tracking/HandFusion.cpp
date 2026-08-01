@@ -104,26 +104,25 @@ static bool isSameHandObservation(const glm::vec3& palmA, const glm::vec3& camer
 	return nearViewRay(palmB, cameraPosA, palmA) || nearViewRay(palmA, cameraPosB, palmB);
 }
 
-float HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
+HandFusion::AffinityBreakdown HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
 {
+	AffinityBreakdown affinity;
+
 	// Classifier votes: each camera's assigned side, weighted by presence and
 	// how decisive its (smoothed) handedness score was
-	float voteScore= 0.f;
 	for (const HandCandidate& candidate : cluster.candidates)
-		voteScore+= candidate.sideVoteWeight * (candidate.hand->side == side ? 1.f : -1.f);
+		affinity.vote+= candidate.sideVoteWeight * (candidate.hand->side == side ? 1.f : -1.f);
 
 	// Temporal continuity: attraction to where this side's fused hand was last
-	float temporalScore= 0.f;
 	if (m_bLastFusedPalmValid[(int)side])
 	{
 		const float dist= glm::length(cluster.palmWorld - m_lastFusedPalm[(int)side]);
-		temporalScore= kTemporalWeight *
+		affinity.temporal= kTemporalWeight *
 			std::clamp(1.f - (dist - kTemporalFullDistM) / kTemporalFullDistM, -1.f, 1.f);
 	}
 
 	// Spatial prior (opt-in): hands that never cross stay on their own side of
 	// the marker, so position along the configured axis is side evidence
-	float spatialScore= 0.f;
 	if (m_config.spatialSidePriorAxis != 0)
 	{
 		static const glm::vec3 kRightAxes[]= {
@@ -131,10 +130,10 @@ float HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
 		const glm::vec3 rightAxis= kRightAxes[std::clamp(m_config.spatialSidePriorAxis, 0, 4)];
 		const float along= glm::dot(cluster.palmWorld, rightAxis);
 		const float prior= std::clamp(along / kSpatialPriorFullDistM, -1.f, 1.f);
-		spatialScore= kSpatialPriorWeight * (side == eHandSide::Right ? prior : -prior);
+		affinity.spatial= kSpatialPriorWeight * (side == eHandSide::Right ? prior : -prior);
 	}
 
-	return voteScore + temporalScore + spatialScore;
+	return affinity;
 }
 
 void HandFusion::updateStereoScale(const HandCluster& cluster)
@@ -289,29 +288,64 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	// Keep the two best clusters (there are only two physical hands)
 	std::sort(clusters.begin(), clusters.end(),
 			  [](const HandCluster& a, const HandCluster& b) { return a.bestWeight > b.bestWeight; });
+
+	// Capture clustering diagnostics (including clusters about to be dropped)
+	m_lastDiagnostics= FusionDiagnostics();
+	m_lastDiagnostics.totalObservations= (int)observations.size();
+	for (const HandCluster& cluster : clusters)
+	{
+		FusionDiagnostics::Cluster diagCluster;
+		diagCluster.palmWorld= cluster.palmWorld;
+		diagCluster.bestWeight= cluster.bestWeight;
+		for (const HandCandidate& candidate : cluster.candidates)
+		{
+			FusionDiagnostics::Observation observation;
+			observation.cameraIndex= candidate.camera->cameraIndex;
+			observation.labeledSide= (int)candidate.hand->side;
+			observation.weight= candidate.weight;
+			observation.sideVoteWeight= candidate.sideVoteWeight;
+			observation.palmWorld= candidate.pose->palmPositionWorld;
+			diagCluster.observations.push_back(observation);
+		}
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const AffinityBreakdown affinity= sideAffinity(cluster, (eHandSide)sideIndex);
+			diagCluster.affinity[sideIndex][0]= affinity.vote;
+			diagCluster.affinity[sideIndex][1]= affinity.temporal;
+			diagCluster.affinity[sideIndex][2]= affinity.spatial;
+		}
+		m_lastDiagnostics.clusters.push_back(diagCluster);
+	}
+
 	if (clusters.size() > 2)
 		clusters.resize(2);
 
-	// Assign sides to clusters by joint affinity (votes + temporal continuity)
+	// Assign sides to clusters by joint affinity (votes + temporal continuity
+	// + optional spatial prior)
 	m_dominantCamera[0]= -1;
 	m_dominantCamera[1]= -1;
 	if (clusters.size() == 2)
 	{
-		const float assignLR= sideAffinity(clusters[0], eHandSide::Left) + sideAffinity(clusters[1], eHandSide::Right);
-		const float assignRL= sideAffinity(clusters[0], eHandSide::Right) + sideAffinity(clusters[1], eHandSide::Left);
+		const float assignLR= sideAffinity(clusters[0], eHandSide::Left).total() +
+			sideAffinity(clusters[1], eHandSide::Right).total();
+		const float assignRL= sideAffinity(clusters[0], eHandSide::Right).total() +
+			sideAffinity(clusters[1], eHandSide::Left).total();
 
 		const int firstSide= assignLR >= assignRL ? (int)eHandSide::Left : (int)eHandSide::Right;
 		const int secondSide= 1 - firstSide;
 		fuseCluster((eHandSide)firstSide, clusters[0], outFused.hands[firstSide], outFused.poses[firstSide]);
 		fuseCluster((eHandSide)secondSide, clusters[1], outFused.hands[secondSide], outFused.poses[secondSide]);
+		m_lastDiagnostics.clusters[0].assignedSide= firstSide;
+		m_lastDiagnostics.clusters[1].assignedSide= secondSide;
 	}
 	else if (clusters.size() == 1)
 	{
 		const eHandSide side=
-			sideAffinity(clusters[0], eHandSide::Left) >= sideAffinity(clusters[0], eHandSide::Right)
+			sideAffinity(clusters[0], eHandSide::Left).total() >= sideAffinity(clusters[0], eHandSide::Right).total()
 				? eHandSide::Left
 				: eHandSide::Right;
 		fuseCluster(side, clusters[0], outFused.hands[(int)side], outFused.poses[(int)side]);
+		m_lastDiagnostics.clusters[0].assignedSide= (int)side;
 	}
 
 	// Update the temporal side prior from this frame's assignments

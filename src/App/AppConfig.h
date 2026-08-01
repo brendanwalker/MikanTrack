@@ -128,12 +128,18 @@ public:
 	// Guarantees cameras.size() >= 1 afterwards.
 	bool load();
 	bool save() const;
+	// Serialized live config (same schema save() writes) - diagnostic dumps
+	// embed this so a dump always reflects unsaved in-UI changes too
+	std::string toJsonString() const;
 
 	void markDirty() { m_bDirty= true; }
 	// Saves at most once per cooldown period when dirty; call from the main loop
 	void updateAutoSave(float deltaSeconds);
 
 	static std::string getConfigFilePath();
+	// Fresh timestamped folder path for a diagnostic dump:
+	// <config dir>/dumps/<yyyy-mm-dd_hh-mm-ss> (not created here)
+	static std::string makeDumpDirectoryPath();
 
 private:
 	bool m_bDirty= false;

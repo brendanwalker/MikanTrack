@@ -8,6 +8,7 @@
 
 #include "opencv2/core/mat.hpp"
 
+#include "DiagnosticDump.h"
 #include "HandFusion.h" // CameraFrameResult
 #include "TrackingTypes.h"
 
@@ -80,6 +81,13 @@ public:
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
 
+	// Diagnostic dump (F9): the vision thread writes its rolling state history,
+	// the current camera frames (raw + annotated PNGs) and the live config to
+	// dumpDir on its next loop iteration
+	void requestDiagnosticDump(const std::string& dumpDir);
+	// Directory of the last completed dump ("" until one succeeds)
+	std::string getLastDumpPath();
+
 	// Introspection for the UI
 	const char* getActiveExecutionProvider(int cameraIndex= 0) const;
 	float getLastInferenceMs() const { return m_lastInferenceMs; } // summed across cameras
@@ -112,6 +120,9 @@ private:
 
 		cv::Mat bgrScratch;
 		cv::Mat undistortedScratch;
+		// Points at whichever scratch mat the last processed frame ended up in
+		// (vision thread only; stable between iterations for diagnostic dumps)
+		const cv::Mat* lastActiveFrame= nullptr;
 		double lastFrameTimestampMs= 0.0;
 		float captureFps= 0.f;
 
@@ -128,6 +139,8 @@ private:
 	// Cross-camera search seeding: hands the fused result tracks but this
 	// camera lost get projected into its image as pipeline search hints
 	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);
+	// Services a pending requestDiagnosticDump on the vision thread
+	void performDiagnosticDump(const TrackingFrameResult& latestOutput);
 
 	VideoCaptureSystem* m_videoCapture= nullptr;
 	AppConfig* m_config= nullptr;
@@ -147,4 +160,12 @@ private:
 	std::mutex m_fusedMutex;
 	TrackingFrameResult m_fusedResult;
 	bool m_bFusedFresh= false;
+
+	// Diagnostic dump: history lives on the vision thread; the request path
+	// and completion path are the only cross-thread strings (mutex-guarded)
+	DiagnosticDump m_diagnostics;
+	std::atomic_bool m_bDumpRequested{false};
+	std::mutex m_dumpMutex;
+	std::string m_requestedDumpDir;
+	std::string m_lastDumpPath;
 };

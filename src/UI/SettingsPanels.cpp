@@ -129,6 +129,20 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		ImGui::Text("Camera %d EP: %s", cameraIndex + 1, visionThread->getActiveExecutionProvider(cameraIndex));
 	ImGui::Text("Inference (all cameras): %.1f ms", visionThread->getLastInferenceMs());
 
+	ImGui::SeparatorText("Diagnostics");
+	if (ImGui::Button("Dump tracking state (F9)"))
+		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());
+	ImGui::SetItemTooltip(
+		"Writes the last few seconds of tracking/fusion history\n"
+		"(including cluster + side-assignment scores), the live config\n"
+		"and each camera's current frame (raw + annotated PNG) to a\n"
+		"timestamped folder - hit it the moment tracking misbehaves.");
+	{
+		const std::string lastDump= visionThread->getLastDumpPath();
+		if (!lastDump.empty())
+			ImGui::TextWrapped("Last dump: %s", lastDump.c_str());
+	}
+
 	if (bChanged)
 	{
 		config->markDirty();

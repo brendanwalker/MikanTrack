@@ -107,6 +107,59 @@ bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
 	return true;
 }
 
+void VisionThread::requestDiagnosticDump(const std::string& dumpDir)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_dumpMutex);
+		m_requestedDumpDir= dumpDir;
+	}
+	m_bDumpRequested= true;
+}
+
+std::string VisionThread::getLastDumpPath()
+{
+	std::lock_guard<std::mutex> lock(m_dumpMutex);
+	return m_lastDumpPath;
+}
+
+void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput)
+{
+	std::string dumpDir;
+	{
+		std::lock_guard<std::mutex> lock(m_dumpMutex);
+		dumpDir= m_requestedDumpDir;
+	}
+	if (dumpDir.empty())
+		return;
+
+	std::vector<DiagCameraSnapshot> snapshots;
+	for (const std::unique_ptr<CameraContext>& contextPtr : m_cameras)
+	{
+		const CameraContext& context= *contextPtr;
+
+		DiagCameraSnapshot snapshot;
+		snapshot.lastResult= &context.lastResult;
+		snapshot.frame= context.lastActiveFrame;
+		snapshot.deviceFps= m_videoCapture->getDeviceFrameRate(context.cameraIndex);
+		snapshot.droppedFrames= m_videoCapture->getDroppedFrameCount(context.cameraIndex);
+		snapshot.activeEp= context.activeEp.load();
+		snapshot.trackingEnabled= context.bTrackingEnabled;
+		snapshots.push_back(snapshot);
+	}
+
+	const bool bOk= m_diagnostics.write(dumpDir, snapshots, latestOutput, m_config->toJsonString());
+	if (bOk)
+	{
+		std::lock_guard<std::mutex> lock(m_dumpMutex);
+		m_lastDumpPath= dumpDir;
+	}
+
+	if (bOk)
+		MIKAN_MT_LOG_INFO("VisionThread") << "Diagnostic dump written to " << dumpDir;
+	else
+		MIKAN_MT_LOG_ERROR("VisionThread") << "Diagnostic dump to " << dumpDir << " failed (partial output possible)";
+}
+
 const char* VisionThread::getActiveExecutionProvider(int cameraIndex) const
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
@@ -350,6 +403,7 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 		context.undistorter->processColorFrame(context.bgrScratch, context.undistortedScratch);
 		activeFrame= &context.undistortedScratch;
 	}
+	context.lastActiveFrame= activeFrame;
 
 	TrackingFrameResult result;
 	result.frameIndex= frameIndex;
@@ -406,6 +460,9 @@ void VisionThread::threadLoop()
 	// search hints (vision-thread-local; the published copy is mutex-guarded)
 	TrackingFrameResult lastFusedForHints;
 
+	// Latest published output (world OR camera space) for diagnostic dumps
+	TrackingFrameResult lastOutputResult;
+
 	while (m_bRunning)
 	{
 		if (m_bConfigRefreshRequested.exchange(false))
@@ -431,6 +488,10 @@ void VisionThread::threadLoop()
 
 		if (!bAnyNewResult)
 		{
+			// Still service dump requests while idle (cameras may be stopped)
+			if (m_bDumpRequested.exchange(false))
+				performDiagnosticDump(lastOutputResult);
+
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			continue;
 		}
@@ -491,6 +552,18 @@ void VisionThread::threadLoop()
 			m_fusedResult= outputResult;
 			m_bFusedFresh= true;
 		}
+		lastOutputResult= outputResult;
+
+		// Diagnostic history (compact copies - cheap enough for every frame)
+		{
+			const int dominant[2]= {m_dominantCamera[0].load(), m_dominantCamera[1].load()};
+			m_diagnostics.record(fusionCandidates, outputResult,
+								 bAnyWorldCandidate ? m_fusion.getLastDiagnostics() : FusionDiagnostics(),
+								 dominant, m_autoScaleFactor.load());
+		}
+
+		if (m_bDumpRequested.exchange(false))
+			performDiagnosticDump(lastOutputResult);
 	}
 
 	// ORT sessions must be destroyed on this thread

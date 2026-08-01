@@ -203,6 +203,10 @@ void MainWindow::update(float deltaSeconds)
 	}
 	visionThread->fetchFusedResult(m_latestFused);
 
+	// F9 anywhere: diagnostic dump (state history + camera frames + config)
+	if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
+		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());
+
 	drawDockspaceAndMenuBar();
 
 	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();

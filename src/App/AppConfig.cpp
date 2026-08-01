@@ -1,5 +1,6 @@
 #include "AppConfig.h"
 
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 
@@ -152,6 +153,19 @@ std::string AppConfig::getConfigFilePath()
 	return (configDir / "config.json").string();
 }
 
+std::string AppConfig::makeDumpDirectoryPath()
+{
+	const std::filesystem::path configDir= std::filesystem::path(getConfigFilePath()).parent_path();
+
+	const std::time_t now= std::time(nullptr);
+	std::tm local{};
+	localtime_s(&local, &now);
+	char stamp[32];
+	std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &local);
+
+	return (configDir / "dumps" / stamp).string();
+}
+
 bool AppConfig::load()
 {
 	const std::string path= getConfigFilePath();
@@ -234,7 +248,7 @@ bool AppConfig::load()
 	return true;
 }
 
-bool AppConfig::save() const
+std::string AppConfig::toJsonString() const
 {
 	json j;
 	j["configVersion"]= k_configVersion;
@@ -282,6 +296,11 @@ bool AppConfig::save() const
 		{"maxRateHz", osc.maxRateHz},
 	};
 
+	return j.dump(2);
+}
+
+bool AppConfig::save() const
+{
 	const std::string path= getConfigFilePath();
 	std::ofstream file(path);
 	if (!file.is_open())
@@ -290,7 +309,7 @@ bool AppConfig::save() const
 		return false;
 	}
 
-	file << j.dump(2);
+	file << toJsonString();
 	return true;
 }
 

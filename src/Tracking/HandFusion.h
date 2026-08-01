@@ -40,6 +40,34 @@ struct HandFusionConfig
 	float smoothingBeta= 0.05f;
 };
 
+// Introspection into the last fuse() call's clustering + side assignment,
+// captured for diagnostic dumps (which cameras saw what, how observations
+// clustered, and WHY each cluster got its side)
+struct FusionDiagnostics
+{
+	struct Observation
+	{
+		int cameraIndex= -1;
+		int labeledSide= -1; // that camera's own L/R vote (0=L, 1=R)
+		float weight= 0.f;   // presence x palm visibility
+		float sideVoteWeight= 0.f;
+		glm::vec3 palmWorld{0.f};
+	};
+
+	struct Cluster
+	{
+		std::vector<Observation> observations;
+		glm::vec3 palmWorld{0.f};
+		float bestWeight= 0.f;
+		// Side-affinity components, indexed [side][0=vote,1=temporal,2=spatial]
+		float affinity[2][3]{};
+		int assignedSide= -1; // -1 = dropped (more clusters than hands)
+	};
+
+	int totalObservations= 0;
+	std::vector<Cluster> clusters; // includes dropped clusters
+};
+
 // Fuses per-camera PARAMETRIC hand poses into one TrackingFrameResult:
 // visibility-weighted blending of the palm transform (position average +
 // quaternion blend) and the finger angles. Poses and angles compose across
@@ -70,6 +98,10 @@ public:
 	// Diagnostics: per-side index of the camera that dominated the last fuse
 	// (-1 when the side wasn't tracked)
 	int getDominantCamera(eHandSide side) const { return m_dominantCamera[(int)side]; }
+
+	// Full clustering/side-assignment introspection for the last fuse()
+	// (call from the fusing thread only)
+	const FusionDiagnostics& getLastDiagnostics() const { return m_lastDiagnostics; }
 
 	// Stereo hand-scale estimation: when two cameras observe the same physical
 	// hand, the two view rays through its palm triangulate the true depth,
@@ -109,8 +141,17 @@ private:
 		float bestWeight= 0.f;
 	};
 
+	struct AffinityBreakdown
+	{
+		float vote= 0.f;
+		float temporal= 0.f;
+		float spatial= 0.f;
+		float total() const { return vote + temporal + spatial; }
+	};
+
 	// Affinity of a cluster for a side: classifier votes + temporal continuity
-	float sideAffinity(const HandCluster& cluster, eHandSide side) const;
+	// + optional spatial prior
+	AffinityBreakdown sideAffinity(const HandCluster& cluster, eHandSide side) const;
 	void updateStereoScale(const HandCluster& cluster);
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
 	void applySmoothing(TrackingFrameResult& ioFused);
@@ -134,4 +175,6 @@ private:
 
 	float m_stereoScaleCorrection= 1.f;
 	bool m_bStereoScaleFresh= false;
+
+	FusionDiagnostics m_lastDiagnostics;
 };
