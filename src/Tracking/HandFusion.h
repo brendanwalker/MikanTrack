@@ -130,6 +130,9 @@ private:
 		const HandPose* pose= nullptr;    // the parametric observation being fused
 		float weight= 0.f;                // presence x palm visibility
 		float sideVoteWeight= 0.f;        // presence x classifier decisiveness
+		// Classifier opinion in [-1 (left), +1 (right)], from the flip-adjusted
+		// rightProb - NOT from the (displaceable) per-camera side label
+		float signedVote= 0.f;
 	};
 
 	// One physical hand: all cameras' observations of it
@@ -138,8 +141,15 @@ private:
 		std::vector<HandCandidate> candidates;
 		glm::vec3 palmWorld{0.f};        // best candidate's palm position (cluster anchor)
 		glm::vec3 anchorCameraPos{0.f};  // that candidate's camera position (for ray matching)
+		float anchorSignedVote= 0.f;
 		float bestWeight= 0.f;
 	};
+
+	// Cost of merging an observation into a cluster (lateral-aware position
+	// distance + handedness-vote coherence); >= kPairCostInf means "never"
+	float pairCost(const HandCandidate& observation, const HandCluster& cluster) const;
+	// Joint per-camera assignment of observations onto clusters (see .cpp)
+	void clusterObservations(std::vector<HandCandidate>& observations, std::vector<HandCluster>& outClusters) const;
 
 	struct AffinityBreakdown
 	{
@@ -170,6 +180,11 @@ private:
 	// Temporal side-assignment prior: last fused palm position per side
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};
 	bool m_bLastFusedPalmValid[2]= {false, false};
+
+	// Single-cluster hysteresis: while only one hand is tracked, its side
+	// assignment sticks unless decisively contradicted (prevents the L/R
+	// flip-flop on near-tied affinities that poisons the temporal prior)
+	int m_lastSoloSide= -1;
 
 	int m_dominantCamera[2]= {-1, -1};
 

@@ -391,6 +391,7 @@ void HandTrackingPipeline::publishHands(TrackingFrameResult& outResult)
 		hand.slotId= slotIndex;
 		hand.presence= slot.presence;
 		hand.handednessScore= slot.handednessScore;
+		hand.rightProb= m_config.flipHandedness ? 1.f - slot.handednessScore : slot.handednessScore;
 		hand.imagePoints= slot.imagePoints;
 		hand.modelPoints= slot.modelPoints;
 		hand.hasCameraSpace= false;

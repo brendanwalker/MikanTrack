@@ -27,6 +27,13 @@ static constexpr float kSpatialPriorFullDistM= 0.15f;
 // Below temporal continuity (2.0) so a tracked hand never swaps sides mid-
 // flight, but strong enough to beat a single camera's decisive mislabel
 static constexpr float kSpatialPriorWeight= 1.f;
+// Clustering pair costs (meter-equivalent units)
+static constexpr float kPairCostInf= 1e6f;      // "never merge"
+static constexpr float kVoteCoherenceCostM= 0.04f; // vote agreement discount / disagreement bump
+static constexpr float kVoteVetoDecisiveness= 0.8f; // both this decisive + opposed -> veto merge
+static constexpr float kVoteVetoMinDistM= 0.06f;    // ...unless practically the same point
+// Single-cluster side stickiness (affinity units, on top of votes/temporal)
+static constexpr float kSoloSideStickiness= 0.75f;
 
 void HandFusion::configure(const HandFusionConfig& config)
 {
@@ -51,6 +58,7 @@ void HandFusion::configure(const HandFusionConfig& config)
 		m_bLastFusedPalmValid[sideIndex]= false;
 	}
 	m_lastTimestampMs= -1.0;
+	m_lastSoloSide= -1;
 	m_stereoScaleCorrection= 1.f;
 	m_bStereoScaleFresh= false;
 }
@@ -70,48 +78,219 @@ float HandFusion::visibilityFactor(const glm::quat& palmOrientationWorld, const 
 	return 0.05f + fabsf(glm::dot(palmNormal, viewRay / viewLength));
 }
 
-// Same-physical-hand test for clustering. Depth along the observing camera's
-// view ray is the noisy dimension (it scales linearly with hand-scale / PnP
-// error), so a plain euclidean gate splits one hand into two clusters when a
-// camera's depth is off - which then fights the real hand for a side. Two
-// observations match if they're close in 3D, OR one lies close to the view
-// ray through the other (same image position, different depth).
-static bool isSameHandObservation(const glm::vec3& palmA, const glm::vec3& cameraPosA,
+// Lateral-aware distance between two observations of (possibly) the same
+// physical hand. Depth along the observing camera's view ray is the noisy
+// dimension (it scales linearly with hand-scale / PnP error), so when one
+// point lies close to the view ray through the other (same image position,
+// different depth), the perpendicular ray distance replaces the euclidean
+// one. The ray substitution uses a tighter gate so hands genuinely lined up
+// along a ray (one behind the other) keep their full distance.
+static float lateralAwareDistance(const glm::vec3& palmA, const glm::vec3& cameraPosA,
 								  const glm::vec3& palmB, const glm::vec3& cameraPosB,
 								  float maxDistM)
 {
-	if (glm::length(palmA - palmB) <= maxDistM)
-		return true;
+	float dist= glm::length(palmA - palmB);
 
-	// Tighter lateral gate for the ray test: hands genuinely lined up along a
-	// view ray (one behind the other) must not merge
 	const float rayGateM= maxDistM * 0.5f;
-	auto nearViewRay= [rayGateM](const glm::vec3& point, const glm::vec3& rayOrigin, const glm::vec3& through) {
+	auto viewRayLateral= [rayGateM](const glm::vec3& point, const glm::vec3& rayOrigin,
+									const glm::vec3& through) -> float {
 		glm::vec3 dir= through - rayOrigin;
 		const float observedDepth= glm::length(dir);
 		if (observedDepth < 1e-4f)
-			return false;
+			return kPairCostInf;
 		dir/= observedDepth;
 
 		const glm::vec3 toPoint= point - rayOrigin;
 		const float along= glm::dot(toPoint, dir);
 		if (along <= 0.f || fabsf(along - observedDepth) > kRayDepthSlackM)
-			return false;
+			return kPairCostInf;
 
-		return glm::length(toPoint - dir * along) <= rayGateM;
+		const float lateral= glm::length(toPoint - dir * along);
+		return lateral <= rayGateM ? lateral : kPairCostInf;
 	};
 
-	return nearViewRay(palmB, cameraPosA, palmA) || nearViewRay(palmA, cameraPosB, palmB);
+	dist= std::min(dist, viewRayLateral(palmB, cameraPosA, palmA));
+	dist= std::min(dist, viewRayLateral(palmA, cameraPosB, palmB));
+	return dist;
+}
+
+float HandFusion::pairCost(const HandCandidate& observation, const HandCluster& cluster) const
+{
+	const glm::vec3& palm= observation.pose->palmPositionWorld;
+	const glm::vec3 cameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+
+	const float euclid= glm::length(palm - cluster.palmWorld);
+	const float dist=
+		lateralAwareDistance(palm, cameraPos, cluster.palmWorld, cluster.anchorCameraPos, m_config.wristMatchMaxDistM);
+	if (dist > m_config.wristMatchMaxDistM)
+		return kPairCostInf;
+
+	// Handedness-vote coherence. Two observations whose classifiers DECISIVELY
+	// disagree are almost never the same physical hand - when hands are close
+	// together, position cannot tell them apart (depth noise is comparable to
+	// the hand separation; confirmed live in the 2026-08-01 clap dump where
+	// each camera correctly tracked a DIFFERENT hand and position-only
+	// clustering kept merging them, cancelling both votes).
+	const float voteProduct= observation.signedVote * cluster.anchorSignedVote;
+	if (voteProduct < 0.f &&
+		fabsf(observation.signedVote) > kVoteVetoDecisiveness &&
+		fabsf(cluster.anchorSignedVote) > kVoteVetoDecisiveness &&
+		euclid > kVoteVetoMinDistM)
+	{
+		return kPairCostInf;
+	}
+
+	return std::max(dist - kVoteCoherenceCostM * voteProduct, 0.f);
+}
+
+// Groups observations into clusters (one cluster = one physical hand).
+//
+// Correspondence when hands are close together CANNOT be decided greedily by
+// nearest-position: depth noise along each camera's view ray is comparable to
+// the hand separation, so an anchor's nearest cross-camera neighbor is
+// routinely the WRONG hand (seen live: 2.6cm to the wrong hand vs 5.7cm to
+// the right one). Instead, observations are grouped per camera and each
+// camera's observations are assigned onto the existing clusters JOINTLY -
+// every injective mapping (at most 2 observations per camera) is scored with
+// pairCost and the cheapest total wins.
+void HandFusion::clusterObservations(std::vector<HandCandidate>& observations,
+									 std::vector<HandCluster>& outClusters) const
+{
+	outClusters.clear();
+
+	// Group per camera, best camera (by its strongest observation) first
+	struct CameraGroup
+	{
+		float bestWeight= 0.f;
+		std::vector<HandCandidate> observations;
+	};
+	std::vector<CameraGroup> groups;
+	std::sort(observations.begin(), observations.end(),
+			  [](const HandCandidate& a, const HandCandidate& b) { return a.weight > b.weight; });
+	for (const HandCandidate& observation : observations)
+	{
+		CameraGroup* group= nullptr;
+		for (CameraGroup& existing : groups)
+		{
+			if (!existing.observations.empty() &&
+				existing.observations[0].camera->cameraIndex == observation.camera->cameraIndex)
+				group= &existing;
+		}
+		if (group == nullptr)
+		{
+			groups.emplace_back();
+			group= &groups.back();
+		}
+		group->observations.push_back(observation);
+		group->bestWeight= std::max(group->bestWeight, observation.weight);
+	}
+	std::sort(groups.begin(), groups.end(),
+			  [](const CameraGroup& a, const CameraGroup& b) { return a.bestWeight > b.bestWeight; });
+
+	auto appendToCluster= [](HandCluster& cluster, const HandCandidate& observation) {
+		cluster.candidates.push_back(observation);
+		if (observation.weight > cluster.bestWeight)
+		{
+			cluster.palmWorld= observation.pose->palmPositionWorld;
+			cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+			cluster.anchorSignedVote= observation.signedVote;
+			cluster.bestWeight= observation.weight;
+		}
+	};
+	auto newCluster= [&outClusters](const HandCandidate& observation) {
+		HandCluster cluster;
+		cluster.candidates.push_back(observation);
+		cluster.palmWorld= observation.pose->palmPositionWorld;
+		cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+		cluster.anchorSignedVote= observation.signedVote;
+		cluster.bestWeight= observation.weight;
+		outClusters.push_back(cluster);
+	};
+
+	// Cost of NOT merging: keeps single-observation semantics identical to the
+	// old per-observation gate (merge exactly when cost < gate)
+	const float newClusterCost= m_config.wristMatchMaxDistM;
+
+	for (const CameraGroup& group : groups)
+	{
+		if (outClusters.empty())
+		{
+			for (const HandCandidate& observation : group.observations)
+				newCluster(observation);
+			continue;
+		}
+
+		// Enumerate injective mappings observation -> cluster index (or -1 for
+		// a new cluster); <=2 observations x few clusters = tiny search
+		const int clusterCount= (int)outClusters.size();
+		if (group.observations.size() == 1)
+		{
+			const HandCandidate& observation= group.observations[0];
+			int bestTarget= -1;
+			float bestCost= newClusterCost;
+			for (int target= 0; target < clusterCount; ++target)
+			{
+				const float cost= pairCost(observation, outClusters[target]);
+				if (cost < bestCost)
+				{
+					bestCost= cost;
+					bestTarget= target;
+				}
+			}
+			if (bestTarget >= 0)
+				appendToCluster(outClusters[bestTarget], observation);
+			else
+				newCluster(observation);
+		}
+		else
+		{
+			// Two observations from one camera are two DIFFERENT physical
+			// hands - they may never share a cluster
+			int bestTarget0= -1, bestTarget1= -1;
+			float bestCost= 2.f * newClusterCost;
+			for (int target0= -1; target0 < clusterCount; ++target0)
+			{
+				for (int target1= -1; target1 < clusterCount; ++target1)
+				{
+					if (target0 == target1 && target0 != -1)
+						continue;
+
+					const float cost0=
+						target0 < 0 ? newClusterCost : pairCost(group.observations[0], outClusters[target0]);
+					const float cost1=
+						target1 < 0 ? newClusterCost : pairCost(group.observations[1], outClusters[target1]);
+					if (cost0 + cost1 < bestCost)
+					{
+						bestCost= cost0 + cost1;
+						bestTarget0= target0;
+						bestTarget1= target1;
+					}
+				}
+			}
+			if (bestTarget0 >= 0)
+				appendToCluster(outClusters[bestTarget0], group.observations[0]);
+			else
+				newCluster(group.observations[0]);
+			if (bestTarget1 >= 0)
+				appendToCluster(outClusters[bestTarget1], group.observations[1]);
+			else
+				newCluster(group.observations[1]);
+		}
+	}
 }
 
 HandFusion::AffinityBreakdown HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
 {
 	AffinityBreakdown affinity;
 
-	// Classifier votes: each camera's assigned side, weighted by presence and
-	// how decisive its (smoothed) handedness score was
+	// Classifier votes: each camera's flip-adjusted handedness score, weighted
+	// by presence and decisiveness (the per-camera side LABEL is not evidence
+	// - slot bookkeeping displaces it)
 	for (const HandCandidate& candidate : cluster.candidates)
-		affinity.vote+= candidate.sideVoteWeight * (candidate.hand->side == side ? 1.f : -1.f);
+	{
+		const eHandSide votedSide= candidate.signedVote >= 0.f ? eHandSide::Right : eHandSide::Left;
+		affinity.vote+= candidate.sideVoteWeight * (votedSide == side ? 1.f : -1.f);
+	}
 
 	// Temporal continuity: attraction to where this side's fused hand was last
 	if (m_bLastFusedPalmValid[(int)side])
@@ -228,8 +407,11 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			candidate.weight= pose.presence *
 				visibilityFactor(pose.palmOrientationWorld, pose.palmPositionWorld, cameraPos);
 
-			// Vote weight: presence x how decisive the classifier was
-			candidate.sideVoteWeight= hand.presence * std::max(fabsf(hand.handednessScore - 0.5f) * 2.f, 0.2f);
+			// Vote DIRECTION comes from the flip-adjusted classifier score,
+			// never from the per-camera side label (labels get displaced by
+			// slot bookkeeping and then vote decisively for the wrong side)
+			candidate.signedVote= (hand.rightProb - 0.5f) * 2.f;
+			candidate.sideVoteWeight= hand.presence * std::max(fabsf(candidate.signedVote), 0.2f);
 
 			observations.push_back(candidate);
 		}
@@ -242,48 +424,11 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		outFused.inferenceMs= freshest->result.inferenceMs;
 	}
 
-	// Cluster observations by world palm proximity: one cluster = one
-	// physical hand, regardless of what each camera called it
+	// Cluster observations: one cluster = one physical hand, regardless of
+	// what each camera called it (joint per-camera assignment, see
+	// clusterObservations for why greedy nearest-position fails here)
 	std::vector<HandCluster> clusters;
-	std::sort(observations.begin(), observations.end(),
-			  [](const HandCandidate& a, const HandCandidate& b) { return a.weight > b.weight; });
-	for (const HandCandidate& observation : observations)
-	{
-		const glm::vec3& palm= observation.pose->palmPositionWorld;
-
-		HandCluster* target= nullptr;
-		for (HandCluster& cluster : clusters)
-		{
-			// One observation per camera per cluster (a camera can't see the
-			// same physical hand twice)
-			bool bCameraAlreadyInCluster= false;
-			for (const HandCandidate& member : cluster.candidates)
-				bCameraAlreadyInCluster|= member.camera->cameraIndex == observation.camera->cameraIndex;
-
-			if (!bCameraAlreadyInCluster &&
-				isSameHandObservation(palm, glm::vec3(observation.camera->markerFromCamera[3]),
-									  cluster.palmWorld, cluster.anchorCameraPos,
-									  m_config.wristMatchMaxDistM))
-			{
-				target= &cluster;
-				break;
-			}
-		}
-
-		if (target != nullptr)
-		{
-			target->candidates.push_back(observation);
-		}
-		else
-		{
-			HandCluster cluster;
-			cluster.candidates.push_back(observation);
-			cluster.palmWorld= palm; // best-weighted member (observations are sorted)
-			cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
-			cluster.bestWeight= observation.weight;
-			clusters.push_back(cluster);
-		}
-	}
+	clusterObservations(observations, clusters);
 
 	// Keep the two best clusters (there are only two physical hands)
 	std::sort(clusters.begin(), clusters.end(),
@@ -340,12 +485,32 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	}
 	else if (clusters.size() == 1)
 	{
-		const eHandSide side=
-			sideAffinity(clusters[0], eHandSide::Left).total() >= sideAffinity(clusters[0], eHandSide::Right).total()
-				? eHandSide::Left
-				: eHandSide::Right;
+		float affinityLeft= sideAffinity(clusters[0], eHandSide::Left).total();
+		float affinityRight= sideAffinity(clusters[0], eHandSide::Right).total();
+
+		// Hysteresis: right after a clap both sides' temporal priors sit at
+		// the same spot and votes can cancel, leaving the assignment to
+		// numeric noise - which flip-flops L/R every frame and destroys the
+		// temporal prior for the reacquisition. Stick with the incumbent
+		// side unless decisively contradicted.
+		if (m_lastSoloSide == (int)eHandSide::Left)
+			affinityLeft+= kSoloSideStickiness;
+		else if (m_lastSoloSide == (int)eHandSide::Right)
+			affinityRight+= kSoloSideStickiness;
+
+		const eHandSide side= affinityLeft >= affinityRight ? eHandSide::Left : eHandSide::Right;
 		fuseCluster(side, clusters[0], outFused.hands[(int)side], outFused.poses[(int)side]);
 		m_lastDiagnostics.clusters[0].assignedSide= (int)side;
+	}
+
+	// Track the solo-side incumbent for the hysteresis above
+	{
+		const bool bLeftTracked= outFused.poses[0].tracked;
+		const bool bRightTracked= outFused.poses[1].tracked;
+		if (bLeftTracked != bRightTracked)
+			m_lastSoloSide= bLeftTracked ? (int)eHandSide::Left : (int)eHandSide::Right;
+		else
+			m_lastSoloSide= -1;
 	}
 
 	// Update the temporal side prior from this frame's assignments

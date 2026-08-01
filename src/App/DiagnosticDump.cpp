@@ -55,8 +55,10 @@ static json diagHandToJson(const DiagHandState& hand)
 
 	return {
 		{"tracked", true},
+		{"slotId", hand.slotId},
 		{"presence", hand.presence},
 		{"handednessScore", hand.handednessScore},
+		{"rightProb", hand.rightProb},
 		{"labeledSide", sideName(hand.labeledSide)},
 		{"visibility", hand.visibility},
 		{"hasWorldPose", hand.hasWorldPose},
@@ -120,8 +122,10 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	if (!outHand.tracked)
 		return;
 
+	outHand.slotId= hand.slotId;
 	outHand.presence= std::max(pose.presence, hand.presence);
 	outHand.handednessScore= hand.handednessScore;
+	outHand.rightProb= hand.rightProb;
 	outHand.labeledSide= (int)(hand.tracked ? hand.side : pose.side);
 	outHand.visibility= pose.visibility;
 	outHand.hasWorldPose= pose.hasWorldPose;

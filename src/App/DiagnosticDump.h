@@ -24,9 +24,11 @@
 struct DiagHandState
 {
 	bool tracked= false;
+	int slotId= -1; // pipeline slot identity (watch for ROI hijacks at hand crossings)
 	float presence= 0.f;
 	float handednessScore= 0.f;
-	int labeledSide= -1; // camera records: that camera's own label; fused: assigned side
+	float rightProb= 0.5f; // flip-adjusted classifier opinion (what fusion votes with)
+	int labeledSide= -1;   // camera records: that camera's own label; fused: assigned side
 	float visibility= 0.f;
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f};

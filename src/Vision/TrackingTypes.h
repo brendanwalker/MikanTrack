@@ -74,6 +74,10 @@ struct TrackedHand
 	float handednessScore= 0.f; // raw model handedness (per opencv_zoo mp_handpose.py:
 	                            // 0=left .. 1=right in model terms, assuming a
 	                            // mirrored/selfie view; see flipHandedness)
+	// Flip-adjusted probability this is a RIGHT hand. THIS is the classifier's
+	// actual opinion - `side` can be displaced by slot bookkeeping (two slots
+	// claiming the same side) and must not be treated as evidence
+	float rightProb= 0.5f;
 
 	// Landmarks in full-frame pixels; z is MediaPipe relative depth
 	// (same scale as x/y pixels, relative to the wrist)

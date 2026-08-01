@@ -318,6 +318,8 @@ static int runApp(int argc, char** argv)
 				hand.side= labeledSide;
 				hand.presence= presence;
 				hand.handednessScore= handednessScore;
+				// tests treat the score as already flip-adjusted
+				hand.rightProb= handednessScore;
 				return frame;
 			};
 
@@ -476,9 +478,11 @@ static int runApp(int argc, char** argv)
 
 			// (f) Ray-aware clustering: camera 1 sees ONLY the left hand, but
 			// with a 45% depth overestimate along its view ray (bad hand scale)
-			// AND mislabels it Right. Euclidean clustering would split it into
-			// a phantom "right hand" fighting camera 2's real right hand; ray-
-			// aware clustering must merge it into the left cluster.
+			// AND mislabels it Right (weakly - a DECISIVE opposite score would
+			// trigger the vote-coherence veto, which is test (i)'s subject).
+			// Euclidean clustering would split it into a phantom "right hand"
+			// fighting camera 2's real right hand; ray-aware clustering must
+			// merge it into the left cluster.
 			{
 				HandFusion freshFusion; // no temporal prior from earlier tests
 				freshFusion.configure(fusionConfig);
@@ -490,7 +494,7 @@ static int runApp(int argc, char** argv)
 
 				const auto camA= makeCameraResult(
 					0, cam1Pos, now,
-					makeObservation(leftPalmDisplaced, faceUpToCam1, 0.7f, eHandSide::Right, 0.9f, 0.f));
+					makeObservation(leftPalmDisplaced, faceUpToCam1, 0.7f, eHandSide::Right, 0.7f, 0.f));
 				TrackingFrameResult camBFrame=
 					makeObservation(palmTruth, faceUpToCam1, 0.9f, eHandSide::Left, 0.05f, 0.f);
 				{
@@ -553,6 +557,96 @@ static int runApp(int argc, char** argv)
 				{
 					MIKAN_LOG_ERROR("test-fusion")
 						<< "(g) FAILED: spatial prior must overrule a decisive mislabel";
+					result= 1;
+				}
+			}
+
+			// (h) Joint cluster pairing - regression from the 2026-08-01 clap
+			// dump (real numbers, reacquisition frame i116). Both cameras'
+			// slot LABELS are physically reversed after the clap, and greedy
+			// nearest-position clustering paired the wrong hands cross-camera
+			// (each camera's depth error put the wrong hand nearest). The
+			// joint assignment + score-based votes must pair the physical
+			// hands correctly and assign the true sides.
+			{
+				HandFusion freshFusion;
+				freshFusion.configure(fusionConfig);
+
+				const glm::vec3 cam0Pos(0.038f, 0.355f, 0.646f);  // real extrinsics
+				const glm::vec3 cam1PosReal(0.073f, -0.284f, 0.650f);
+
+				// cam0: physical RIGHT hand sits in its "Left" slot (hijack),
+				// physical LEFT in its "Right" slot - scores tell the truth
+				TrackingFrameResult cam0Frame=
+					makeObservation(glm::vec3(0.018f, -0.023f, 0.164f), faceUpToCam1, 0.99f, eHandSide::Left, 0.34f, 0.f);
+				{
+					const TrackingFrameResult other= makeObservation(
+						glm::vec3(0.018f, 0.139f, 0.164f), faceUpToCam1, 0.98f, eHandSide::Right, 0.04f, 0.f);
+					cam0Frame.poses[(int)eHandSide::Right]= other.poses[(int)eHandSide::Right];
+					cam0Frame.hands[(int)eHandSide::Right]= other.hands[(int)eHandSide::Right];
+				}
+				TrackingFrameResult cam1Frame=
+					makeObservation(glm::vec3(0.011f, -0.039f, 0.110f), faceUpToCam1, 0.98f, eHandSide::Left, 0.97f, 0.f);
+				{
+					const TrackingFrameResult other= makeObservation(
+						glm::vec3(0.023f, 0.066f, 0.201f), faceUpToCam1, 0.99f, eHandSide::Right, 0.78f, 0.f);
+					cam1Frame.poses[(int)eHandSide::Right]= other.poses[(int)eHandSide::Right];
+					cam1Frame.hands[(int)eHandSide::Right]= other.hands[(int)eHandSide::Right];
+				}
+
+				const auto camA= makeCameraResult(0, cam0Pos, now, cam0Frame);
+				const auto camB= makeCameraResult(1, cam1PosReal, now, cam1Frame);
+
+				TrackingFrameResult fused;
+				freshFusion.fuse({&camA, &camB}, now, fused);
+
+				// Physical right hand lives at y ~ -0.03, physical left at y ~ +0.10
+				const HandPose& left= fused.poses[(int)eHandSide::Left];
+				const HandPose& right= fused.poses[(int)eHandSide::Right];
+				MIKAN_LOG_INFO("test-fusion") << "(h) clap-dump regression: L tracked=" << left.tracked
+					<< " y=" << (left.tracked ? left.palmPositionWorld.y : 0.f)
+					<< " R tracked=" << right.tracked
+					<< " y=" << (right.tracked ? right.palmPositionWorld.y : 0.f);
+				if (!left.tracked || !right.tracked ||
+					left.palmPositionWorld.y < 0.05f || right.palmPositionWorld.y > 0.f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(h) FAILED: joint pairing must untangle the post-clap label reversal";
+					result= 1;
+				}
+			}
+
+			// (i) Decisive-disagreement veto: two cameras each track a
+			// DIFFERENT physical hand only 8cm apart (post-clap separation),
+			// with decisively opposite classifier scores. Position-only
+			// clustering would merge them into one mixed cluster (cancelling
+			// both votes); the veto must keep them separate so each side is
+			// assigned correctly.
+			{
+				HandFusion freshFusion;
+				freshFusion.configure(fusionConfig);
+
+				const glm::vec3 leftPalm(0.10f, 0.05f, 0.10f);
+				const glm::vec3 rightPalm(0.10f, 0.13f, 0.10f);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(leftPalm, faceUpToCam1, 0.95f, eHandSide::Left, 0.05f, 0.f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now, makeObservation(rightPalm, faceUpToCam1, 0.95f, eHandSide::Right, 0.95f, 0.f));
+
+				TrackingFrameResult fused;
+				freshFusion.fuse({&camA, &camB}, now, fused);
+
+				const HandPose& left= fused.poses[(int)eHandSide::Left];
+				const HandPose& right= fused.poses[(int)eHandSide::Right];
+				const float leftErr= left.tracked ? glm::length(left.palmPositionWorld - leftPalm) : 1e9f;
+				const float rightErr= right.tracked ? glm::length(right.palmPositionWorld - rightPalm) : 1e9f;
+				MIKAN_LOG_INFO("test-fusion") << "(i) vote veto: L tracked=" << left.tracked
+					<< " R tracked=" << right.tracked << " Lerr mm=" << leftErr * 1000.f
+					<< " Rerr mm=" << rightErr * 1000.f;
+				if (!left.tracked || !right.tracked || leftErr > 0.001f || rightErr > 0.001f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(i) FAILED: decisively opposed observations must not merge";
 					result= 1;
 				}
 			}
