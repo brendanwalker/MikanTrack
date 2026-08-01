@@ -181,9 +181,11 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 			.addFloat(angles.distal);
 	}
 
-	// /mikan/hand/{s}/skeleton ,f x30 (1 Hz) -- per finger: base position in
-	// the palm frame (xyz) + phalanx lengths [proximal, intermediate, distal],
-	// meters. Everything a client-side forward-kinematics setup needs.
+	// /mikan/hand/{s}/skeleton ,f x45 (1 Hz) -- per finger: base position in
+	// the palm frame (xyz), phalanx lengths [proximal, intermediate, distal],
+	// and the neutral direction in the palm frame (xyz) that the phalanx
+	// points when all four of that finger's angles are zero. Everything a
+	// client-side forward-kinematics setup needs.
 	if (bSendSkeleton)
 	{
 		OscMessage& skeletonMessage= m_bundle.addMessage(k_handSkeletonAddress[sideIndex]);
@@ -193,6 +195,7 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 			skeletonMessage.addFloat(pose.skeleton.phalanxLengths[finger][0])
 				.addFloat(pose.skeleton.phalanxLengths[finger][1])
 				.addFloat(pose.skeleton.phalanxLengths[finger][2]);
+			addVec3(skeletonMessage, pose.skeleton.neutralDirInPalm[finger]);
 		}
 	}
 }

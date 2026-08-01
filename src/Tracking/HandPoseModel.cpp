@@ -114,17 +114,54 @@ glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDM
 	return frame;
 }
 
+HandPoseModel::NeutralDirections HandPoseModel::makeDefaultNeutralDirections(const HandSkeleton& skeleton)
+{
+	NeutralDirections neutralDirs;
+
+	// A flat hand holds its four fingers parallel to the middle metacarpal,
+	// which IS palm +X by construction - so that is the honest zero for them.
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		neutralDirs[finger]= glm::vec3(1.f, 0.f, 0.f);
+
+	// The thumb rests well off that axis, so its own metacarpal (wrist ->
+	// thumb CMC, in the palm plane) is the better zero
+	const glm::vec3& middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
+	const glm::vec3 wristInPalm(-middleBase.x, 0.f, 0.f);
+	const glm::vec3 thumbMeta= skeleton.baseInPalm[(int)eFinger::Thumb] - wristInPalm;
+	neutralDirs[(int)eFinger::Thumb]= safeNormalize(glm::vec3(thumbMeta.x, thumbMeta.y, 0.f));
+
+	return neutralDirs;
+}
+
+HandPoseModel::NeutralDirections HandPoseModel::captureRestPose(
+	const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side)
+{
+	const glm::mat4 palmFrame= computePalmFrame(points, side);
+	const glm::mat3 palmRotationInverse= glm::transpose(glm::mat3(palmFrame));
+
+	NeutralDirections neutralDirs;
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		const int* joints= FINGER_JOINTS[finger];
+		const glm::vec3 proximalBone= safeNormalize(points[joints[1]] - points[joints[0]]);
+		neutralDirs[finger]= safeNormalize(palmRotationInverse * proximalBone);
+	}
+	return neutralDirs;
+}
+
 void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,
+										const NeutralDirections& neutralDirs,
 										std::array<FingerAngles, FINGER_COUNT>& outAngles)
 {
 	const glm::mat4 palmFrame= computePalmFrame(points, side);
+	const glm::mat3 palmRotation= glm::mat3(palmFrame);
 	const glm::vec3 palmY= glm::vec3(palmFrame[1]);
 	const glm::vec3 palmZ= glm::vec3(palmFrame[2]);
 	const glm::vec3& wrist= points[(int)eHandLandmark::WRIST];
 
-	// "+lateral toward the thumb side" for both hands: detect which side of
-	// the palm frame the thumb/index sits on GEOMETRICALLY (the same test the
-	// FK side uses on the skeleton) rather than trusting the handedness label
+	// The thumb's anatomical pronation direction is opposite between hands;
+	// detect it GEOMETRICALLY (which side of the palm frame the index sits on)
+	// rather than trusting the handedness label, which is view-dependent
 	const bool bThumbOnMinusY=
 		glm::dot(points[(int)eHandLandmark::INDEX_MCP] - wrist, palmY) < 0.f;
 
@@ -133,52 +170,51 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 		const int* joints= FINGER_JOINTS[finger];
 		const glm::vec3& base= points[joints[0]];
 
-		// Neutral direction: the metacarpal (wrist -> finger base), projected
-		// into the palm plane so lateral splay is measured in-plane. Always
-		// well-conditioned: metacarpals never point along the palm normal.
-		glm::vec3 metacarpal= base - wrist;
-		glm::vec3 neutralDir= safeNormalize(metacarpal - palmZ * glm::dot(metacarpal, palmZ));
+		// Rest direction for this finger, brought into the points' space.
+		// Its palm-plane projection is the zero for lateral; the full
+		// direction is the zero for proximal.
+		const glm::vec3 neutralWorld= safeNormalize(palmRotation * neutralDirs[finger]);
+		const glm::vec3 neutralInPlane=
+			safeNormalize(neutralWorld - palmZ * glm::dot(neutralWorld, palmZ));
 
 		const glm::vec3 proximalBone= safeNormalize(points[joints[1]] - base);
 		const glm::vec3 intermediateBone= safeNormalize(points[joints[2]] - points[joints[1]]);
 		const glm::vec3 distalBone= safeNormalize(points[joints[3]] - points[joints[2]]);
 
 		// Lateral: signed splay of the proximal bone's palm-plane projection
-		// vs the neutral direction, about the palm normal. (The projection
-		// degenerates only at exactly 90 degrees of proximal curl, where
-		// lateral is visually meaningless anyway - safeNormalize guards it.)
+		// vs the rest direction, about palm +Z. Positive is counter-clockwise
+		// about +Z (toward palm +Y). (The projection degenerates only at
+		// exactly 90 degrees of proximal curl, where lateral is visually
+		// meaningless anyway - safeNormalize guards it.)
 		const glm::vec3 proximalInPlane=
 			safeNormalize(proximalBone - palmZ * glm::dot(proximalBone, palmZ));
-		const float lateralGeometric= signedAngle(neutralDir, proximalInPlane, palmZ);
+		const float lateral= signedAngle(neutralInPlane, proximalInPlane, palmZ);
 
 		// ONE fixed hinge axis per finger, exactly as the FK side builds it:
-		// from the post-lateral in-plane direction. All three bend angles are
-		// measured as signed rotations about this axis - measuring each
-		// joint's sign against cross(bone, palmZ) (the old approach) breaks
-		// down when a curled bone points along the palm normal and that cross
-		// degenerates, which flipped distal signs mid-curl (Z-shaped fingers).
-		const glm::quat lateralRotation= glm::angleAxis(lateralGeometric, palmZ);
-		const glm::vec3 directionLat= lateralRotation * neutralDir;
+		// from the post-lateral direction. All three bend angles are measured
+		// as signed rotations about this axis - measuring each joint's sign
+		// against cross(bone, palmZ) (the old approach) breaks down when a
+		// curled bone points along the palm normal and that cross degenerates,
+		// which flipped distal signs mid-curl (Z-shaped fingers).
+		const glm::quat lateralRotation= glm::angleAxis(lateral, palmZ);
+		const glm::vec3 directionLat= lateralRotation * neutralWorld;
 		const glm::vec3 hingeAxis= safeNormalize(glm::cross(directionLat, -palmZ));
 
 		// FK rotates by angleAxis(-bend, hinge), so the extracted bend is the
-		// NEGATED signed angle about the hinge (positive = toward palmar +Z).
-		// The thumb's MCP/IP flexion hinge is pronated about the metacarpal
-		// (see kThumbPronationRad) - lateral/proximal stay on the standard
-		// hinge (they spherically parameterize the metacarpal direction).
+		// NEGATED signed angle about the hinge - which makes positive bend
+		// curl toward the palmar side (+Z). The thumb's MCP/IP flexion hinge
+		// is pronated about the metacarpal (see kThumbPronationRad);
+		// lateral/proximal stay on the standard hinge (together they
+		// spherically parameterize the proximal bone direction).
 		const glm::vec3 flexHinge=
 			finger == (int)eFinger::Thumb
 				? pronatedThumbHinge(hingeAxis, proximalBone, bThumbOnMinusY ? -1.f : 1.f)
 				: hingeAxis;
 
-		const float proximal= -signedAngle(directionLat, proximalBone, hingeAxis);
-		const float intermediate= -signedAngle(proximalBone, intermediateBone, flexHinge);
-		const float distal= -signedAngle(intermediateBone, distalBone, flexHinge);
-
-		outAngles[finger].lateral= bThumbOnMinusY ? -lateralGeometric : lateralGeometric;
-		outAngles[finger].proximal= proximal;
-		outAngles[finger].intermediate= intermediate;
-		outAngles[finger].distal= distal;
+		outAngles[finger].lateral= lateral;
+		outAngles[finger].proximal= -signedAngle(directionLat, proximalBone, hingeAxis);
+		outAngles[finger].intermediate= -signedAngle(proximalBone, intermediateBone, flexHinge);
+		outAngles[finger].distal= -signedAngle(intermediateBone, distalBone, flexHinge);
 	}
 }
 
@@ -199,6 +235,8 @@ void HandPoseModel::computeSkeleton(const std::array<glm::vec3, HAND_LANDMARK_CO
 				glm::length(points[joints[phalanx + 1]] - points[joints[phalanx]]);
 		}
 	}
+
+	outSkeleton.neutralDirInPalm= makeDefaultNeutralDirections(outSkeleton);
 }
 
 void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const HandSkeleton& skeleton,
@@ -212,40 +250,21 @@ void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const Hand
 		const FingerAngles& fingerAngles= angles[finger];
 		const glm::vec3& base= skeleton.baseInPalm[finger];
 
-		// Neutral direction in the palm frame: the metacarpal projected into
-		// the palm plane (palm origin is between wrist and middle MCP; the
-		// wrist sits at -x from the origin along palm X by construction)
-		// wristInPalm = -baseMiddleDistance... derive from geometry: the palm
-		// frame origin is midway wrist<->middleMCP, so the wrist in palm
-		// coordinates is at (-|middleMCP-wrist|/2, 0, 0). Recover that from
-		// the middle finger's base:
-		const glm::vec3& middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
-		const glm::vec3 wristInPalm(-middleBase.x, 0.f, 0.f);
+		// Rest direction for this finger (the pose all-zero angles rebuild).
+		// Lateral rotates the FULL rest direction about palm +Z, so the
+		// out-of-plane part of a captured rest pose is preserved.
+		const glm::vec3 neutralDir= safeNormalize(skeleton.neutralDirInPalm[finger]);
 
-		glm::vec3 metacarpal= base - wristInPalm;
-		glm::vec3 neutralDir= metacarpal - palmZLocal * metacarpal.z;
-		neutralDir= glm::length(neutralDir) > 1e-6f ? glm::normalize(neutralDir) : glm::vec3(1.f, 0.f, 0.f);
-
-		// Apply lateral (about palm Z; sign flipped back for left hands to
-		// mirror computeFingerAngles) then proximal bend (about the finger's
-		// lateral axis, curling toward the palmar +Z side being positive)
-		float lateral= fingerAngles.lateral;
-		// note: computeFingerAngles negates for left hands; undo here
-		// (the caller passes the side implicitly via the skeleton chirality,
-		// which was captured in the palm frame - the baseInPalm y signs)
-		// We can detect chirality from the index finger's y sign:
-		if (skeleton.baseInPalm[(int)eFinger::Index].y < 0.f)
-			lateral= -lateral;
-
-		const glm::quat lateralRotation= glm::angleAxis(lateral, palmZLocal);
+		const glm::quat lateralRotation= glm::angleAxis(fingerAngles.lateral, palmZLocal);
 		glm::vec3 direction= lateralRotation * neutralDir;
 
-		const glm::vec3 hingeAxis= glm::normalize(glm::cross(direction, -palmZLocal));
+		const glm::vec3 hingeAxis= safeNormalize(glm::cross(direction, -palmZLocal));
 		const glm::quat proximalRotation= glm::angleAxis(-fingerAngles.proximal, hingeAxis);
 		direction= proximalRotation * direction;
 
 		// Thumb MCP/IP flexion happens about the pronated hinge (mirrors
-		// computeFingerAngles); chirality from the skeleton's index y sign
+		// computeFingerAngles); chirality from the skeleton's index y sign,
+		// the FK-side equivalent of that function's bThumbOnMinusY test
 		const glm::vec3 flexHinge=
 			finger == (int)eFinger::Thumb
 				? pronatedThumbHinge(hingeAxis, direction,

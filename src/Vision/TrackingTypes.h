@@ -125,12 +125,21 @@ constexpr int FINGER_JOINTS[FINGER_COUNT][4]= {
 	{17, 18, 19, 20}, // pinky
 };
 
-// Bend angles for one finger, radians, relative to the neutral (straight,
-// along the metacarpal direction) pose:
-//   lateral:      signed splay in the palm plane (+ toward the thumb side)
-//   proximal:     base-bone curl toward the palm (+ = curling in)
-//   intermediate: hinge angle vs the proximal bone (0 = straight)
-//   distal:       hinge angle vs the intermediate bone (0 = straight)
+// Bend angles for one finger, radians, all ZERO in the rest pose (see
+// HandSkeleton::neutralDirInPalm). Sign conventions, in the palm frame:
+//   lateral:      splay about palm +Z, POSITIVE COUNTER-CLOCKWISE, i.e.
+//                 toward palm +Y = cross(palmZ, palmX). Purely geometric -
+//                 the same rotation direction for either hand (so on a right
+//                 hand positive is toward the pinky, on a left toward the
+//                 thumb; the palm frame itself carries the chirality).
+//   proximal:     base bone away from the neutral direction, POSITIVE
+//                 CURLING TOWARD THE PALM (+Z, the palmar side)
+//   intermediate: bend of the middle bone RELATIVE TO THE PROXIMAL BONE,
+//                 positive toward the palm (0 = collinear with it)
+//   distal:       bend of the tip bone RELATIVE TO THE INTERMEDIATE BONE,
+//                 positive toward the palm (0 = collinear with it)
+// The three bends chain: each is measured against its parent bone, not
+// against the palm, so a finger curling evenly reads three similar values.
 struct FingerAngles
 {
 	float lateral= 0.f;
@@ -147,6 +156,14 @@ struct HandSkeleton
 	std::array<glm::vec3, FINGER_COUNT> baseInPalm{};
 	// Phalanx lengths base->tip: [proximal, intermediate, distal]
 	std::array<std::array<float, 3>, FINGER_COUNT> phalanxLengths{};
+	// Direction each finger's proximal phalanx points when all four of its
+	// angles are zero, in the palm frame. This is what makes "zero" mean
+	// something anatomical: without it the implicit zero was "the phalanx
+	// points along wrist->knuckle", which no real hand ever does, so a
+	// resting hand reported tens of degrees on every joint.
+	// Defaults to the flat-hand convention (fingers parallel to palm +X,
+	// thumb along its own metacarpal); replaced by a captured rest pose.
+	std::array<glm::vec3, FINGER_COUNT> neutralDirInPalm{};
 };
 
 // Palm frame convention (Ultraleap-compatible):
@@ -167,6 +184,13 @@ struct HandPose
 	// observed pose noise, so it is the number to gate output on. After
 	// fusion it is the best contributing camera's confidence.
 	float confidence= 0.f;
+
+	// Validation: mean pixel distance between this camera's 2D landmarks and
+	// the forward-kinematics hand rebuilt from THIS pose (palm transform +
+	// angles + skeleton) projected back into the image. Small = the
+	// parametric model faithfully represents what was actually seen.
+	// 0 when not evaluated (e.g. after fusion, which has no single camera).
+	float fkReprojectionPx= 0.f;
 
 	bool hasCameraPose= false;
 	glm::vec3 palmPositionCamera{0.f}; // OpenCV camera convention, meters

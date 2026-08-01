@@ -147,6 +147,52 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 	}
 
+	ImGui::SeparatorText("Rest Pose");
+	{
+		HandRestPoseConfig& restPose= config->handRestPose;
+		ImGui::TextWrapped(
+			"Defines which pose reports all-zero angles. Hold both hands in "
+			"your rest pose (flat, fingers together and straight) and capture.");
+		ImGui::Text("Calibrated  L: %s  R: %s", restPose.present[0] ? "yes" : "no",
+					restPose.present[1] ? "yes" : "no");
+
+		if (ImGui::Button("Capture Rest Pose"))
+			visionThread->requestRestPoseCapture();
+		ImGui::SetItemTooltip(
+			"Captures the currently tracked hands as the zero reference.\n"
+			"Without it, zero means the flat-hand default (fingers parallel\n"
+			"to the palm's forward axis), which ignores how your own hand\n"
+			"rests - a hand hovering over a keyboard genuinely holds tens of\n"
+			"degrees of knuckle flexion.");
+
+		if (restPose.present[0] || restPose.present[1])
+		{
+			ImGui::SameLine();
+			if (ImGui::Button("Clear"))
+			{
+				restPose.present[0]= false;
+				restPose.present[1]= false;
+				bChanged= true;
+			}
+		}
+
+		// Poll for a completed capture (the vision thread does the work)
+		std::array<HandPoseModel::NeutralDirections, 2> capturedDirs;
+		bool bCaptured[2]= {false, false};
+		if (visionThread->fetchRestPoseCapture(capturedDirs, bCaptured))
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (!bCaptured[sideIndex])
+					continue;
+				restPose.neutralDirInPalm[sideIndex]= capturedDirs[sideIndex];
+				restPose.present[sideIndex]= true;
+			}
+			if (bCaptured[0] || bCaptured[1])
+				bChanged= true;
+		}
+	}
+
 	ImGui::SeparatorText("Overlay");
 	bool bShowOverlay= previewPanel->getShowOverlay();
 	if (ImGui::Checkbox("Show skeleton overlay", &bShowOverlay))

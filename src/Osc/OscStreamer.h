@@ -39,8 +39,9 @@ struct OscStreamerConfig
 ///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
 ///       /mikan/hand/{s}/fingers ,f x20 per finger (thumb..pinky):
 ///         lateral, proximalBend, intermediateBend, distalBend (radians)
-///       /mikan/hand/{s}/skeleton ,f x30 (1 Hz) per finger: base position in
-///         the palm frame xyz + phalanx lengths [prox, inter, distal]
+///       /mikan/hand/{s}/skeleton ,f x45 (1 Hz) per finger: base position in
+///         the palm frame xyz + phalanx lengths [prox, inter, distal] +
+///         neutral (zero-angle) direction in the palm frame xyz
 ///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z" appVersion
 ///     (at most once per second)
 class OscStreamer

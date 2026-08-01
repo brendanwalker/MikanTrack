@@ -232,6 +232,21 @@ bool AppConfig::load()
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
 		tracking.onnxEp= tr.value("onnxEp", "directml");
 
+		const json& rp= j.value("handRestPose", json::object());
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const char* key= sideIndex == 0 ? "left" : "right";
+			handRestPose.present[sideIndex]= false;
+			if (!rp.contains(key) || !rp[key].is_array() || rp[key].size() != FINGER_COUNT * 3)
+				continue;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				handRestPose.neutralDirInPalm[sideIndex][finger]=
+					glm::vec3(rp[key][finger * 3 + 0], rp[key][finger * 3 + 1], rp[key][finger * 3 + 2]);
+			}
+			handRestPose.present[sideIndex]= true;
+		}
+
 		const json& os= j.value("osc", json::object());
 		osc.enabled= os.value("enabled", true);
 		osc.targetIp= os.value("ip", "127.0.0.1");
@@ -293,6 +308,25 @@ std::string AppConfig::toJsonString() const
 		{"smoothingEnabled", tracking.smoothingEnabled},
 		{"onnxEp", tracking.onnxEp},
 	};
+
+	{
+		json restPoseJson;
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			if (!handRestPose.present[sideIndex])
+				continue;
+			json dirs= json::array();
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				const glm::vec3& d= handRestPose.neutralDirInPalm[sideIndex][finger];
+				dirs.push_back(d.x);
+				dirs.push_back(d.y);
+				dirs.push_back(d.z);
+			}
+			restPoseJson[sideIndex == 0 ? "left" : "right"]= dirs;
+		}
+		j["handRestPose"]= restPoseJson;
+	}
 
 	j["osc"]= {
 		{"enabled", osc.enabled},

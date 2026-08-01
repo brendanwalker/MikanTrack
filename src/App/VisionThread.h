@@ -9,6 +9,7 @@
 #include "opencv2/core/mat.hpp"
 
 #include "DiagnosticDump.h"
+#include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
 #include "TrackingTypes.h"
 
@@ -85,6 +86,16 @@ public:
 	// Re-reads config (cameras/intrinsics/extrinsics/hand scale/tracking/
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
+
+	// Rest-pose calibration: captures the next frame's flat-hand pose for both
+	// tracked hands and reports it back through the callback (main thread
+	// stores it in config, then calls requestConfigRefresh). Angles read zero
+	// in the captured pose.
+	void requestRestPoseCapture() { m_bRestPoseCaptureRequested= true; }
+	// Fetches a completed capture; returns false if none is pending. outCaptured
+	// says which sides were successfully captured.
+	bool fetchRestPoseCapture(std::array<HandPoseModel::NeutralDirections, 2>& outNeutralDirs,
+							  bool outCaptured[2]);
 
 	// Diagnostic dump (F9): the vision thread writes its rolling state history,
 	// the current camera frames (raw + annotated PNGs) and the live config to
@@ -171,6 +182,13 @@ private:
 	std::mutex m_fusedMutex;
 	TrackingFrameResult m_fusedResult;
 	bool m_bFusedFresh= false;
+
+	// Rest-pose capture handoff
+	std::atomic_bool m_bRestPoseCaptureRequested{false};
+	std::mutex m_restPoseMutex;
+	std::array<HandPoseModel::NeutralDirections, 2> m_capturedRestPose{};
+	bool m_bRestPoseCaptured[2]= {false, false};
+	bool m_bRestPoseReady= false;
 
 	// Diagnostic dump: history lives on the vision thread; the request path
 	// and completion path are the only cross-thread strings (mutex-guarded)

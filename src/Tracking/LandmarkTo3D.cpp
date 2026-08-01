@@ -105,11 +105,9 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 	outPose.palmOrientationCamera= glm::quat_cast(glm::mat3(palmFrame));
 	outPose.hasCameraPose= true;
 
-	// Angles + skeleton from the model's LOCAL articulation (scale/depth
-	// invariant - all depth noise stays in the palm transform above).
-	// Skeleton is rescaled to metric by the calibrated hand scale.
-	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.fingers);
-
+	// Skeleton from the model's LOCAL articulation (scale/depth invariant -
+	// all depth noise stays in the palm transform above), rescaled to metric
+	// by the calibrated hand scale. Fills the flat-hand default rest pose.
 	std::array<glm::vec3, HAND_LANDMARK_COUNT> metricModel;
 	const glm::vec3 modelWrist= hand.modelPoints[(int)eHandLandmark::WRIST];
 	const float modelBone=
@@ -118,6 +116,51 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 		metricModel[i]= hand.modelPoints[i] * modelScale;
 	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton);
+
+	// A calibrated rest pose replaces that default, so the captured pose
+	// reads all-zero angles. The skeleton carries it to FK and to clients.
+	if (m_bHasRestPose[(int)hand.side])
+		outPose.skeleton.neutralDirInPalm= m_restPose[(int)hand.side];
+
+	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.skeleton.neutralDirInPalm,
+									   outPose.fingers);
+
+	outPose.fkReprojectionPx= computeFkReprojectionError(hand, outPose);
+}
+
+float LandmarkTo3D::computeFkReprojectionError(const TrackedHand& hand, const HandPose& pose) const
+{
+	if (!m_bConfigured || !pose.hasCameraPose)
+		return 0.f;
+
+	// Rebuild the hand exactly as a client would - from the palm transform,
+	// skeleton and angles alone - and project it back into the image. Any
+	// error the parameterization introduces (wrong neutral reference, hinge
+	// convention, dropped degree of freedom) shows up here as pixels.
+	glm::mat4 palmTransform= glm::mat4_cast(pose.palmOrientationCamera);
+	palmTransform[3]= glm::vec4(pose.palmPositionCamera, 1.f);
+
+	std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+	HandPoseModel::buildFingerJoints(palmTransform, pose.skeleton, pose.fingers, joints);
+
+	float errorSum= 0.f;
+	int count= 0;
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		for (int joint= 0; joint < 4; ++joint)
+		{
+			const glm::vec3& p= joints[finger][joint];
+			if (p.z < 1e-3f)
+				continue;
+
+			const glm::vec2 projected(m_fx * p.x / p.z + m_cx, m_fy * p.y / p.z + m_cy);
+			const glm::vec2 observed= glm::vec2(hand.imagePoints[FINGER_JOINTS[finger][joint]]);
+			errorSum+= glm::length(projected - observed);
+			count++;
+		}
+	}
+
+	return count > 0 ? errorSum / (float)count : 0.f;
 }
 
 void LandmarkTo3D::processHand(TrackedHand& hand, float dtSeconds)

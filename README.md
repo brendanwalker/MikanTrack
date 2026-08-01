@@ -95,8 +95,8 @@ palm transform.
 | `/mikan/frame` | `iif` | frameId, timestampMs, fps |
 | `/mikan/hand/{left,right}/tracked` | `iff` | tracked (0/1), presence, confidence |
 | `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
-| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (radians, 0 = straight neutral) |
-| `/mikan/hand/{left,right}/skeleton` | `30f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m); sent at 1 Hz |
+| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (radians, 0 = the rest pose) |
+| `/mikan/hand/{left,right}/skeleton` | `45f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m) + neutral (zero-angle) direction in palm frame xyz; sent at 1 Hz |
 | `/mikan/info` | `ss` | space/units/palm-frame convention, app version (1 Hz) |
 
 **Palm frame** (Ultraleap-compatible): origin at the palm center (midway
@@ -105,11 +105,31 @@ surface**, +Y completing right-handed. Positions are in the marker-anchored
 world frame (right-handed, meters, +Z up out of the table); before extrinsics
 calibration they fall back to OpenCV camera space (`/mikan/info` says which).
 
+**Angle conventions** (all in the palm frame):
+
+- **Zero = the rest pose.** Each finger's zero direction is streamed per
+  finger as `neutralDirInPalm` in the skeleton message - use it, don't derive
+  one. Uncalibrated it is the flat-hand default (the four fingers parallel to
+  palm +X, the thumb along its own metacarpal); **Tracking panel -> Capture
+  Rest Pose** replaces it with your actual hand, which is what makes a
+  resting hand report zeros. Note a hand hovering over a keyboard genuinely
+  holds 20-50 degrees of knuckle flexion, so without a captured rest pose
+  those angles are large and *correct*, not a bug.
+- **`lateral`** rotates about palm **+Z, positive counter-clockwise**, i.e.
+  toward palm **+Y = cross(palmZ, palmX)**. Purely geometric and identical
+  for both hands (the palm frame carries the chirality), so on a right hand
+  positive splays toward the pinky and on a left hand toward the thumb.
+- **`proximal`** is positive **curling toward the palm** (the +Z side).
+- **`intermediate` and `distal` are relative to their PARENT BONE**, not to
+  the palm: `intermediate` is the middle bone's bend from the proximal bone,
+  `distal` the tip bone's bend from the intermediate bone. Zero means
+  collinear with the parent. They chain, so an evenly curling finger reads
+  three similar values.
+
 **Client-side hand reconstruction**: place each finger base at its skeleton
-offset in the palm frame; the neutral finger direction is the (palm-plane
-projected) direction from the wrist to that base; apply lateral rotation
-about palm +Z, then bend the three phalanx segments about the finger's
-lateral axis by the three bend angles. **Thumb exception**: the thumb's
+offset in the palm frame, start from that finger's streamed
+`neutralDirInPalm`, apply lateral rotation about palm +Z, then bend the three
+phalanx segments about the finger's lateral axis by the three bend angles. **Thumb exception**: the thumb's
 intermediate/distal bends rotate about its hinge PRONATED 1.2 rad (~69 deg)
 about the thumb metacarpal direction (positive pronation on a right hand,
 negative on a left) - the thumb rests twisted relative to the fingers, so

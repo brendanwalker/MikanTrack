@@ -3,6 +3,7 @@
 #include "glm/ext/matrix_double4x4.hpp"
 #include "glm/ext/vector_float3.hpp"
 
+#include "HandPoseModel.h"
 #include "MikanVideoSourceTypes.h"
 #include "OneEuroFilter.h"
 #include "TrackingTypes.h"
@@ -66,6 +67,19 @@ public:
 	}
 	float getRefLengthMeters() const { return m_refLengthMeters; }
 
+	// Per-side rest pose ("all angles zero"). Without one the flat-hand
+	// default from HandPoseModel is used.
+	void setRestPose(eHandSide side, const HandPoseModel::NeutralDirections& neutralDirs)
+	{
+		m_restPose[(int)side]= neutralDirs;
+		m_bHasRestPose[(int)side]= true;
+	}
+	void clearRestPoses()
+	{
+		m_bHasRestPose[0]= false;
+		m_bHasRestPose[1]= false;
+	}
+
 private:
 	glm::vec3 backProject(float u, float v, float z) const;
 	void processHand(TrackedHand& hand, float dtSeconds);
@@ -76,6 +90,9 @@ private:
 	// Fills the parametric HandPose (camera-space palm transform, finger
 	// angles, skeleton) from a camera-space-tracked hand
 	void fillHandPose(const TrackedHand& hand, HandPose& outPose);
+	// Mean pixel error between the hand's 2D landmarks and the FK hand
+	// rebuilt from the extracted pose, projected back into the image
+	float computeFkReprojectionError(const TrackedHand& hand, const HandPose& pose) const;
 
 	bool m_bConfigured= false;
 	float m_fx= 0.f;
@@ -86,6 +103,9 @@ private:
 
 	bool m_bUsePnpDepth= true;
 	bool m_bPnpPalmOnly= false;
+
+	std::array<HandPoseModel::NeutralDirections, 2> m_restPose{};
+	bool m_bHasRestPose[2]= {false, false};
 
 	// Warm-start state for the iterative PnP solve (per side, axis-angle +
 	// translation in OpenCV camera convention). Also the future vision

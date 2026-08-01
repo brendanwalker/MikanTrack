@@ -107,6 +107,20 @@ bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
 	return true;
 }
 
+bool VisionThread::fetchRestPoseCapture(std::array<HandPoseModel::NeutralDirections, 2>& outNeutralDirs,
+									   bool outCaptured[2])
+{
+	std::lock_guard<std::mutex> lock(m_restPoseMutex);
+	if (!m_bRestPoseReady)
+		return false;
+
+	outNeutralDirs= m_capturedRestPose;
+	outCaptured[0]= m_bRestPoseCaptured[0];
+	outCaptured[1]= m_bRestPoseCaptured[1];
+	m_bRestPoseReady= false;
+	return true;
+}
+
 void VisionThread::requestDiagnosticDump(const std::string& dumpDir)
 {
 	{
@@ -226,7 +240,7 @@ void VisionThread::refreshConfigOnThread()
 			context.pipeline->setConfig(pipelineConfig);
 		}
 
-		// 3D projection (needs that camera's calibrated intrinsics).
+			// 3D projection (needs that camera's calibrated intrinsics).
 		// Smoothing is always disabled here - the fused output is smoothed
 		// after fusion instead (avoids double-filtering).
 		if (profile.intrinsics.present)
@@ -256,6 +270,19 @@ void VisionThread::refreshConfigOnThread()
 		{
 			context.landmarkTo3D= nullptr;
 			context.undistorter= nullptr;
+		}
+
+		// Rest pose ("zero angles" reference) - applied to every camera so
+		// their per-camera angles agree before fusion blends them
+		if (context.landmarkTo3D != nullptr)
+		{
+			context.landmarkTo3D->clearRestPoses();
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (m_config->handRestPose.present[sideIndex])
+					context.landmarkTo3D->setRestPose((eHandSide)sideIndex,
+													  m_config->handRestPose.neutralDirInPalm[sideIndex]);
+			}
 		}
 
 		// Invalidate the last result so stale calibration state can't leak
@@ -579,6 +606,36 @@ void VisionThread::threadLoop()
 			m_bFusedFresh= true;
 		}
 		lastOutputResult= outputResult;
+
+		// Rest-pose capture: take the flat-hand reference from whichever camera
+		// currently sees each hand best (model landmarks are the same
+		// scale-free articulation every camera feeds into the angle solve)
+		if (m_bRestPoseCaptureRequested.exchange(false))
+		{
+			std::array<HandPoseModel::NeutralDirections, 2> captured{};
+			bool bCaptured[2]= {false, false};
+
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				float bestPresence= 0.f;
+				for (const std::unique_ptr<CameraContext>& context : m_cameras)
+				{
+					const TrackedHand& hand= context->lastResult.result.hands[sideIndex];
+					if (!context->lastResult.valid || !hand.tracked || hand.presence <= bestPresence)
+						continue;
+
+					captured[sideIndex]= HandPoseModel::captureRestPose(hand.modelPoints, hand.side);
+					bestPresence= hand.presence;
+					bCaptured[sideIndex]= true;
+				}
+			}
+
+			std::lock_guard<std::mutex> lock(m_restPoseMutex);
+			m_capturedRestPose= captured;
+			m_bRestPoseCaptured[0]= bCaptured[0];
+			m_bRestPoseCaptured[1]= bCaptured[1];
+			m_bRestPoseReady= true;
+		}
 
 		// Diagnostic history (compact copies - cheap enough for every frame)
 		{

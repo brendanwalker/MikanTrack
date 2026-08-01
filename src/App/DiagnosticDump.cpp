@@ -62,6 +62,7 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"labeledSide", sideName(hand.labeledSide)},
 		{"visibility", hand.visibility},
 		{"confidence", hand.confidence},
+		{"fkReprojectionPx", hand.fkReprojectionPx},
 		{"hasWorldPose", hand.hasWorldPose},
 		{"palmPositionWorld", vec3ToJson(hand.palmPositionWorld)},
 		{"palmOrientationWorld", quatToJson(hand.palmOrientationWorld)},
@@ -133,6 +134,7 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.labeledSide= (int)(hand.tracked ? hand.side : pose.side);
 	outHand.visibility= pose.visibility;
 	outHand.confidence= pose.confidence;
+	outHand.fkReprojectionPx= pose.fkReprojectionPx;
 	outHand.hasWorldPose= pose.hasWorldPose;
 	outHand.palmPositionWorld= pose.hasWorldPose ? pose.palmPositionWorld : pose.palmPositionCamera;
 	outHand.palmOrientationWorld= pose.hasWorldPose ? pose.palmOrientationWorld : pose.palmOrientationCamera;
@@ -240,6 +242,7 @@ static json handSnapshotToJson(const TrackedHand& hand)
 		{"handednessScore", hand.handednessScore},
 		{"imagePoints", landmarksToJson(hand.imagePoints)},
 	};
+	out["modelPoints"]= landmarksToJson(hand.modelPoints);
 	if (hand.hasCameraSpace)
 		out["cameraPoints"]= landmarksToJson(hand.cameraPoints);
 	if (hand.hasWorldSpace)
@@ -259,6 +262,7 @@ static json poseSnapshotToJson(const HandPose& pose)
 		{"visibility", pose.visibility},
 		{"confidence", pose.confidence},
 		{"fingers", fingersToJson(pose.fingers)},
+		{"fkReprojectionPx", pose.fkReprojectionPx},
 	};
 	if (pose.hasCameraPose)
 	{
@@ -270,6 +274,12 @@ static json poseSnapshotToJson(const HandPose& pose)
 		out["palmPositionWorld"]= vec3ToJson(pose.palmPositionWorld);
 		out["palmOrientationWorld"]= quatToJson(pose.palmOrientationWorld);
 	}
+
+	json neutralDirs= json::array();
+	for (const glm::vec3& dir : pose.skeleton.neutralDirInPalm)
+		neutralDirs.push_back(vec3ToJson(dir));
+	out["neutralDirInPalm"]= neutralDirs;
+
 	return out;
 }
 
