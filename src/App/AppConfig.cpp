@@ -63,6 +63,27 @@ static void distortionFromJson(const json& j, MikanDistortionCoefficients& d)
 	d.k5= j[4]; d.k6= j[5]; d.p1= j[6]; d.p2= j[7];
 }
 
+static json restAnglesToJson(const RestAnglesConfig& restAngles)
+{
+	json out= json::object();
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		if (!restAngles.present[sideIndex])
+			continue;
+		json values= json::array();
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			const FingerAngles& angles= restAngles.angles[sideIndex][finger];
+			values.push_back(angles.lateral);
+			values.push_back(angles.proximal);
+			values.push_back(angles.intermediate);
+			values.push_back(angles.distal);
+		}
+		out[sideIndex == 0 ? "left" : "right"]= values;
+	}
+	return out;
+}
+
 // -- camera profile (de)serialization ----
 static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 {
@@ -88,6 +109,24 @@ static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 		matrix3dFromJson(in["undistortedCameraMatrix"], mono.undistorted_camera_matrix);
 	if (in.contains("distortion"))
 		distortionFromJson(in["distortion"], mono.distortion_coefficients);
+
+	const json& ra= j.value("restAngles", json::object());
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const char* key= sideIndex == 0 ? "left" : "right";
+		profile.restAngles.present[sideIndex]= false;
+		if (!ra.contains(key) || !ra[key].is_array() || ra[key].size() != FINGER_COUNT * 4)
+			continue;
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			FingerAngles& angles= profile.restAngles.angles[sideIndex][finger];
+			angles.lateral= ra[key][finger * 4 + 0];
+			angles.proximal= ra[key][finger * 4 + 1];
+			angles.intermediate= ra[key][finger * 4 + 2];
+			angles.distal= ra[key][finger * 4 + 3];
+		}
+		profile.restAngles.present[sideIndex]= true;
+	}
 
 	const json& ex= j.value("extrinsics", json::object());
 	profile.extrinsics.present= ex.value("present", false);
@@ -122,6 +161,7 @@ static json cameraProfileToJson(const CameraProfile& profile)
 			 {"undistortedCameraMatrix", matrix3dToJson(mono.undistorted_camera_matrix)},
 			 {"distortion", distortionToJson(mono.distortion_coefficients)},
 		 }},
+		{"restAngles", restAnglesToJson(profile.restAngles)},
 		{"extrinsics",
 		 {
 			 {"present", profile.extrinsics.present},
@@ -232,21 +272,6 @@ bool AppConfig::load()
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
 		tracking.onnxEp= tr.value("onnxEp", "directml");
 
-		const json& rp= j.value("handRestPose", json::object());
-		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-		{
-			const char* key= sideIndex == 0 ? "left" : "right";
-			handRestPose.present[sideIndex]= false;
-			if (!rp.contains(key) || !rp[key].is_array() || rp[key].size() != FINGER_COUNT * 3)
-				continue;
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				handRestPose.neutralDirInPalm[sideIndex][finger]=
-					glm::vec3(rp[key][finger * 3 + 0], rp[key][finger * 3 + 1], rp[key][finger * 3 + 2]);
-			}
-			handRestPose.present[sideIndex]= true;
-		}
-
 		const json& os= j.value("osc", json::object());
 		osc.enabled= os.value("enabled", true);
 		osc.targetIp= os.value("ip", "127.0.0.1");
@@ -308,25 +333,6 @@ std::string AppConfig::toJsonString() const
 		{"smoothingEnabled", tracking.smoothingEnabled},
 		{"onnxEp", tracking.onnxEp},
 	};
-
-	{
-		json restPoseJson;
-		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-		{
-			if (!handRestPose.present[sideIndex])
-				continue;
-			json dirs= json::array();
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				const glm::vec3& d= handRestPose.neutralDirInPalm[sideIndex][finger];
-				dirs.push_back(d.x);
-				dirs.push_back(d.y);
-				dirs.push_back(d.z);
-			}
-			restPoseJson[sideIndex == 0 ? "left" : "right"]= dirs;
-		}
-		j["handRestPose"]= restPoseJson;
-	}
 
 	j["osc"]= {
 		{"enabled", osc.enabled},

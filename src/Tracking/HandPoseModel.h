@@ -34,10 +34,18 @@ using NeutralDirections= std::array<glm::vec3, FINGER_COUNT>;
 // can reproduce it from the skeleton.
 NeutralDirections makeDefaultNeutralDirections(const HandSkeleton& skeleton);
 
-// Rest-pose calibration: the per-finger proximal directions of THIS hand, in
-// its own palm frame. Feeding these back as the neutral makes the captured
-// pose read all-zero angles.
-NeutralDirections captureRestPose(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side);
+// Rest-pose calibration: the angles this hand reports right now, measured
+// against the flat-hand default. Subtracting them from later measurements
+// makes THIS pose read all zeros - on all four degrees of freedom, unlike a
+// neutral direction, which can only absorb lateral and proximal.
+//
+// Capture PER CAMERA: MediaPipe's model landmarks are view-dependent, so two
+// cameras watching one physical hand disagree about its articulation by tens
+// of degrees (measured live 2026-08-01: 41 deg on one finger). Removing each
+// camera's own bias is also what makes their angles comparable enough for
+// fusion to blend them meaningfully.
+void captureRestAngles(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,
+					   std::array<FingerAngles, FINGER_COUNT>& outRestAngles);
 
 // Finger bend angles (radians) from the landmarks, relative to the rest pose
 // given by neutralDirs (see FingerAngles for the sign conventions)

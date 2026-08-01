@@ -117,15 +117,27 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 		metricModel[i]= hand.modelPoints[i] * modelScale;
 	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton);
 
-	// A calibrated rest pose replaces that default, so the captured pose
-	// reads all-zero angles. The skeleton carries it to FK and to clients.
-	if (m_bHasRestPose[(int)hand.side])
-		outPose.skeleton.neutralDirInPalm= m_restPose[(int)hand.side];
-
 	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.skeleton.neutralDirInPalm,
 									   outPose.fingers);
 
+	// Fidelity of the parameterization itself, so it must be measured on the
+	// RAW angles - before the rest offset reinterprets what zero means
 	outPose.fkReprojectionPx= computeFkReprojectionError(hand, outPose);
+
+	// Rest calibration: report deviation from this camera's captured rest
+	// pose. Removing each camera's own view-dependent bias is also what makes
+	// the two cameras' angles comparable for fusion.
+	if (m_bHasRestAngles[(int)hand.side])
+	{
+		const std::array<FingerAngles, FINGER_COUNT>& rest= m_restAngles[(int)hand.side];
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			outPose.fingers[finger].lateral-= rest[finger].lateral;
+			outPose.fingers[finger].proximal-= rest[finger].proximal;
+			outPose.fingers[finger].intermediate-= rest[finger].intermediate;
+			outPose.fingers[finger].distal-= rest[finger].distal;
+		}
+	}
 }
 
 float LandmarkTo3D::computeFkReprojectionError(const TrackedHand& hand, const HandPose& pose) const

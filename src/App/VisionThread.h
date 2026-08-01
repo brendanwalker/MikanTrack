@@ -87,15 +87,20 @@ public:
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
 
-	// Rest-pose calibration: captures the next frame's flat-hand pose for both
-	// tracked hands and reports it back through the callback (main thread
-	// stores it in config, then calls requestConfigRefresh). Angles read zero
-	// in the captured pose.
+	// Rest-pose calibration: captures what EVERY camera currently reports for
+	// each tracked hand. Per camera because the model landmarks are
+	// view-dependent - one camera's rest angles do not zero another's.
 	void requestRestPoseCapture() { m_bRestPoseCaptureRequested= true; }
-	// Fetches a completed capture; returns false if none is pending. outCaptured
-	// says which sides were successfully captured.
-	bool fetchRestPoseCapture(std::array<HandPoseModel::NeutralDirections, 2>& outNeutralDirs,
-							  bool outCaptured[2]);
+
+	// One camera's captured rest angles for both sides
+	struct RestPoseCapture
+	{
+		std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
+		bool bCaptured[2]= {false, false};
+	};
+	// Fetches a completed capture (one entry per camera, in camera order);
+	// returns false if none is pending
+	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures);
 
 	// Diagnostic dump (F9): the vision thread writes its rolling state history,
 	// the current camera frames (raw + annotated PNGs) and the live config to
@@ -186,8 +191,7 @@ private:
 	// Rest-pose capture handoff
 	std::atomic_bool m_bRestPoseCaptureRequested{false};
 	std::mutex m_restPoseMutex;
-	std::array<HandPoseModel::NeutralDirections, 2> m_capturedRestPose{};
-	bool m_bRestPoseCaptured[2]= {false, false};
+	std::vector<RestPoseCapture> m_capturedRestPose;
 	bool m_bRestPoseReady= false;
 
 	// Diagnostic dump: history lives on the vision thread; the request path

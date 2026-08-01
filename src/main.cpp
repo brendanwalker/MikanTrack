@@ -1181,22 +1181,59 @@ static int runApp(int argc, char** argv)
 					for (int joint= 0; joint < 4; ++joint)
 						restPoints[FINGER_JOINTS[finger][joint]]= restJoints[finger][joint];
 
-				const HandPoseModel::NeutralDirections captured=
-					HandPoseModel::captureRestPose(restPoints, eHandSide::Right);
+				// Capturing the rest angles and subtracting them must zero ALL
+				// FOUR degrees of freedom, intermediate and distal included
+				std::array<FingerAngles, FINGER_COUNT> capturedRest{};
+				HandPoseModel::captureRestAngles(restPoints, eHandSide::Right, capturedRest);
 
-				std::array<FingerAngles, FINGER_COUNT> zeroed{};
-				HandPoseModel::computeFingerAngles(restPoints, eHandSide::Right, captured, zeroed);
+				HandSkeleton restSkeleton;
+				HandPoseModel::computeSkeleton(restPoints, eHandSide::Right, restSkeleton);
+				std::array<FingerAngles, FINGER_COUNT> measured{};
+				HandPoseModel::computeFingerAngles(restPoints, eHandSide::Right,
+												   restSkeleton.neutralDirInPalm, measured);
 
 				float maxRest= 0.f;
 				for (int finger= 0; finger < FINGER_COUNT; ++finger)
 				{
-					maxRest= std::max(maxRest, fabsf(zeroed[finger].lateral));
-					maxRest= std::max(maxRest, fabsf(zeroed[finger].proximal));
+					maxRest= std::max(maxRest, fabsf(measured[finger].lateral - capturedRest[finger].lateral));
+					maxRest= std::max(maxRest, fabsf(measured[finger].proximal - capturedRest[finger].proximal));
+					maxRest= std::max(
+						maxRest, fabsf(measured[finger].intermediate - capturedRest[finger].intermediate));
+					maxRest= std::max(maxRest, fabsf(measured[finger].distal - capturedRest[finger].distal));
 				}
-				MIKAN_LOG_INFO("test-handpose") << "rest capture: max residual lateral/proximal rad=" << maxRest;
-				if (maxRest > 1e-3f)
+				MIKAN_LOG_INFO("test-handpose") << "rest capture: max residual (all 4 DoF) rad=" << maxRest;
+				if (maxRest > 1e-5f)
 				{
 					MIKAN_LOG_ERROR("test-handpose") << "FAILED: a captured rest pose must read zero angles";
+					result= 1;
+				}
+
+				// ...and a DIFFERENT pose must still read its true deviation,
+				// i.e. the offset shifts zero without distorting the scale
+				std::array<FingerAngles, FINGER_COUNT> movedAngles= restAngles;
+				movedAngles[(int)eFinger::Index].proximal+= 0.3f;
+				movedAngles[(int)eFinger::Index].intermediate+= 0.2f;
+				std::array<std::array<glm::vec3, 4>, FINGER_COUNT> movedJoints;
+				HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, movedAngles, movedJoints);
+
+				std::array<glm::vec3, HAND_LANDMARK_COUNT> movedPoints= restPoints;
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+					for (int joint= 0; joint < 4; ++joint)
+						movedPoints[FINGER_JOINTS[finger][joint]]= movedJoints[finger][joint];
+
+				std::array<FingerAngles, FINGER_COUNT> movedMeasured{};
+				HandPoseModel::computeFingerAngles(movedPoints, eHandSide::Right,
+												   restSkeleton.neutralDirInPalm, movedMeasured);
+				const float proximalDeviation= movedMeasured[(int)eFinger::Index].proximal -
+					capturedRest[(int)eFinger::Index].proximal;
+				const float intermediateDeviation= movedMeasured[(int)eFinger::Index].intermediate -
+					capturedRest[(int)eFinger::Index].intermediate;
+				MIKAN_LOG_INFO("test-handpose") << "rest capture: deviation prox=" << proximalDeviation
+					<< " inter=" << intermediateDeviation << " (expected 0.3 / 0.2)";
+				if (fabsf(proximalDeviation - 0.3f) > 1e-3f || fabsf(intermediateDeviation - 0.2f) > 1e-3f)
+				{
+					MIKAN_LOG_ERROR("test-handpose")
+						<< "FAILED: rest-relative angles must still report true deviation";
 					result= 1;
 				}
 			}

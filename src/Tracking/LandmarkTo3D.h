@@ -67,17 +67,18 @@ public:
 	}
 	float getRefLengthMeters() const { return m_refLengthMeters; }
 
-	// Per-side rest pose ("all angles zero"). Without one the flat-hand
-	// default from HandPoseModel is used.
-	void setRestPose(eHandSide side, const HandPoseModel::NeutralDirections& neutralDirs)
+	// Per-side rest angles for THIS camera, subtracted from every later
+	// measurement so the captured pose reports zeros. Without them the raw
+	// angles (relative to the flat-hand default) are reported as-is.
+	void setRestAngles(eHandSide side, const std::array<FingerAngles, FINGER_COUNT>& restAngles)
 	{
-		m_restPose[(int)side]= neutralDirs;
-		m_bHasRestPose[(int)side]= true;
+		m_restAngles[(int)side]= restAngles;
+		m_bHasRestAngles[(int)side]= true;
 	}
-	void clearRestPoses()
+	void clearRestAngles()
 	{
-		m_bHasRestPose[0]= false;
-		m_bHasRestPose[1]= false;
+		m_bHasRestAngles[0]= false;
+		m_bHasRestAngles[1]= false;
 	}
 
 private:
@@ -104,8 +105,8 @@ private:
 	bool m_bUsePnpDepth= true;
 	bool m_bPnpPalmOnly= false;
 
-	std::array<HandPoseModel::NeutralDirections, 2> m_restPose{};
-	bool m_bHasRestPose[2]= {false, false};
+	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_restAngles{};
+	bool m_bHasRestAngles[2]= {false, false};
 
 	// Warm-start state for the iterative PnP solve (per side, axis-angle +
 	// translation in OpenCV camera convention). Also the future vision

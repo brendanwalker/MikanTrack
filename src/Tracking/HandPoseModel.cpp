@@ -133,20 +133,12 @@ HandPoseModel::NeutralDirections HandPoseModel::makeDefaultNeutralDirections(con
 	return neutralDirs;
 }
 
-HandPoseModel::NeutralDirections HandPoseModel::captureRestPose(
-	const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side)
+void HandPoseModel::captureRestAngles(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,
+									  std::array<FingerAngles, FINGER_COUNT>& outRestAngles)
 {
-	const glm::mat4 palmFrame= computePalmFrame(points, side);
-	const glm::mat3 palmRotationInverse= glm::transpose(glm::mat3(palmFrame));
-
-	NeutralDirections neutralDirs;
-	for (int finger= 0; finger < FINGER_COUNT; ++finger)
-	{
-		const int* joints= FINGER_JOINTS[finger];
-		const glm::vec3 proximalBone= safeNormalize(points[joints[1]] - points[joints[0]]);
-		neutralDirs[finger]= safeNormalize(palmRotationInverse * proximalBone);
-	}
-	return neutralDirs;
+	HandSkeleton skeleton;
+	computeSkeleton(points, side, skeleton);
+	computeFingerAngles(points, side, skeleton.neutralDirInPalm, outRestAngles);
 }
 
 void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,

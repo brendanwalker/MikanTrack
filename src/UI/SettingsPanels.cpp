@@ -156,12 +156,17 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 	ImGui::SeparatorText("Rest Pose");
 	{
-		HandRestPoseConfig& restPose= config->handRestPose;
 		ImGui::TextWrapped(
 			"Defines which pose reports all-zero angles. Hold both hands in "
-			"your rest pose (flat, fingers together and straight) and capture.");
-		ImGui::Text("Calibrated  L: %s  R: %s", restPose.present[0] ? "yes" : "no",
-					restPose.present[1] ? "yes" : "no");
+			"your rest pose (flat, fingers together and straight) and capture. "
+			"Recorded per camera - each sees the articulation differently.");
+
+		for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+		{
+			const RestAnglesConfig& cameraRest= config->camera(cameraIndex).restAngles;
+			ImGui::Text("Camera %d  L: %s  R: %s", cameraIndex + 1,
+						cameraRest.present[0] ? "yes" : "no", cameraRest.present[1] ? "yes" : "no");
+		}
 
 		const float deltaSeconds= ImGui::GetIO().DeltaTime;
 
@@ -204,35 +209,56 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				"how your own hand rests - a hand hovering over a keyboard\n"
 				"genuinely holds tens of degrees of knuckle flexion.");
 
-			if (restPose.present[0] || restPose.present[1])
+			bool bAnyCalibrated= false;
+			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+			{
+				const RestAnglesConfig& cameraRest= config->camera(cameraIndex).restAngles;
+				bAnyCalibrated|= cameraRest.present[0] || cameraRest.present[1];
+			}
+			if (bAnyCalibrated)
 			{
 				ImGui::SameLine();
 				if (ImGui::Button("Clear"))
 				{
-					restPose.present[0]= false;
-					restPose.present[1]= false;
+					for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+					{
+						RestAnglesConfig& cameraRest= config->camera(cameraIndex).restAngles;
+						cameraRest.present[0]= false;
+						cameraRest.present[1]= false;
+					}
 					bChanged= true;
 				}
 			}
 		}
 
 		// Poll for a completed capture (the vision thread does the work)
-		std::array<HandPoseModel::NeutralDirections, 2> capturedDirs;
-		bool bCaptured[2]= {false, false};
-		if (visionThread->fetchRestPoseCapture(capturedDirs, bCaptured))
+		std::vector<VisionThread::RestPoseCapture> captures;
+		if (visionThread->fetchRestPoseCapture(captures))
 		{
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			// A side counts as captured only if EVERY camera got it - a
+			// partially calibrated side would make the cameras disagree
+			bool bAllCameras[2]= {!captures.empty(), !captures.empty()};
+			for (size_t cameraIndex= 0; cameraIndex < captures.size(); ++cameraIndex)
 			{
-				if (!bCaptured[sideIndex])
-					continue;
-				restPose.neutralDirInPalm[sideIndex]= capturedDirs[sideIndex];
-				restPose.present[sideIndex]= true;
-			}
-			if (bCaptured[0] || bCaptured[1])
-				bChanged= true;
+				if (cameraIndex >= config->cameraCount())
+					break;
 
-			panelState.bRestPoseResultCaptured[0]= bCaptured[0];
-			panelState.bRestPoseResultCaptured[1]= bCaptured[1];
+				RestAnglesConfig& cameraRest= config->camera(cameraIndex).restAngles;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					if (!captures[cameraIndex].bCaptured[sideIndex])
+					{
+						bAllCameras[sideIndex]= false;
+						continue;
+					}
+					cameraRest.angles[sideIndex]= captures[cameraIndex].angles[sideIndex];
+					cameraRest.present[sideIndex]= true;
+					bChanged= true;
+				}
+			}
+
+			panelState.bRestPoseResultCaptured[0]= bAllCameras[0];
+			panelState.bRestPoseResultCaptured[1]= bAllCameras[1];
 			panelState.restPoseResultTimer= k_restPoseResultSeconds;
 		}
 
@@ -250,7 +276,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Captured %s hand only - the %s hand was not tracked",
 								   bLeft ? "left" : "right", bLeft ? "right" : "left");
 			else
-				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Nothing captured - no hand was tracked");
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+								   "Nothing captured - every camera must see both hands");
 		}
 	}
 

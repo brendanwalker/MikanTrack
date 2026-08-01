@@ -107,16 +107,13 @@ bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
 	return true;
 }
 
-bool VisionThread::fetchRestPoseCapture(std::array<HandPoseModel::NeutralDirections, 2>& outNeutralDirs,
-									   bool outCaptured[2])
+bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures)
 {
 	std::lock_guard<std::mutex> lock(m_restPoseMutex);
 	if (!m_bRestPoseReady)
 		return false;
 
-	outNeutralDirs= m_capturedRestPose;
-	outCaptured[0]= m_bRestPoseCaptured[0];
-	outCaptured[1]= m_bRestPoseCaptured[1];
+	outCaptures= m_capturedRestPose;
 	m_bRestPoseReady= false;
 	return true;
 }
@@ -272,16 +269,17 @@ void VisionThread::refreshConfigOnThread()
 			context.undistorter= nullptr;
 		}
 
-		// Rest pose ("zero angles" reference) - applied to every camera so
-		// their per-camera angles agree before fusion blends them
+		// This camera's own rest angles. Per camera: the model landmarks are
+		// view-dependent, so removing each camera's bias is what makes their
+		// angles agree well enough for fusion to blend them.
 		if (context.landmarkTo3D != nullptr)
 		{
-			context.landmarkTo3D->clearRestPoses();
+			context.landmarkTo3D->clearRestAngles();
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
-				if (m_config->handRestPose.present[sideIndex])
-					context.landmarkTo3D->setRestPose((eHandSide)sideIndex,
-													  m_config->handRestPose.neutralDirInPalm[sideIndex]);
+				if (profile.restAngles.present[sideIndex])
+					context.landmarkTo3D->setRestAngles((eHandSide)sideIndex,
+														profile.restAngles.angles[sideIndex]);
 			}
 		}
 
@@ -607,33 +605,28 @@ void VisionThread::threadLoop()
 		}
 		lastOutputResult= outputResult;
 
-		// Rest-pose capture: take the flat-hand reference from whichever camera
-		// currently sees each hand best (model landmarks are the same
-		// scale-free articulation every camera feeds into the angle solve)
+		// Rest-pose capture: EVERY camera records what it currently reports for
+		// each hand, so each one's own view-dependent bias is removed
 		if (m_bRestPoseCaptureRequested.exchange(false))
 		{
-			std::array<HandPoseModel::NeutralDirections, 2> captured{};
-			bool bCaptured[2]= {false, false};
-
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			std::vector<RestPoseCapture> captures;
+			for (const std::unique_ptr<CameraContext>& context : m_cameras)
 			{
-				float bestPresence= 0.f;
-				for (const std::unique_ptr<CameraContext>& context : m_cameras)
+				RestPoseCapture capture;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 				{
 					const TrackedHand& hand= context->lastResult.result.hands[sideIndex];
-					if (!context->lastResult.valid || !hand.tracked || hand.presence <= bestPresence)
+					if (!context->lastResult.valid || !hand.tracked)
 						continue;
 
-					captured[sideIndex]= HandPoseModel::captureRestPose(hand.modelPoints, hand.side);
-					bestPresence= hand.presence;
-					bCaptured[sideIndex]= true;
+					HandPoseModel::captureRestAngles(hand.modelPoints, hand.side, capture.angles[sideIndex]);
+					capture.bCaptured[sideIndex]= true;
 				}
+				captures.push_back(capture);
 			}
 
 			std::lock_guard<std::mutex> lock(m_restPoseMutex);
-			m_capturedRestPose= captured;
-			m_bRestPoseCaptured[0]= bCaptured[0];
-			m_bRestPoseCaptured[1]= bCaptured[1];
+			m_capturedRestPose= std::move(captures);
 			m_bRestPoseReady= true;
 		}
 

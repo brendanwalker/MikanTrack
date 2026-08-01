@@ -70,17 +70,6 @@ struct TrackingConfig
 	std::string onnxEp= "directml"; // "directml" | "cpu"
 };
 
-// Captured flat-hand rest pose per side: the direction each finger's proximal
-// phalanx points, in that hand's palm frame, when every angle should read
-// zero. Without this the flat-hand default is used (fingers along palm +X),
-// which is close but ignores individual anatomy and habitual resting flexion.
-struct HandRestPoseConfig
-{
-	bool present[2]= {false, false}; // indexed by eHandSide
-	// [side][finger] unit direction in the palm frame
-	std::array<std::array<glm::vec3, FINGER_COUNT>, 2> neutralDirInPalm{};
-};
-
 struct OscConfig
 {
 	bool enabled= true;
@@ -95,11 +84,22 @@ struct OscConfig
 // Everything specific to one physical camera. Each camera calibrates
 // intrinsics + extrinsics against the same printed marker, so all cameras
 // share one world frame (which is what makes multi-camera fusion possible).
+// Angles this camera reports for a hand held in its rest pose. Subtracted
+// from later measurements so the rest pose reads zeros. PER CAMERA because
+// MediaPipe's model landmarks are view-dependent - two cameras watching one
+// physical hand disagree about articulation by tens of degrees.
+struct RestAnglesConfig
+{
+	bool present[2]= {false, false}; // indexed by eHandSide
+	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
+};
+
 struct CameraProfile
 {
 	VideoConfig video;
 	IntrinsicsConfig intrinsics;
 	ExtrinsicsConfig extrinsics;
+	RestAnglesConfig restAngles;
 };
 
 struct FusionConfig
@@ -128,7 +128,6 @@ public:
 	HandScaleConfig handScale;
 	CharucoBoardConfig charucoBoard;
 	TrackingConfig tracking;
-	HandRestPoseConfig handRestPose;
 	OscConfig osc;
 	FusionConfig fusion;
 

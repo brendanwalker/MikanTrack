@@ -157,12 +157,11 @@ struct HandSkeleton
 	// Phalanx lengths base->tip: [proximal, intermediate, distal]
 	std::array<std::array<float, 3>, FINGER_COUNT> phalanxLengths{};
 	// Direction each finger's proximal phalanx points when all four of its
-	// angles are zero, in the palm frame. This is what makes "zero" mean
-	// something anatomical: without it the implicit zero was "the phalanx
-	// points along wrist->knuckle", which no real hand ever does, so a
-	// resting hand reported tens of degrees on every joint.
-	// Defaults to the flat-hand convention (fingers parallel to palm +X,
-	// thumb along its own metacarpal); replaced by a captured rest pose.
+	// angles are zero, in the palm frame - where forward kinematics starts.
+	// Always the flat-hand convention: the four fingers parallel to palm +X,
+	// the thumb along its own metacarpal. (A captured rest pose does NOT
+	// change this; it is applied as an angle offset instead, because it is
+	// per-camera and the streamed skeleton has to mean one thing.)
 	std::array<glm::vec3, FINGER_COUNT> neutralDirInPalm{};
 };
 
