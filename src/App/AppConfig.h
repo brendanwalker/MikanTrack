@@ -55,6 +55,11 @@ struct TrackingConfig
 	// With two calibrated cameras, continuously refine the hand scale from
 	// stereo wrist triangulation (overrides the wizard-measured scale live)
 	bool autoHandScaleFromStereo= true;
+	// Depth estimator: solvePnP over the per-frame metric hand model (default)
+	// vs the legacy two-point wrist-bone estimate (kept for A/B comparison)
+	bool usePnpDepth= true;
+	// Restrict the PnP solve to the 6 quasi-rigid palm points
+	bool pnpPalmOnly= false;
 	float smoothingMinCutoff= 1.0f;
 	float smoothingBeta= 0.05f;
 	bool smoothingEnabled= true;

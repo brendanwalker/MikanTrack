@@ -208,6 +208,8 @@ bool AppConfig::load()
 		tracking.flipHandedness= tr.value("flipHandedness", true);
 		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 		tracking.autoHandScaleFromStereo= tr.value("autoHandScaleFromStereo", true);
+		tracking.usePnpDepth= tr.value("usePnpDepth", true);
+		tracking.pnpPalmOnly= tr.value("pnpPalmOnly", false);
 		tracking.smoothingMinCutoff= tr.value("smoothingMinCutoff", 1.0f);
 		tracking.smoothingBeta= tr.value("smoothingBeta", 0.05f);
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
@@ -263,6 +265,8 @@ bool AppConfig::save() const
 		{"flipHandedness", tracking.flipHandedness},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"autoHandScaleFromStereo", tracking.autoHandScaleFromStereo},
+		{"usePnpDepth", tracking.usePnpDepth},
+		{"pnpPalmOnly", tracking.pnpPalmOnly},
 		{"smoothingMinCutoff", tracking.smoothingMinCutoff},
 		{"smoothingBeta", tracking.smoothingBeta},
 		{"smoothingEnabled", tracking.smoothingEnabled},

@@ -9,17 +9,24 @@
 
 // Lifts image-space hand/arm landmarks into camera-space meters using the
 // calibrated intrinsics and a calibrated hand scale (wrist -> middle-MCP
-// length).
+// length). Two depth estimators, selected via setPnpConfig:
 //
-// Method (per hand):
+// PnP solve (default): the landmark model's per-frame metric hand
+// (modelPoints, rescaled so wrist->middleMCP matches the calibrated hand
+// scale) is used as a DYNAMIC solvePnP object model against the 2D image
+// landmarks - articulation is already baked into the model by the network,
+// so PnP only recovers the global rigid pose. 21 correspondences (or the 6
+// quasi-rigid palm points) instead of one bone: landmark jitter averages
+// across the hand instead of riding on a single segment, foreshortening is
+// handled by the full projective model, and per-landmark independent depth
+// jitter collapses into one shared translation. Warm-started from the
+// previous frame's pose. cameraPoints = R * obj + t.
+//
+// Legacy two-point estimator (A/B comparison):
 //   - foreshortening correction from the model/world landmarks:
-//       l3d= |model wrist - model middleMCP| (meters)
-//       l2dModel= |xy(model wrist - model middleMCP)| (2D projection in model space)
-//       c= l3d / max(l2dModel, eps)   (>= 1 when the segment tilts toward the camera)
+//       c= l3d / max(l2dModel, eps)
 //   - wrist depth: Zwrist= fx * refLengthMeters / (pixelDist(wrist, middleMCP) * c)
-//   - per landmark: Zi= Zwrist + (modelZi - modelZwrist) * (refLengthMeters / l3d),
-//     then back-project its pixel at Zi: P= Zi * K^-1 * [u v 1]^T
-//   - optional one-euro filtering of the 3D points
+//   - per landmark: back-project its pixel at Zwrist + model z offset
 //
 // Conventions: input pixel coordinates are assumed to be in UNDISTORTED image
 // space (the vision thread undistorts frames before inference), so the
@@ -39,6 +46,16 @@ public:
 		bool smoothingEnabled,
 		float smoothingMinCutoff,
 		float smoothingBeta);
+
+	// Depth estimator selection (config-switchable for A/B comparison).
+	// bPalmOnly restricts the PnP correspondences to the 6 quasi-rigid palm
+	// points (wrist, thumb CMC, 4 finger MCPs) - useful if occluded-fingertip
+	// 2D/3D inconsistency drags the full solve.
+	void setPnpConfig(bool bUsePnp, bool bPalmOnly)
+	{
+		m_bUsePnpDepth= bUsePnp;
+		m_bPnpPalmOnly= bPalmOnly;
+	}
 
 	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms
 	void process(TrackingFrameResult& ioResult);
@@ -64,6 +81,10 @@ public:
 private:
 	glm::vec3 backProject(float u, float v, float z) const;
 	void processHand(TrackedHand& hand, float dtSeconds);
+	// PnP path; returns false when the solve fails (caller falls back to the
+	// legacy estimator for that frame)
+	bool processHandPnp(TrackedHand& hand, float dtSeconds);
+	void processHandLegacy(TrackedHand& hand, float dtSeconds);
 	void processArm(TrackedArm& arm, const TrackedHand& hand, eHandSide side, float dtSeconds);
 
 	bool m_bConfigured= false;
@@ -72,6 +93,16 @@ private:
 	float m_cx= 0.f;
 	float m_cy= 0.f;
 	float m_refLengthMeters= 0.08f;
+
+	bool m_bUsePnpDepth= true;
+	bool m_bPnpPalmOnly= false;
+
+	// Warm-start state for the iterative PnP solve (per side, axis-angle +
+	// translation in OpenCV camera convention). Also the future vision
+	// measurement for IMU (EKF) fusion: a rigid 6-DoF wrist pose per frame.
+	std::array<std::array<double, 3>, 2> m_pnpRvec{};
+	std::array<std::array<double, 3>, 2> m_pnpTvec{};
+	bool m_bPnpPoseValid[2]= {false, false};
 
 	bool m_bSmoothingEnabled= true;
 	HandOneEuroBank m_filterBank;

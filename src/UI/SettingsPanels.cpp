@@ -25,6 +25,21 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bChanged|= ImGui::SliderInt("Detector interval", &tracking.detectorIntervalFrames, 5, 120);
 	ImGui::SetItemTooltip("Palm detector re-runs at least every N frames");
 
+	ImGui::SeparatorText("Depth Estimation");
+	bChanged|= ImGui::Checkbox("solvePnP depth", &tracking.usePnpDepth);
+	ImGui::SetItemTooltip(
+		"Solves the hand's rigid 6-DoF pose from all 21 landmark\n"
+		"correspondences instead of estimating depth from the single\n"
+		"wrist->knuckle bone - substantially less z noise. Off = legacy\n"
+		"two-point estimator (for A/B comparison).");
+	ImGui::BeginDisabled(!tracking.usePnpDepth);
+	bChanged|= ImGui::Checkbox("PnP: palm points only", &tracking.pnpPalmOnly);
+	ImGui::SetItemTooltip(
+		"Restrict the solve to the 6 quasi-rigid palm points (wrist,\n"
+		"thumb CMC, finger MCPs). Try if occluded fingertips appear to\n"
+		"drag the full solve.");
+	ImGui::EndDisabled();
+
 	ImGui::SeparatorText("Smoothing");
 	bChanged|= ImGui::Checkbox("Enabled", &tracking.smoothingEnabled);
 	bChanged|= ImGui::SliderFloat("Min cutoff", &tracking.smoothingMinCutoff, 0.1f, 5.f, "%.2f Hz");

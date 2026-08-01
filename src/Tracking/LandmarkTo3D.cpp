@@ -5,6 +5,9 @@
 
 #include "glm/geometric.hpp"
 
+#include "opencv2/calib3d.hpp"
+#include "opencv2/core.hpp"
+
 #include "Logger.h"
 
 static constexpr float kMinDepthMeters= 0.05f;
@@ -40,6 +43,8 @@ void LandmarkTo3D::configure(
 	m_lastTimestampMs= -1.0;
 	m_bSideWasTracked[0]= false;
 	m_bSideWasTracked[1]= false;
+	m_bPnpPoseValid[0]= false;
+	m_bPnpPoseValid[1]= false;
 
 	m_bConfigured= m_fx > 1e-3f && m_fy > 1e-3f && m_refLengthMeters > 1e-4f;
 	if (!m_bConfigured)
@@ -83,6 +88,7 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult)
 			{
 				m_filterBank.resetSide((eHandSide)sideIndex);
 				m_worldElbowFilters[sideIndex].reset();
+				m_bPnpPoseValid[sideIndex]= false;
 			}
 
 			processHand(hand, dtSeconds);
@@ -95,6 +101,106 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult)
 }
 
 void LandmarkTo3D::processHand(TrackedHand& hand, float dtSeconds)
+{
+	if (m_bUsePnpDepth && processHandPnp(hand, dtSeconds))
+		return;
+
+	processHandLegacy(hand, dtSeconds);
+}
+
+bool LandmarkTo3D::processHandPnp(TrackedHand& hand, float dtSeconds)
+{
+	const int wristIndex= (int)eHandLandmark::WRIST;
+	const int middleMcpIndex= (int)eHandLandmark::MIDDLE_MCP;
+
+	// The landmark model's metric hand is the (per-frame, articulated) PnP
+	// object model, rescaled so the wrist->middleMCP bone matches the
+	// calibrated hand scale. The model is in canonical average-hand scale -
+	// skipping this rescale would bias depth for any non-average hand.
+	const glm::vec3 modelWrist= hand.modelPoints[wristIndex];
+	const float modelBoneLength= glm::length(hand.modelPoints[middleMcpIndex] - modelWrist);
+	if (modelBoneLength < 1e-4f)
+		return false;
+	const float modelScale= m_refLengthMeters / modelBoneLength;
+
+	// The 6 quasi-rigid palm points, or all 21
+	static const int kPalmIndices[6]= {
+		(int)eHandLandmark::WRIST,     (int)eHandLandmark::THUMB_CMC, (int)eHandLandmark::INDEX_MCP,
+		(int)eHandLandmark::MIDDLE_MCP, (int)eHandLandmark::RING_MCP,  (int)eHandLandmark::PINKY_MCP};
+	const int pointCount= m_bPnpPalmOnly ? 6 : HAND_LANDMARK_COUNT;
+
+	std::vector<cv::Point3f> objectPoints;
+	std::vector<cv::Point2f> imagePoints;
+	objectPoints.reserve(pointCount);
+	imagePoints.reserve(pointCount);
+	for (int i= 0; i < pointCount; ++i)
+	{
+		const int landmarkIndex= m_bPnpPalmOnly ? kPalmIndices[i] : i;
+		const glm::vec3 objectPoint= (hand.modelPoints[landmarkIndex] - modelWrist) * modelScale;
+		objectPoints.emplace_back(objectPoint.x, objectPoint.y, objectPoint.z);
+		imagePoints.emplace_back(hand.imagePoints[landmarkIndex].x, hand.imagePoints[landmarkIndex].y);
+	}
+
+	// Undistorted pinhole camera; image points arrive pre-undistorted
+	const cv::Matx33d cameraMatrix(m_fx, 0, m_cx, 0, m_fy, m_cy, 0, 0, 1);
+
+	// Warm-start from the previous frame's pose: faster convergence and no
+	// planar-ambiguity flips when the hand is held flat
+	const int sideIndex= (int)hand.side;
+	const bool bUseGuess= m_bPnpPoseValid[sideIndex];
+	cv::Vec3d rvec(m_pnpRvec[sideIndex][0], m_pnpRvec[sideIndex][1], m_pnpRvec[sideIndex][2]);
+	cv::Vec3d tvec(m_pnpTvec[sideIndex][0], m_pnpTvec[sideIndex][1], m_pnpTvec[sideIndex][2]);
+
+	try
+	{
+		if (!cv::solvePnP(objectPoints, imagePoints, cameraMatrix, cv::noArray(), rvec, tvec, bUseGuess,
+						  cv::SOLVEPNP_ITERATIVE))
+		{
+			return false;
+		}
+	}
+	catch (const cv::Exception&)
+	{
+		return false;
+	}
+
+	// Sanity: the hand must be in front of the camera at a plausible distance
+	const double depth= tvec(2);
+	if (!std::isfinite(depth) || depth < kMinDepthMeters || depth > 5.0 ||
+		!std::isfinite(tvec(0)) || !std::isfinite(tvec(1)))
+	{
+		m_bPnpPoseValid[sideIndex]= false;
+		return false;
+	}
+
+	for (int axis= 0; axis < 3; ++axis)
+	{
+		m_pnpRvec[sideIndex][axis]= rvec(axis);
+		m_pnpTvec[sideIndex][axis]= tvec(axis);
+	}
+	m_bPnpPoseValid[sideIndex]= true;
+
+	// cameraPoints= R * obj + t for ALL 21 landmarks (articulation comes from
+	// the per-frame object model; palm-only mode only restricts the SOLVE)
+	cv::Matx33d rotation;
+	cv::Rodrigues(rvec, rotation);
+	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+	{
+		const glm::vec3 objectPoint= (hand.modelPoints[i] - modelWrist) * modelScale;
+		const cv::Vec3d rotated= rotation * cv::Vec3d(objectPoint.x, objectPoint.y, objectPoint.z) + tvec;
+
+		glm::vec3 cameraPoint((float)rotated(0), (float)rotated(1), (float)rotated(2));
+		if (m_bSmoothingEnabled)
+			cameraPoint= m_filterBank.landmarkFilter(hand.side, i).filter(cameraPoint, dtSeconds);
+
+		hand.cameraPoints[i]= cameraPoint;
+	}
+
+	hand.hasCameraSpace= true;
+	return true;
+}
+
+void LandmarkTo3D::processHandLegacy(TrackedHand& hand, float dtSeconds)
 {
 	const int wristIndex= (int)eHandLandmark::WRIST;
 	const int middleMcpIndex= (int)eHandLandmark::MIDDLE_MCP;

@@ -177,6 +177,7 @@ void VisionThread::refreshConfigOnThread()
 				false, // smoothing post-fusion
 				m_config->tracking.smoothingMinCutoff,
 				m_config->tracking.smoothingBeta);
+			context.landmarkTo3D->setPnpConfig(m_config->tracking.usePnpDepth, m_config->tracking.pnpPalmOnly);
 
 			// Undistortion for the ML input + preview
 			if (context.undistorter == nullptr ||
