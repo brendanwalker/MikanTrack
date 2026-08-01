@@ -33,16 +33,57 @@ glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDM
 	// +X toward the fingers
 	const glm::vec3 xAxis= safeNormalize(middleMcp - wrist);
 
-	// Palm normal: cross of the two palm edges. For a RIGHT hand,
-	// (index - wrist) x (pinky - wrist) points out of the BACK of the hand,
-	// so negate; for a LEFT hand the same cross points out of the palmar
-	// side already (mirrored chirality).
-	glm::vec3 normal= glm::cross(indexMcp - wrist, pinkyMcp - wrist);
-	if (side == eHandSide::Right)
-		normal= -normal;
+	// Palm plane normal, sign undetermined
+	const glm::vec3 normal= safeNormalize(glm::cross(indexMcp - wrist, pinkyMcp - wrist));
+
+	// Which sign is the PALMAR side? Do NOT trust the handedness label for
+	// this: MediaPipe's classifier is view-dependent (a right hand seen from
+	// the back looks like a left hand seen from the palm), so the label
+	// routinely flips when the palm rotates away from the camera - which
+	// would mirror every extracted angle. Disambiguate geometrically instead,
+	// from two anatomical invariants:
+	//  (1) finger joints can only rotate about their hinge in the palmar
+	//      direction. The joint ROTATION AXIS (cross of successive bones)
+	//      stays aligned with the finger hinge at ANY curl depth - unlike
+	//      bone tilt, which reverses past 180 degrees of total curl (a fist)
+	//  (2) the thumb metacarpal sits palmar of the wrist-index-pinky plane
+	float curlEvidence= 0.f;
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		const int* joints= FINGER_JOINTS[finger];
+
+		// Hinge reference for "curl toward n": metacarpal is always in-plane,
+		// so this never degenerates however deep the curl is
+		const glm::vec3 metacarpal= points[joints[0]] - wrist;
+		const glm::vec3 metaInPlane= safeNormalize(metacarpal - normal * glm::dot(metacarpal, normal));
+		const glm::vec3 hingeRef= glm::cross(metaInPlane, normal);
+
+		const glm::vec3 bone0= safeNormalize(points[joints[1]] - points[joints[0]]);
+		const glm::vec3 bone1= safeNormalize(points[joints[2]] - points[joints[1]]);
+		const glm::vec3 bone2= safeNormalize(points[joints[3]] - points[joints[2]]);
+		curlEvidence+= glm::dot(glm::cross(bone0, bone1), hingeRef);
+		curlEvidence+= glm::dot(glm::cross(bone1, bone2), hingeRef);
+	}
+	const float thumbEvidence=
+		glm::dot(safeNormalize(points[(int)eHandLandmark::THUMB_MCP] - wrist), normal);
+
+	const float palmarScore= curlEvidence + 0.5f * thumbEvidence;
+
+	float palmarSign;
+	if (fabsf(palmarScore) > 0.05f)
+	{
+		palmarSign= palmarScore > 0.f ? 1.f : -1.f;
+	}
+	else
+	{
+		// Degenerate (perfectly flat hand, thumb in-plane): fall back to the
+		// label-based chirality rule. For a RIGHT hand the raw cross points
+		// out of the BACK of the hand; for a LEFT hand out of the palm.
+		palmarSign= side == eHandSide::Right ? -1.f : 1.f;
+	}
 
 	// Orthonormalize: Z out of the palmar surface, Y completes right-handed
-	glm::vec3 zAxis= safeNormalize(normal - xAxis * glm::dot(normal, xAxis));
+	glm::vec3 zAxis= safeNormalize(normal * palmarSign - xAxis * glm::dot(normal * palmarSign, xAxis));
 	const glm::vec3 yAxis= glm::cross(zAxis, xAxis);
 
 	const glm::vec3 palmCenter= (wrist + middleMcp) * 0.5f;
@@ -59,9 +100,15 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 										std::array<FingerAngles, FINGER_COUNT>& outAngles)
 {
 	const glm::mat4 palmFrame= computePalmFrame(points, side);
-	const glm::vec3 palmX= glm::vec3(palmFrame[0]);
+	const glm::vec3 palmY= glm::vec3(palmFrame[1]);
 	const glm::vec3 palmZ= glm::vec3(palmFrame[2]);
 	const glm::vec3& wrist= points[(int)eHandLandmark::WRIST];
+
+	// "+lateral toward the thumb side" for both hands: detect which side of
+	// the palm frame the thumb/index sits on GEOMETRICALLY (the same test the
+	// FK side uses on the skeleton) rather than trusting the handedness label
+	const bool bThumbOnMinusY=
+		glm::dot(points[(int)eHandLandmark::INDEX_MCP] - wrist, palmY) < 0.f;
 
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
 	{
@@ -102,9 +149,7 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 		const float intermediate= -signedAngle(proximalBone, intermediateBone, hingeAxis);
 		const float distal= -signedAngle(intermediateBone, distalBone, hingeAxis);
 
-		// "+ toward the thumb side" for both hands: the palm Y axis points
-		// toward the thumb on a right hand and away on a left hand
-		outAngles[finger].lateral= side == eHandSide::Left ? -lateralGeometric : lateralGeometric;
+		outAngles[finger].lateral= bThumbOnMinusY ? -lateralGeometric : lateralGeometric;
 		outAngles[finger].proximal= proximal;
 		outAngles[finger].intermediate= intermediate;
 		outAngles[finger].distal= distal;

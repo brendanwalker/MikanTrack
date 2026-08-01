@@ -563,6 +563,39 @@ static int runApp(int argc, char** argv)
 				result= 1;
 			}
 
+			// Wrong-label robustness: MediaPipe's handedness classifier flips
+			// when the palm rotates away from the camera. The palm-frame
+			// chirality is derived geometrically (curl + thumb evidence), so
+			// extracting with the WRONG side label from a curled hand must
+			// still produce the same angles (this was the palm-down mirroring
+			// bug: label-based chirality inverted every lateral/proximal).
+			{
+				std::array<FingerAngles, FINGER_COUNT> anglesWrongLabel{};
+				HandPoseModel::computeFingerAngles(points, eHandSide::Left, anglesWrongLabel);
+				std::array<FingerAngles, FINGER_COUNT> anglesRightLabel{};
+				HandPoseModel::computeFingerAngles(points, eHandSide::Right, anglesRightLabel);
+
+				float maxLabelError= 0.f;
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					maxLabelError=
+						std::max(maxLabelError, fabsf(anglesWrongLabel[finger].lateral - anglesRightLabel[finger].lateral));
+					maxLabelError= std::max(maxLabelError,
+											fabsf(anglesWrongLabel[finger].proximal - anglesRightLabel[finger].proximal));
+					maxLabelError= std::max(
+						maxLabelError, fabsf(anglesWrongLabel[finger].intermediate - anglesRightLabel[finger].intermediate));
+					maxLabelError=
+						std::max(maxLabelError, fabsf(anglesWrongLabel[finger].distal - anglesRightLabel[finger].distal));
+				}
+				MIKAN_LOG_INFO("test-handpose") << "wrong-handedness-label max angle delta rad=" << maxLabelError;
+				if (maxLabelError > 0.001f)
+				{
+					MIKAN_LOG_ERROR("test-handpose")
+						<< "FAILED: angles must be invariant to a mislabeled handedness (geometric chirality)";
+					result= 1;
+				}
+			}
+
 			// Skeleton round-trip: recompute from the (last) landmark set
 			HandSkeleton skeletonOut;
 			HandPoseModel::computeSkeleton(points, eHandSide::Right, skeletonOut);
