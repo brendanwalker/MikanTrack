@@ -72,6 +72,11 @@ public:
 	// Per-side camera index that dominated the last fusion (-1 = untracked)
 	int getDominantCamera(eHandSide side) const { return m_dominantCamera[(int)side].load(); }
 
+	// One camera's observation confidence for a fused side in the last fusion
+	// (presence x measured stability), or -1 if that camera contributed no
+	// observation to that side. For the UI's per-camera quality readout.
+	float getObservationConfidence(int cameraIndex, eHandSide side) const;
+
 	// Stereo auto hand-scale: current correction factor over the configured
 	// hand scale (1 = unchanged), refined from cross-camera wrist
 	// triangulation when enabled and both cameras see the same hand
@@ -155,6 +160,12 @@ private:
 	std::atomic<float> m_lastInferenceMs{0.f};
 	std::atomic<int> m_dominantCamera[2]= {-1, -1};
 	std::atomic<float> m_autoScaleFactor{1.f};
+
+	// Per (camera, side) confidence from the last fusion, published for the
+	// UI readout. Fixed size so it needs no locking; cameras beyond this are
+	// simply not reported.
+	static constexpr int k_maxReportedCameras= 8;
+	std::atomic<float> m_observationConfidence[k_maxReportedCameras * 2];
 
 	// Fused result handoff (mutex-guarded, latest-wins)
 	std::mutex m_fusedMutex;

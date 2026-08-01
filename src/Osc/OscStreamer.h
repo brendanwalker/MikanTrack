@@ -18,24 +18,29 @@ struct OscStreamerConfig
 	std::string targetIp= "127.0.0.1";
 	uint16_t targetPort= 8000;
 	float maxRateHz= 60.f; // <= 0 disables rate limiting
+	// Hands whose fused confidence falls below this are reported untracked
+	// and their pose messages are withheld entirely, so a client holds or
+	// blends to a rest pose instead of following a jittering estimate.
+	// 0 = always send.
+	float minConfidence= 0.f;
 	std::string appVersion= "MikanMediaPipe";
 };
 
-/// Streams per-frame hand/arm tracking results as OSC 1.0 bundles over UDP
+/// Streams per-frame parametric hand poses as OSC 1.0 bundles over UDP
 /// unicast (consumed by e.g. Unreal Engine's OSC plugin).
 ///
 /// Bundle layout (positions in world/marker space meters when available,
 /// otherwise camera space — the active space is reported via /mikan/info):
 ///   /mikan/frame ,iif frameId timestampMs fps
 ///   per side s in {left,right}:
-///     /mikan/hand/{s}/tracked ,if tracked(0|1) presence
-///     if tracked:
-///       /mikan/hand/{s}/wrist ,fff
-///       /mikan/hand/{s}/palm ,fff (centroid of MCP landmarks 5,9,13,17)
-///       /mikan/hand/{s}/landmarks ,fff x21 (63 floats, MediaPipe index order)
-///     if arm valid:
-///       /mikan/arm/{s}/elbow ,ffff x y z confidence
-///       /mikan/arm/{s}/forearm ,ffffff elbowXyz wristXyz
+///     /mikan/hand/{s}/tracked ,iff tracked(0|1) presence confidence
+///     if tracked (confidence below minConfidence reports tracked=0 and
+///     withholds everything below):
+///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
+///       /mikan/hand/{s}/fingers ,f x20 per finger (thumb..pinky):
+///         lateral, proximalBend, intermediateBend, distalBend (radians)
+///       /mikan/hand/{s}/skeleton ,f x30 (1 Hz) per finger: base position in
+///         the palm frame xyz + phalanx lengths [prox, inter, distal]
 ///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z" appVersion
 ///     (at most once per second)
 class OscStreamer

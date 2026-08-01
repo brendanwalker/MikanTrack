@@ -140,12 +140,18 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 {
 	const HandPose& pose= frame.poses[sideIndex];
 
-	// /mikan/hand/{s}/tracked ,if tracked(0|1) presence
-	OscMessage& trackedMessage= m_bundle.addMessage(k_handTrackedAddress[sideIndex]);
-	trackedMessage.addInt32(pose.tracked ? 1 : 0);
-	trackedMessage.addFloat(pose.presence);
+	// Low-confidence hands are reported untracked and their pose messages are
+	// withheld: a client that holds its last good pose (or blends to a rest
+	// pose) looks far better than one following a jittering estimate.
+	const bool bSendPose= pose.tracked && pose.confidence >= m_config.minConfidence;
 
-	if (!pose.tracked)
+	// /mikan/hand/{s}/tracked ,iff tracked(0|1) presence confidence
+	OscMessage& trackedMessage= m_bundle.addMessage(k_handTrackedAddress[sideIndex]);
+	trackedMessage.addInt32(bSendPose ? 1 : 0);
+	trackedMessage.addFloat(pose.presence);
+	trackedMessage.addFloat(pose.confidence);
+
+	if (!bSendPose)
 		return;
 
 	const bool bWorld= pose.hasWorldPose;

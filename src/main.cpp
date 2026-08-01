@@ -678,6 +678,105 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (k) Stability weighting - regression from the 2026-08-01_14-33-43
+			// dump. Camera 0 sees the right hand edge-on: presence stays high
+			// (0.87) but its palm estimate jitters by ~41mm frame to frame,
+			// while camera 1 is rock steady at ~7mm. Presence cannot separate
+			// these; measured jitter must, so the fused pose has to converge
+			// on the steady camera.
+			{
+				HandFusion freshFusion;
+				HandFusionConfig jitterConfig= fusionConfig;
+				jitterConfig.jitterReferenceM= 0.015f;
+				freshFusion.configure(jitterConfig);
+
+				// Deterministic pseudo-noise (no Math.random in tests)
+				auto noiseAt= [](int step) {
+					const float phase= (float)step;
+					return glm::vec3(0.041f * sinf(phase * 2.3f), 0.041f * sinf(phase * 3.7f),
+									 0.041f * sinf(phase * 5.1f));
+				};
+
+				TrackingFrameResult fused;
+				float lastConfidence= 0.f;
+				for (int step= 0; step < 40; ++step)
+				{
+					const double stepTime= now + step * 33.0;
+					// jittery camera: high presence, noisy position
+					const auto camA= makeCameraResult(
+						0, cam1Pos, stepTime,
+						makeObservation(palmTruth + noiseAt(step), faceUpToCam1, 0.87f, eHandSide::Left, 0.05f, 0.f));
+					// steady camera: exactly on truth
+					const auto camB= makeCameraResult(
+						1, cam2Pos, stepTime,
+						makeObservation(palmTruth, faceUpToCam1, 0.97f, eHandSide::Left, 0.05f, 0.f));
+
+					freshFusion.fuse({&camA, &camB}, stepTime, fused);
+					lastConfidence= fused.poses[(int)eHandSide::Left].confidence;
+				}
+
+				const float err= glm::length(fused.poses[(int)eHandSide::Left].palmPositionWorld - palmTruth);
+				MIKAN_LOG_INFO("test-fusion") << "(k) stability weighting: fused err mm=" << err * 1000.f
+					<< " confidence=" << lastConfidence;
+				// Without stability weighting the jittery camera would drag the
+				// blend tens of mm off truth
+				if (err > 0.008f || lastConfidence < 0.5f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(k) FAILED: the steady camera must dominate and confidence stay high";
+					result= 1;
+				}
+			}
+
+			// (l) Hard confidence gate: with minCameraConfidence above what a
+			// jittery camera can reach, its observation is dropped entirely
+			{
+				HandFusion freshFusion;
+				HandFusionConfig gateConfig= fusionConfig;
+				gateConfig.jitterReferenceM= 0.015f;
+				gateConfig.minCameraConfidence= 0.5f;
+				freshFusion.configure(gateConfig);
+
+				TrackingFrameResult fused;
+				for (int step= 0; step < 40; ++step)
+				{
+					const double stepTime= now + step * 33.0;
+					// Alternating 8cm displacement = sustained large jitter
+					const glm::vec3 noise= (step % 2 == 0) ? glm::vec3(0.08f, 0.f, 0.f) : glm::vec3(0.f);
+					const auto camA= makeCameraResult(
+						0, cam1Pos, stepTime,
+						makeObservation(palmTruth + noise, faceUpToCam1, 0.95f, eHandSide::Left, 0.05f, 0.f));
+					freshFusion.fuse({&camA}, stepTime, fused);
+				}
+
+				const HandPose& pose= fused.poses[(int)eHandSide::Left];
+				MIKAN_LOG_INFO("test-fusion") << "(l) confidence gate: tracked=" << pose.tracked;
+				if (pose.tracked)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(l) FAILED: an observation below minCameraConfidence must be dropped";
+					result= 1;
+				}
+
+				// ...and a steady observation at the same presence survives
+				HandFusion steadyFusion;
+				steadyFusion.configure(gateConfig);
+				TrackingFrameResult steadyFused;
+				for (int step= 0; step < 40; ++step)
+				{
+					const double stepTime= now + step * 33.0;
+					const auto camA= makeCameraResult(
+						0, cam1Pos, stepTime,
+						makeObservation(palmTruth, faceUpToCam1, 0.95f, eHandSide::Left, 0.05f, 0.f));
+					steadyFusion.fuse({&camA}, stepTime, steadyFused);
+				}
+				if (!steadyFused.poses[(int)eHandSide::Left].tracked)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(l) FAILED: a steady observation must pass the gate";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

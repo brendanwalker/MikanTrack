@@ -75,6 +75,9 @@ struct OscConfig
 	std::string targetIp= "127.0.0.1";
 	int targetPort= 8000;
 	int maxRateHz= 60;
+	// Withhold a hand's pose messages (and report it untracked) below this
+	// fused confidence, so clients can hold/blend instead of jittering
+	float minConfidence= 0.f;
 };
 
 // Everything specific to one physical camera. Each camera calibrates
@@ -98,6 +101,11 @@ struct FusionConfig
 	// (marker frame) pointing toward the RIGHT hand's side of the desk.
 	// 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y
 	int spatialSidePriorAxis= 0;
+	// Drop a camera's observation outright below this confidence
+	// (presence x measured stability). 0 = rely on soft weighting only.
+	float minCameraConfidence= 0.f;
+	// Palm jitter (mm) at which an observation counts as half as trustworthy
+	float jitterReferenceMm= 15.f;
 };
 
 class AppConfig

@@ -59,8 +59,59 @@ void HandFusion::configure(const HandFusionConfig& config)
 	}
 	m_lastTimestampMs= -1.0;
 	m_lastSoloSide= -1;
+	m_jitterTrackers.clear();
 	m_stereoScaleCorrection= 1.f;
 	m_bStereoScaleFresh= false;
+}
+
+float HandFusion::stabilityFactor(float jitterM, float jitterReferenceM)
+{
+	// Soft inverse-variance weight: 1 at zero jitter, 0.5 at the reference,
+	// falling off quadratically beyond it
+	const float reference= std::max(jitterReferenceM, 1e-4f);
+	const float ratio= jitterM / reference;
+	return 1.f / (1.f + ratio * ratio);
+}
+
+float HandFusion::updateJitter(int cameraIndex, int cameraSideIndex, const glm::vec3& palmWorld,
+							   double timestampMs)
+{
+	JitterTracker& tracker= m_jitterTrackers[cameraIndex * 2 + cameraSideIndex];
+
+	// The same camera result is re-fused whenever ANOTHER camera delivers a
+	// frame; only advance the history on genuinely new samples (a repeated
+	// position would otherwise read as perfect stability)
+	if (timestampMs == tracker.lastTimestampMs)
+		return tracker.jitterEmaM;
+
+	// Reacquisition after a gap: the old history says nothing about the new
+	// track, and the position jump would register as enormous jitter
+	const bool bStale= tracker.lastTimestampMs >= 0.0 &&
+		(timestampMs - tracker.lastTimestampMs) > 4.0 * m_config.stalenessWindowMs;
+	if (bStale)
+		tracker.samples= 0;
+
+	if (tracker.samples >= 2)
+	{
+		// Constant-velocity residual: zero for smooth motion of any speed,
+		// large for frame-to-frame noise
+		const glm::vec3 residual= palmWorld - 2.f * tracker.previousPalm + tracker.previousPalm2;
+		const float jitter= glm::length(residual);
+
+		constexpr float kJitterEmaAlpha= 0.15f;
+		tracker.jitterEmaM= tracker.samples > 2
+			? tracker.jitterEmaM * (1.f - kJitterEmaAlpha) + jitter * kJitterEmaAlpha
+			: jitter;
+	}
+
+	tracker.previousPalm2= tracker.previousPalm;
+	tracker.previousPalm= palmWorld;
+	tracker.lastTimestampMs= timestampMs;
+	tracker.samples= std::min(tracker.samples + 1, 3);
+
+	// Until there is enough history, assume the observation is good (a fresh
+	// track must not be penalized into invisibility)
+	return tracker.samples >= 3 ? tracker.jitterEmaM : 0.f;
 }
 
 float HandFusion::visibilityFactor(const glm::quat& palmOrientationWorld, const glm::vec3& palmPositionWorld,
@@ -403,8 +454,23 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			candidate.hand= &hand;
 			candidate.pose= &pose;
 
+			// Confidence = presence x measured stability. Presence alone is
+			// NOT a usable quality signal: an edge-on hand scores 0.87 while
+			// its depth solve swings by centimeters frame to frame (measured
+			// live 2026-08-01: 41mm median jitter at presence 0.85-0.95).
+			candidate.jitterM=
+				updateJitter(camera->cameraIndex, sideIndex, pose.palmPositionWorld, camera->timestampMs);
+			candidate.stability= stabilityFactor(candidate.jitterM, m_config.jitterReferenceM);
+			candidate.confidence= pose.presence * candidate.stability;
+
+			if (candidate.confidence < m_config.minCameraConfidence)
+				continue;
+
+			// Blend weight additionally folds in geometric conditioning (how
+			// face-on the palm is), which ranks cameras but isn't meaningful
+			// as an absolute trust value
 			const glm::vec3 cameraPos= glm::vec3(camera->markerFromCamera[3]);
-			candidate.weight= pose.presence *
+			candidate.weight= candidate.confidence *
 				visibilityFactor(pose.palmOrientationWorld, pose.palmPositionWorld, cameraPos);
 
 			// Vote DIRECTION comes from the flip-adjusted classifier score,
@@ -448,6 +514,9 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			observation.cameraIndex= candidate.camera->cameraIndex;
 			observation.labeledSide= (int)candidate.hand->side;
 			observation.weight= candidate.weight;
+			observation.confidence= candidate.confidence;
+			observation.stability= candidate.stability;
+			observation.jitterMm= candidate.jitterM * 1000.f;
 			observation.sideVoteWeight= candidate.sideVoteWeight;
 			observation.palmWorld= candidate.pose->palmPositionWorld;
 			diagCluster.observations.push_back(observation);
@@ -542,6 +611,13 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 	outPose= *best.pose;
 	outPose.side= side;
 	outPose.visibility= best.weight;
+
+	// Fused confidence = the best single view of this hand (a second, worse
+	// view can only add information, never make the estimate less trustworthy)
+	outPose.confidence= 0.f;
+	for (const HandCandidate& candidate : candidates)
+		outPose.confidence= std::max(outPose.confidence, candidate.confidence);
+	outPose.confidence= std::clamp(outPose.confidence, 0.f, 1.f);
 
 	// Weighted blend of the palm transform + finger angles across cameras.
 	// Poses/angles compose - unlike raw landmark blending, disagreeing

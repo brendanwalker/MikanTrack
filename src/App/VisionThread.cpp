@@ -160,6 +160,14 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 		MIKAN_MT_LOG_ERROR("VisionThread") << "Diagnostic dump to " << dumpDir << " failed (partial output possible)";
 }
 
+float VisionThread::getObservationConfidence(int cameraIndex, eHandSide side) const
+{
+	if (cameraIndex < 0 || cameraIndex >= k_maxReportedCameras)
+		return -1.f;
+
+	return m_observationConfidence[cameraIndex * 2 + (int)side].load();
+}
+
 const char* VisionThread::getActiveExecutionProvider(int cameraIndex) const
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
@@ -265,6 +273,8 @@ void VisionThread::refreshConfigOnThread()
 	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
 	fusionConfig.wristMatchMaxDistM= m_config->fusion.wristMatchMaxDistM;
 	fusionConfig.spatialSidePriorAxis= m_config->fusion.spatialSidePriorAxis;
+	fusionConfig.minCameraConfidence= m_config->fusion.minCameraConfidence;
+	fusionConfig.jitterReferenceM= m_config->fusion.jitterReferenceMm * 0.001f;
 	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;
 	fusionConfig.smoothingMinCutoff= m_config->tracking.smoothingMinCutoff;
 	fusionConfig.smoothingBeta= m_config->tracking.smoothingBeta;
@@ -287,6 +297,7 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.targetIp= m_config->osc.targetIp;
 		oscConfig.targetPort= (uint16_t)m_config->osc.targetPort;
 		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
+		oscConfig.minConfidence= m_config->osc.minConfidence;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
@@ -515,6 +526,21 @@ void VisionThread::threadLoop()
 			lastFusedForHints= outputResult;
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
 			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
+
+			// Publish per-camera observation confidence for the UI readout
+			for (std::atomic<float>& slot : m_observationConfidence)
+				slot= -1.f;
+			for (const FusionDiagnostics::Cluster& cluster : m_fusion.getLastDiagnostics().clusters)
+			{
+				if (cluster.assignedSide < 0)
+					continue;
+				for (const FusionDiagnostics::Observation& observation : cluster.observations)
+				{
+					if (observation.cameraIndex >= 0 && observation.cameraIndex < k_maxReportedCameras)
+						m_observationConfidence[observation.cameraIndex * 2 + cluster.assignedSide]=
+							observation.confidence;
+				}
+			}
 
 			// Stereo auto hand-scale: slow EMA over the triangulated
 			// correction, applied live to every camera's 3D projection

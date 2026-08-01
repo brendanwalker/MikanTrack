@@ -75,12 +75,53 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"into the lost camera's image and try the landmark model there\n"
 			"directly - much faster reacquisition after claps/occlusion.");
 
+		ImGui::SeparatorText("Observation Confidence");
+		bChanged|= ImGui::SliderFloat("Jitter reference", &fusion.jitterReferenceMm, 3.f, 60.f, "%.0f mm");
+		ImGui::SetItemTooltip(
+			"Palm jitter at which a camera's view counts as half as\n"
+			"trustworthy. Confidence = presence x stability, and the blend\n"
+			"weight is confidence x how face-on the palm is - so a camera\n"
+			"seeing a hand edge-on stops polluting the fused pose.\n"
+			"LOWER = stricter. Raise it if fast hand motion is being\n"
+			"treated as noise.");
+
+		bChanged|= ImGui::SliderFloat("Min camera confidence", &fusion.minCameraConfidence, 0.f, 1.f, "%.2f");
+		ImGui::SetItemTooltip(
+			"Drop a camera's observation entirely below this confidence.\n"
+			"0 = never drop, rely on the soft weighting alone (usually\n"
+			"enough). Watch the per-camera readout below to pick a value.");
+
 		// Which camera won each hand in the last fusion
 		const int leftCam= visionThread->getDominantCamera(eHandSide::Left);
 		const int rightCam= visionThread->getDominantCamera(eHandSide::Right);
 		ImGui::Text("Dominant camera  L: %s  R: %s",
 					leftCam >= 0 ? std::to_string(leftCam + 1).c_str() : "-",
 					rightCam >= 0 ? std::to_string(rightCam + 1).c_str() : "-");
+
+		// Live per-camera confidence: the number the thresholds act on
+		if (ImGui::BeginTable("confidence", 3, ImGuiTableFlags_SizingStretchProp))
+		{
+			ImGui::TableSetupColumn("");
+			ImGui::TableSetupColumn("Left");
+			ImGui::TableSetupColumn("Right");
+			ImGui::TableHeadersRow();
+			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+			{
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("Camera %d", cameraIndex + 1);
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					ImGui::TableNextColumn();
+					const float confidence= visionThread->getObservationConfidence(cameraIndex, (eHandSide)sideIndex);
+					if (confidence < 0.f)
+						ImGui::TextDisabled("-");
+					else
+						ImGui::Text("%.2f", confidence);
+				}
+			}
+			ImGui::EndTable();
+		}
 
 		ImGui::SeparatorText("Stereo Hand Scale");
 		bChanged|= ImGui::Checkbox("Auto hand scale", &tracking.autoHandScaleFromStereo);
@@ -183,6 +224,14 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 
 	bChanged|= ImGui::SliderInt("Max rate", &osc.maxRateHz, 10, 120, "%d Hz");
 
+	bChanged|= ImGui::SliderFloat("Min confidence", &osc.minConfidence, 0.f, 1.f, "%.2f");
+	ImGui::SetItemTooltip(
+		"Below this fused confidence a hand is streamed as tracked=0 with\n"
+		"NO palm/finger messages, so the client can hold its last good\n"
+		"pose or blend to a rest pose instead of following jitter.\n"
+		"0 = always send. Confidence is on /tracked as the 3rd value;\n"
+		"watch the live values below to pick a threshold.");
+
 	ImGui::Separator();
 	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
 	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: radians on the wire, degrees below");
@@ -197,6 +246,14 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 
 		if (!ImGui::CollapsingHeader(sideName, ImGuiTreeNodeFlags_DefaultOpen))
 			continue;
+
+		// Confidence vs the gate: red while the pose is being withheld
+		const bool bGated= pose.tracked && pose.confidence < osc.minConfidence;
+		if (bGated)
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Confidence: %.2f (WITHHELD - below %.2f)",
+							   pose.confidence, osc.minConfidence);
+		else
+			ImGui::Text("Confidence: %.2f", pose.confidence);
 
 		if (!pose.tracked)
 		{

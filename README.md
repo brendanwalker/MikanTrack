@@ -93,7 +93,7 @@ palm transform.
 | Address | Types | Meaning |
 |---|---|---|
 | `/mikan/frame` | `iif` | frameId, timestampMs, fps |
-| `/mikan/hand/{left,right}/tracked` | `if` | tracked (0/1), presence |
+| `/mikan/hand/{left,right}/tracked` | `iff` | tracked (0/1), presence, confidence |
 | `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
 | `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (radians, 0 = straight neutral) |
 | `/mikan/hand/{left,right}/skeleton` | `30f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m); sent at 1 Hz |
@@ -119,6 +119,18 @@ reconstruction, so it shows what your client will see.
 
 **Skeleton/bone lengths** come from MediaPipe's metric hand model scaled by
 the calibrated hand scale - no separate bone calibration needed.
+
+**Confidence** is `presence x stability`, where stability is measured from the
+observed palm jitter (the constant-velocity residual) rather than taken from
+the network. MediaPipe's own presence score answers "is a hand here" and stays
+near 1.0 on a badly conditioned edge-on view whose depth swings by centimeters,
+so it is not usable as a trust signal on its own. Fusion weights each camera by
+`confidence x how face-on the palm is`, so a camera with a poor view of a hand
+stops polluting the fused pose; the streamed confidence is the best
+contributing camera's. Set **OSC panel -> Min confidence** to withhold
+`/palm` and `/fingers` below a threshold - the hand is then streamed as
+`tracked=0` and the client should hold its last good pose or blend to a rest
+pose. Tune with the live per-camera confidence table in the Tracking panel.
 
 ### Consuming in Unreal Engine
 

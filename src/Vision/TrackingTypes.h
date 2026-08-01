@@ -161,6 +161,13 @@ struct HandPose
 	float presence= 0.f;
 	float visibility= 0.f; // palm face-on factor for the observing camera
 
+	// How much this pose can be trusted, [0,1] = presence x measured
+	// stability. Unlike presence (which only answers "is a hand here" and
+	// stays high on an ill-conditioned edge-on view), this tracks the
+	// observed pose noise, so it is the number to gate output on. After
+	// fusion it is the best contributing camera's confidence.
+	float confidence= 0.f;
+
 	bool hasCameraPose= false;
 	glm::vec3 palmPositionCamera{0.f}; // OpenCV camera convention, meters
 	glm::quat palmOrientationCamera{1.f, 0.f, 0.f, 0.f};

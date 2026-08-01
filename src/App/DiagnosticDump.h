@@ -30,6 +30,7 @@ struct DiagHandState
 	float rightProb= 0.5f; // flip-adjusted classifier opinion (what fusion votes with)
 	int labeledSide= -1;   // camera records: that camera's own label; fused: assigned side
 	float visibility= 0.f;
+	float confidence= 0.f; // presence x measured stability (what OSC gates on)
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f};
 	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};

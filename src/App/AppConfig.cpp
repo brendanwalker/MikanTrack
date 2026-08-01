@@ -207,6 +207,8 @@ bool AppConfig::load()
 		fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
 		fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
 		fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
+		fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
+		fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
 
 		const json& hs= j.value("handScale", json::object());
 		handScale.present= hs.value("present", false);
@@ -235,6 +237,7 @@ bool AppConfig::load()
 		osc.targetIp= os.value("ip", "127.0.0.1");
 		osc.targetPort= os.value("port", 8000);
 		osc.maxRateHz= os.value("maxRateHz", 60);
+		osc.minConfidence= os.value("minConfidence", 0.f);
 	}
 	catch (const std::exception& e)
 	{
@@ -262,6 +265,8 @@ std::string AppConfig::toJsonString() const
 		{"stalenessWindowMs", fusion.stalenessWindowMs},
 		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
 		{"spatialSidePriorAxis", fusion.spatialSidePriorAxis},
+		{"minCameraConfidence", fusion.minCameraConfidence},
+		{"jitterReferenceMm", fusion.jitterReferenceMm},
 	};
 
 	j["handScale"]= {
@@ -294,6 +299,7 @@ std::string AppConfig::toJsonString() const
 		{"ip", osc.targetIp},
 		{"port", osc.targetPort},
 		{"maxRateHz", osc.maxRateHz},
+		{"minConfidence", osc.minConfidence},
 	};
 
 	return j.dump(2);

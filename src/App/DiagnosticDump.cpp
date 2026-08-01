@@ -61,6 +61,7 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"rightProb", hand.rightProb},
 		{"labeledSide", sideName(hand.labeledSide)},
 		{"visibility", hand.visibility},
+		{"confidence", hand.confidence},
 		{"hasWorldPose", hand.hasWorldPose},
 		{"palmPositionWorld", vec3ToJson(hand.palmPositionWorld)},
 		{"palmOrientationWorld", quatToJson(hand.palmOrientationWorld)},
@@ -81,6 +82,9 @@ static json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
 				{"camera", observation.cameraIndex},
 				{"labeledSide", sideName(observation.labeledSide)},
 				{"weight", observation.weight},
+				{"confidence", observation.confidence},
+				{"stability", observation.stability},
+				{"jitterMm", observation.jitterMm},
 				{"sideVoteWeight", observation.sideVoteWeight},
 				{"palmWorld", vec3ToJson(observation.palmWorld)},
 			});
@@ -128,6 +132,7 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.rightProb= hand.rightProb;
 	outHand.labeledSide= (int)(hand.tracked ? hand.side : pose.side);
 	outHand.visibility= pose.visibility;
+	outHand.confidence= pose.confidence;
 	outHand.hasWorldPose= pose.hasWorldPose;
 	outHand.palmPositionWorld= pose.hasWorldPose ? pose.palmPositionWorld : pose.palmPositionCamera;
 	outHand.palmOrientationWorld= pose.hasWorldPose ? pose.palmOrientationWorld : pose.palmOrientationCamera;
@@ -252,6 +257,7 @@ static json poseSnapshotToJson(const HandPose& pose)
 		{"side", sideName((int)pose.side)},
 		{"presence", pose.presence},
 		{"visibility", pose.visibility},
+		{"confidence", pose.confidence},
 		{"fingers", fingersToJson(pose.fingers)},
 	};
 	if (pose.hasCameraPose)

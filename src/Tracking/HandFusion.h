@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <vector>
 
 #include "glm/ext/matrix_double4x4.hpp"
@@ -30,6 +31,15 @@ struct HandFusionConfig
 	float wristMatchMaxDistM= 0.25f;
 	float presenceThreshold= 0.5f;
 
+	// A camera's observation is dropped entirely when its confidence
+	// (presence x stability) falls below this. 0 = never drop, rely on the
+	// soft weighting alone.
+	float minCameraConfidence= 0.f;
+	// Palm jitter (constant-velocity residual) at which an observation is
+	// considered half as trustworthy. Larger = more tolerant of noise, but
+	// also of genuinely fast motion, which produces real residuals.
+	float jitterReferenceM= 0.015f;
+
 	// Spatial side prior for users who never cross their hands: which world
 	// axis (marker frame, origin = marker center) points toward where the
 	// RIGHT hand lives. 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y.
@@ -49,7 +59,10 @@ struct FusionDiagnostics
 	{
 		int cameraIndex= -1;
 		int labeledSide= -1; // that camera's own L/R vote (0=L, 1=R)
-		float weight= 0.f;   // presence x palm visibility
+		float weight= 0.f;   // confidence x palm visibility (blend weight)
+		float confidence= 0.f;
+		float stability= 0.f;  // measured-jitter factor inside confidence
+		float jitterMm= 0.f;   // the raw constant-velocity residual behind it
 		float sideVoteWeight= 0.f;
 		glm::vec3 palmWorld{0.f};
 	};
@@ -122,13 +135,20 @@ public:
 	static float visibilityFactor(const glm::quat& palmOrientationWorld, const glm::vec3& palmPositionWorld,
 								  const glm::vec3& cameraPosWorld);
 
+	// Stability factor in (0,1]: ref^2 / (ref^2 + jitter^2), a soft
+	// inverse-variance weight over the measured palm jitter
+	static float stabilityFactor(float jitterM, float jitterReferenceM);
+
 private:
 	struct HandCandidate
 	{
 		const CameraFrameResult* camera= nullptr;
 		const TrackedHand* hand= nullptr; // landmark data (votes, stereo scale, debug)
 		const HandPose* pose= nullptr;    // the parametric observation being fused
-		float weight= 0.f;                // presence x palm visibility
+		float confidence= 0.f;            // presence x measured stability
+		float stability= 0.f;
+		float jitterM= 0.f;
+		float weight= 0.f;                // confidence x palm visibility (blend weight)
 		float sideVoteWeight= 0.f;        // presence x classifier decisiveness
 		// Classifier opinion in [-1 (left), +1 (right)], from the flip-adjusted
 		// rightProb - NOT from the (displaceable) per-camera side label
@@ -185,6 +205,24 @@ private:
 	// assignment sticks unless decisively contradicted (prevents the L/R
 	// flip-flop on near-tied affinities that poisons the temporal prior)
 	int m_lastSoloSide= -1;
+
+	// Per (camera, that camera's own side slot) palm-jitter tracker. Keyed by
+	// the camera's OWN label because that is what indexes its poses array; a
+	// label swap just costs one reset. Jitter is the constant-velocity
+	// residual |p(t) - 2p(t-1) + p(t-2)|, so smooth motion reads ~0 and only
+	// genuine noise (or real acceleration) registers.
+	struct JitterTracker
+	{
+		glm::vec3 previousPalm{0.f};
+		glm::vec3 previousPalm2{0.f};
+		int samples= 0;
+		double lastTimestampMs= -1.0;
+		float jitterEmaM= 0.f;
+	};
+	std::map<int, JitterTracker> m_jitterTrackers;
+
+	// Updates the tracker for one observation and returns its jitter estimate
+	float updateJitter(int cameraIndex, int cameraSideIndex, const glm::vec3& palmWorld, double timestampMs);
 
 	int m_dominantCamera[2]= {-1, -1};
 
