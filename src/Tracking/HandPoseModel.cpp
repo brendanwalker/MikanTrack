@@ -8,6 +8,15 @@
 
 namespace
 {
+// The thumb rests pronated (twisted about its own axis) relative to the
+// fingers, so its MCP/IP flexion sweeps ACROSS the palm toward the pinky
+// instead of curling toward the palm plane. Its flexion hinge is the
+// finger-style hinge rotated about the thumb bone by this fixed anatomical
+// offset - applied identically in extraction and FK so the 4-angle schema
+// round-trips exactly. Without it, across-palm thumb flexion projects to
+// nearly nothing on the finger-style hinge (thumb opposition was lost).
+constexpr float kThumbPronationRad= 1.2f; // ~69 degrees
+
 // Signed angle from vector a to vector b about the given axis (all normalized)
 float signedAngle(const glm::vec3& a, const glm::vec3& b, const glm::vec3& axis)
 {
@@ -20,6 +29,15 @@ glm::vec3 safeNormalize(const glm::vec3& v)
 {
 	const float length= glm::length(v);
 	return length > 1e-6f ? v / length : glm::vec3(1.f, 0.f, 0.f);
+}
+
+// Thumb flexion hinge: the standard hinge pronated about the (post-bend)
+// thumb metacarpal direction. chiralitySign: +1 when the thumb sits on the
+// palm frame's +Y side (right hand), -1 otherwise.
+glm::vec3 pronatedThumbHinge(const glm::vec3& standardHinge, const glm::vec3& boneDirection, float chiralitySign)
+{
+	const glm::quat pronation= glm::angleAxis(chiralitySign * kThumbPronationRad, safeNormalize(boneDirection));
+	return pronation * standardHinge;
 }
 } // namespace
 
@@ -144,10 +162,18 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 		const glm::vec3 hingeAxis= safeNormalize(glm::cross(directionLat, -palmZ));
 
 		// FK rotates by angleAxis(-bend, hinge), so the extracted bend is the
-		// NEGATED signed angle about the hinge (positive = toward palmar +Z)
+		// NEGATED signed angle about the hinge (positive = toward palmar +Z).
+		// The thumb's MCP/IP flexion hinge is pronated about the metacarpal
+		// (see kThumbPronationRad) - lateral/proximal stay on the standard
+		// hinge (they spherically parameterize the metacarpal direction).
+		const glm::vec3 flexHinge=
+			finger == (int)eFinger::Thumb
+				? pronatedThumbHinge(hingeAxis, proximalBone, bThumbOnMinusY ? -1.f : 1.f)
+				: hingeAxis;
+
 		const float proximal= -signedAngle(directionLat, proximalBone, hingeAxis);
-		const float intermediate= -signedAngle(proximalBone, intermediateBone, hingeAxis);
-		const float distal= -signedAngle(intermediateBone, distalBone, hingeAxis);
+		const float intermediate= -signedAngle(proximalBone, intermediateBone, flexHinge);
+		const float distal= -signedAngle(intermediateBone, distalBone, flexHinge);
 
 		outAngles[finger].lateral= bThumbOnMinusY ? -lateralGeometric : lateralGeometric;
 		outAngles[finger].proximal= proximal;
@@ -218,18 +244,26 @@ void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const Hand
 		const glm::quat proximalRotation= glm::angleAxis(-fingerAngles.proximal, hingeAxis);
 		direction= proximalRotation * direction;
 
+		// Thumb MCP/IP flexion happens about the pronated hinge (mirrors
+		// computeFingerAngles); chirality from the skeleton's index y sign
+		const glm::vec3 flexHinge=
+			finger == (int)eFinger::Thumb
+				? pronatedThumbHinge(hingeAxis, direction,
+									 skeleton.baseInPalm[(int)eFinger::Index].y < 0.f ? -1.f : 1.f)
+				: hingeAxis;
+
 		std::array<glm::vec3, 4>& joints= outJoints[finger];
 		joints[0]= glm::vec3(palmTransform * glm::vec4(base, 1.f));
 
 		glm::vec3 position= base + direction * skeleton.phalanxLengths[finger][0];
 		joints[1]= glm::vec3(palmTransform * glm::vec4(position, 1.f));
 
-		const glm::quat intermediateRotation= glm::angleAxis(-fingerAngles.intermediate, hingeAxis);
+		const glm::quat intermediateRotation= glm::angleAxis(-fingerAngles.intermediate, flexHinge);
 		direction= intermediateRotation * direction;
 		position+= direction * skeleton.phalanxLengths[finger][1];
 		joints[2]= glm::vec3(palmTransform * glm::vec4(position, 1.f));
 
-		const glm::quat distalRotation= glm::angleAxis(-fingerAngles.distal, hingeAxis);
+		const glm::quat distalRotation= glm::angleAxis(-fingerAngles.distal, flexHinge);
 		direction= distalRotation * direction;
 		position+= direction * skeleton.phalanxLengths[finger][2];
 		joints[3]= glm::vec3(palmTransform * glm::vec4(position, 1.f));

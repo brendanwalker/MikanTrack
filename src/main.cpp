@@ -563,6 +563,45 @@ static int runApp(int argc, char** argv)
 				result= 1;
 			}
 
+			// Thumb opposition: large MCP/IP flexion must round-trip AND must
+			// actually sweep the thumb tip ACROSS the palm toward the pinky
+			// (the pronated-hinge behavior; on the finger-style hinge this
+			// motion was nearly unobservable)
+			{
+				std::array<FingerAngles, FINGER_COUNT> anglesOpposition{};
+				anglesOpposition[(int)eFinger::Thumb].lateral= -0.3f;
+				anglesOpposition[(int)eFinger::Thumb].proximal= 0.4f;
+				anglesOpposition[(int)eFinger::Thumb].intermediate= 1.1f;
+				anglesOpposition[(int)eFinger::Thumb].distal= 0.5f;
+				if (roundTrip(anglesOpposition, "thumb opposition") > 0.02f)
+				{
+					MIKAN_LOG_ERROR("test-handpose") << "FAILED: thumb-opposition round-trip error too large";
+					result= 1;
+				}
+
+				// Directional check: flexing the thumb must move its tip toward
+				// the pinky side (-Y in this right-hand skeleton), not stay in
+				// the palmar bend plane
+				std::array<FingerAngles, FINGER_COUNT> anglesStraight{};
+				anglesStraight[(int)eFinger::Thumb].lateral= -0.3f;
+				anglesStraight[(int)eFinger::Thumb].proximal= 0.4f;
+
+				std::array<std::array<glm::vec3, 4>, FINGER_COUNT> jointsFlexed, jointsStraight;
+				HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, anglesOpposition, jointsFlexed);
+				HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, anglesStraight, jointsStraight);
+
+				const float tipShiftTowardPinky=
+					jointsStraight[(int)eFinger::Thumb][3].y - jointsFlexed[(int)eFinger::Thumb][3].y;
+				MIKAN_LOG_INFO("test-handpose")
+					<< "thumb flexion tip shift toward pinky mm=" << tipShiftTowardPinky * 1000.f;
+				if (tipShiftTowardPinky < 0.02f)
+				{
+					MIKAN_LOG_ERROR("test-handpose")
+						<< "FAILED: thumb flexion must sweep the tip across the palm toward the pinky";
+					result= 1;
+				}
+			}
+
 			// Wrong-label robustness: MediaPipe's handedness classifier flips
 			// when the palm rotates away from the camera. The palm-frame
 			// chirality is derived geometrically (curl + thumb evidence), so

@@ -101,8 +101,13 @@ calibration they fall back to OpenCV camera space (`/mikan/info` says which).
 offset in the palm frame; the neutral finger direction is the (palm-plane
 projected) direction from the wrist to that base; apply lateral rotation
 about palm +Z, then bend the three phalanx segments about the finger's
-lateral axis by the three bend angles. The app's own 3D view renders exactly
-this reconstruction, so it shows what your client will see.
+lateral axis by the three bend angles. **Thumb exception**: the thumb's
+intermediate/distal bends rotate about its hinge PRONATED 1.2 rad (~69 deg)
+about the thumb metacarpal direction (positive pronation on a right hand,
+negative on a left) - the thumb rests twisted relative to the fingers, so
+its flexion sweeps across the palm toward the pinky rather than curling
+toward the palm plane. The app's own 3D view renders exactly this
+reconstruction, so it shows what your client will see.
 
 **Skeleton/bone lengths** come from MediaPipe's metric hand model scaled by
 the calibrated hand scale - no separate bone calibration needed.
