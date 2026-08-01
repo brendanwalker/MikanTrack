@@ -85,6 +85,9 @@ public:
 
 	// Diagnostics
 	uint64_t getDroppedFrameCount(int cameraIndex) const;
+	// Frame rate the DEVICE is delivering (measured at the MF callback,
+	// before any queueing/drops)
+	float getDeviceFrameRate(int cameraIndex) const;
 
 	// -- Inference thread API -----
 	// Returns the newest available frame for the camera, recycling any stale
@@ -119,6 +122,13 @@ private:
 		moodycamel::ReaderWriterQueue<VideoFrameBlock*> frameQueue;
 		int64_t nextFrameIndex= 0; // only touched on the MF worker thread
 		std::atomic<uint64_t> droppedFrameCount{0};
+
+		// Device-side delivery rate, measured at the MF callback BEFORE any
+		// queueing/drops - distinguishes "the camera only delivers N fps"
+		// (e.g. auto-exposure halving the rate in low light) from "the
+		// pipeline drops frames"
+		double lastArrivalMs= 0.0; // MF worker thread only
+		std::atomic<float> deviceFps{0.f};
 
 		// Set on device removal, consumed on the main thread in update()
 		std::atomic<bool> bDeviceDisconnected{false};

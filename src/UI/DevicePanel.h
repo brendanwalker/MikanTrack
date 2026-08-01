@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "IVideoDevice.h" // eVideoSettingType, VideoSettingConstraint
+
 class App;
 class AppConfig;
 class VideoCaptureSystem;
@@ -23,6 +25,14 @@ public:
 	void refreshModeOptions(int cameraIndex);
 
 private:
+	struct CameraSettingUi
+	{
+		eVideoSettingType type= eVideoSettingType::INVALID;
+		const char* name= "";
+		VideoSettingConstraint constraint;
+		int value= 0;
+	};
+
 	struct CameraUiState
 	{
 		int selectedDeviceIndex= -1;
@@ -32,11 +42,15 @@ private:
 		std::string selectedResolution;
 		std::string selectedFrameRate;
 		std::string selectedFormat;
+		// Supported ProcAmp/CameraControl settings (cached on open/refresh)
+		std::vector<CameraSettingUi> settings;
 	};
 
 	void syncCameraStateCount();
 	void drawCameraSection(int cameraIndex);
+	void drawCameraSettings(int cameraIndex);
 	void applyModeSelection(int cameraIndex);
+	void refreshCameraSettings(int cameraIndex);
 
 	App* m_app;
 	VideoCaptureSystem* m_videoCapture;

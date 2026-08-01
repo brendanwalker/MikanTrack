@@ -61,6 +61,94 @@ void DevicePanel::refreshDeviceList()
 	}
 }
 
+void DevicePanel::refreshCameraSettings(int cameraIndex)
+{
+	CameraUiState& state= m_cameraStates[cameraIndex];
+	state.settings.clear();
+
+	const IUsbVideoDevice* device= m_videoCapture->getCurrentDevice(cameraIndex);
+	if (device == nullptr)
+		return;
+
+	// Curated, in a useful order; Exposure first (it's the one that halves
+	// your frame rate in low light)
+	static const struct
+	{
+		eVideoSettingType type;
+		const char* name;
+	} kSettings[]= {
+		{eVideoSettingType::Exposure, "Exposure"},
+		{eVideoSettingType::Gain, "Gain"},
+		{eVideoSettingType::Brightness, "Brightness"},
+		{eVideoSettingType::Contrast, "Contrast"},
+		{eVideoSettingType::Saturation, "Saturation"},
+		{eVideoSettingType::Sharpness, "Sharpness"},
+		{eVideoSettingType::WhiteBalance, "White Balance"},
+		{eVideoSettingType::Focus, "Focus"},
+		{eVideoSettingType::Zoom, "Zoom"},
+	};
+
+	for (const auto& settingInfo : kSettings)
+	{
+		if (!device->isVideoSettingSupported(settingInfo.type))
+			continue;
+
+		CameraSettingUi setting;
+		setting.type= settingInfo.type;
+		setting.name= settingInfo.name;
+		if (!device->getVideoSettingConstraint(settingInfo.type, setting.constraint))
+			continue;
+		setting.value= device->getVideoSetting(settingInfo.type);
+		state.settings.push_back(setting);
+	}
+}
+
+void DevicePanel::drawCameraSettings(int cameraIndex)
+{
+	CameraUiState& state= m_cameraStates[cameraIndex];
+	if (state.settings.empty())
+		return;
+
+	if (!ImGui::TreeNode("Camera Settings"))
+		return;
+
+	IUsbVideoDevice* device= m_videoCapture->getCurrentDevice(cameraIndex);
+	if (device != nullptr)
+	{
+		for (CameraSettingUi& setting : state.settings)
+		{
+			if (ImGui::SliderInt(setting.name, &setting.value, setting.constraint.min_value,
+								 setting.constraint.max_value))
+			{
+				device->setVideoSetting(setting.type, setting.value);
+			}
+			if (setting.type == eVideoSettingType::Exposure)
+			{
+				ImGui::SetItemTooltip(
+					"Dragging this switches the camera to MANUAL exposure.\n"
+					"Auto-exposure in dim light extends exposure past the\n"
+					"frame interval and silently halves the frame rate\n"
+					"(30fps -> 15fps). Shorten exposure (or add light) to\n"
+					"get the full rate back.");
+			}
+		}
+
+		if (ImGui::Button("Reset Defaults"))
+		{
+			for (CameraSettingUi& setting : state.settings)
+			{
+				device->setVideoSetting(setting.type, setting.constraint.default_value);
+				setting.value= setting.constraint.default_value;
+			}
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Re-read"))
+			refreshCameraSettings(cameraIndex);
+	}
+
+	ImGui::TreePop();
+}
+
 void DevicePanel::refreshModeOptions(int cameraIndex)
 {
 	syncCameraStateCount();
@@ -81,6 +169,8 @@ void DevicePanel::refreshModeOptions(int cameraIndex)
 	VideoModeUtils::getVideoModeResolutionName(device, state.selectedResolution);
 	VideoModeUtils::getVideoModeFrameRateName(device, state.selectedFrameRate);
 	VideoModeUtils::getVideoModeFormatName(device, state.selectedFormat);
+
+	refreshCameraSettings(cameraIndex);
 }
 
 void DevicePanel::applyModeSelection(int cameraIndex)
@@ -193,9 +283,19 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 		if (bDeviceOpen)
 		{
 			ImGui::TextDisabled("Mode: %s", m_videoCapture->getCurrentVideoModeName(cameraIndex).c_str());
+
+			// Device-side delivery rate: if this reads below the mode's rate,
+			// the CAMERA is the bottleneck (usually auto-exposure in dim light
+			// or USB bandwidth), not the processing pipeline
+			if (m_videoCapture->isStreaming(cameraIndex))
+				ImGui::TextDisabled("Device delivering: %.1f fps",
+									m_videoCapture->getDeviceFrameRate(cameraIndex));
+
 			const uint64_t droppedFrames= m_videoCapture->getDroppedFrameCount(cameraIndex);
 			if (droppedFrames > 0)
 				ImGui::TextDisabled("Dropped frames: %llu", (unsigned long long)droppedFrames);
+
+			drawCameraSettings(cameraIndex);
 		}
 
 		// Remove (never camera 0)

@@ -77,12 +77,22 @@ void VideoCaptureSystem::CameraSlot::notifyVideoFrameReceived(const UsbVideoFram
 {
 	// Runs on this device's Media Foundation worker thread -
 	// keep this lock-free and allocation-light
+	const double timestampMs=
+		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+
+	// Device delivery rate (EMA over inter-arrival times), measured before
+	// any queueing so pipeline drops can't hide a slow camera
+	if (lastArrivalMs > 0.0 && timestampMs > lastArrivalMs)
+	{
+		const float instFps= (float)(1000.0 / (timestampMs - lastArrivalMs));
+		const float previous= deviceFps.load(std::memory_order_relaxed);
+		deviceFps.store(previous > 0.f ? previous * 0.9f + instFps * 0.1f : instFps, std::memory_order_relaxed);
+	}
+	lastArrivalMs= timestampMs;
+
 	VideoFrameBlock* block= nullptr;
 	if (frameFreelist.try_dequeue(block))
 	{
-		const double timestampMs=
-			std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
-
 		block->copyFrom(bufferInfo, nextFrameIndex++, timestampMs);
 		frameQueue.enqueue(block);
 	}
@@ -445,6 +455,12 @@ uint64_t VideoCaptureSystem::getDroppedFrameCount(int cameraIndex) const
 {
 	const CameraSlot* slot= getSlot(cameraIndex);
 	return slot != nullptr ? slot->droppedFrameCount.load(std::memory_order_relaxed) : 0;
+}
+
+float VideoCaptureSystem::getDeviceFrameRate(int cameraIndex) const
+{
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr ? slot->deviceFps.load(std::memory_order_relaxed) : 0.f;
 }
 
 // -- Inference thread API -----
