@@ -58,6 +58,23 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 		ImGui::SetItemTooltip("A camera's last result older than this is\nexcluded from fusion");
 
+		const char* kSidePriorOptions[]= {"Off", "+X", "-X", "+Y", "-Y"};
+		bChanged|= ImGui::Combo("Right hand toward", &fusion.spatialSidePriorAxis,
+								kSidePriorOptions, IM_ARRAYSIZE(kSidePriorOptions));
+		ImGui::SetItemTooltip(
+			"If you never cross your hands: the world axis (marker frame,\n"
+			"origin at the marker) pointing toward where your RIGHT hand\n"
+			"lives. Adds a spatial prior to left/right assignment, which\n"
+			"stops a camera that sees only one hand from hijacking the\n"
+			"wrong side. Find the axis with the palm position readout or\n"
+			"the 3D view's world axes.");
+
+		bChanged|= ImGui::Checkbox("Cross-camera search seeding", &tracking.crossCameraSeeding);
+		ImGui::SetItemTooltip(
+			"When one camera tracks a hand another camera lost, project it\n"
+			"into the lost camera's image and try the landmark model there\n"
+			"directly - much faster reacquisition after claps/occlusion.");
+
 		// Which camera won each hand in the last fusion
 		const int leftCam= visionThread->getDominantCamera(eHandSide::Left);
 		const int rightCam= visionThread->getDominantCamera(eHandSide::Right);

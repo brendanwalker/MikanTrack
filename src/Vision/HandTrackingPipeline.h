@@ -33,6 +33,23 @@ struct HandTrackingPipelineConfig
 	int handPresenceLostFrames= 2;      // consecutive low-presence frames before slot deactivates
 	float slotDedupeIouThreshold= 0.3f; // palm detection vs active slot IoU
 	int handednessSwitchFrames= 15;     // consecutive contradictions before a slot flips side
+
+	// Duplicate-slot guard: after a clap/overlap both slots can end up
+	// tracking the SAME physical hand (their landmark ROIs converge), which
+	// blocks the free slot the separated hand needs. Sustained near-identical
+	// hand boxes -> kill the lower-presence slot.
+	float slotDuplicateIouThreshold= 0.6f;
+	int slotDuplicateKillFrames= 6;
+};
+
+// Cross-camera search hint: another camera tracks a hand this camera lost;
+// its fused world pose projected into this camera's image seeds a direct
+// landmark-model attempt (no palm detection needed)
+struct HandSearchHint
+{
+	glm::vec2 centerPx{0.f};   // projected palm center
+	glm::vec2 dirPx{0.f, -1.f}; // projected wrist->fingers direction (unit)
+	float palmSizePx= 0.f;     // projected wrist->middle-MCP distance
 };
 
 // Orchestrates the MediaPipe-style tracking graph on the inference thread:
@@ -69,12 +86,19 @@ public:
 	// boxes and inferenceMs on outResult
 	void process(const cv::Mat& bgrFrame, TrackingFrameResult& outResult);
 
+	// Queues cross-camera search hints for the next process() call (same
+	// thread as process; hints landing on an already-tracked hand are ignored)
+	void setSearchHints(const std::vector<HandSearchHint>& hints) { m_searchHints= hints; }
+
 private:
 	struct HandSlot
 	{
 		bool active= false;
 		// a palm detection is pending until the first landmark pass consumes it
 		bool hasPendingDetection= false;
+		// pending detection came from a cross-camera hint (speculative): if the
+		// first landmark pass doesn't find a confident hand, drop immediately
+		bool bSeededFromHint= false;
 		PalmDetection pendingDetection;
 
 		std::array<glm::vec3, HAND_LANDMARK_COUNT> imagePoints{};
@@ -96,6 +120,7 @@ private:
 		{
 			active= false;
 			hasPendingDetection= false;
+			bSeededFromHint= false;
 			presence= 0.f;
 			handednessScore= 0.5f;
 			lowPresenceFrames= 0;
@@ -106,7 +131,9 @@ private:
 	};
 
 	void runPalmDetectionStage(const cv::Mat& bgrFrame, TrackingFrameResult& outResult);
+	void applySearchHints();
 	void runHandLandmarkStage(const cv::Mat& bgrFrame);
+	void killDuplicateSlots();
 	void resolveHandedness(int frameWidth);
 	void publishHands(TrackingFrameResult& outResult);
 
@@ -121,6 +148,9 @@ private:
 
 	int64_t m_frameIndex= -1;
 	int m_framesSinceDetector= 0;
+	int m_duplicateOverlapFrames= 0;
+
+	std::vector<HandSearchHint> m_searchHints;
 
 	// scratch
 	std::vector<PalmDetection> m_palmDetections;

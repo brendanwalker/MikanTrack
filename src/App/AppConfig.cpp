@@ -192,6 +192,7 @@ bool AppConfig::load()
 		const json& fu= j.value("fusion", json::object());
 		fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
 		fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
+		fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
 
 		const json& hs= j.value("handScale", json::object());
 		handScale.present= hs.value("present", false);
@@ -209,6 +210,7 @@ bool AppConfig::load()
 		tracking.autoHandScaleFromStereo= tr.value("autoHandScaleFromStereo", true);
 		tracking.usePnpDepth= tr.value("usePnpDepth", true);
 		tracking.pnpPalmOnly= tr.value("pnpPalmOnly", false);
+		tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
 		tracking.smoothingMinCutoff= tr.value("smoothingMinCutoff", 1.0f);
 		tracking.smoothingBeta= tr.value("smoothingBeta", 0.05f);
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
@@ -245,6 +247,7 @@ bool AppConfig::save() const
 	j["fusion"]= {
 		{"stalenessWindowMs", fusion.stalenessWindowMs},
 		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
+		{"spatialSidePriorAxis", fusion.spatialSidePriorAxis},
 	};
 
 	j["handScale"]= {
@@ -265,6 +268,7 @@ bool AppConfig::save() const
 		{"autoHandScaleFromStereo", tracking.autoHandScaleFromStereo},
 		{"usePnpDepth", tracking.usePnpDepth},
 		{"pnpPalmOnly", tracking.pnpPalmOnly},
+		{"crossCameraSeeding", tracking.crossCameraSeeding},
 		{"smoothingMinCutoff", tracking.smoothingMinCutoff},
 		{"smoothingBeta", tracking.smoothingBeta},
 		{"smoothingEnabled", tracking.smoothingEnabled},

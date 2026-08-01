@@ -1,6 +1,7 @@
 #include "VisionThread.h"
 
 #include "glm/ext/matrix_double4x4.hpp"
+#include "glm/matrix.hpp"
 
 #include "AppConfig.h"
 #include "CVVideoFrameProcessor.h"
@@ -210,6 +211,7 @@ void VisionThread::refreshConfigOnThread()
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
 	fusionConfig.wristMatchMaxDistM= m_config->fusion.wristMatchMaxDistM;
+	fusionConfig.spatialSidePriorAxis= m_config->fusion.spatialSidePriorAxis;
 	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;
 	fusionConfig.smoothingMinCutoff= m_config->tracking.smoothingMinCutoff;
 	fusionConfig.smoothingBeta= m_config->tracking.smoothingBeta;
@@ -233,6 +235,83 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.targetPort= (uint16_t)m_config->osc.targetPort;
 		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
 		m_oscStreamer->setConfig(oscConfig);
+	}
+}
+
+void VisionThread::seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused)
+{
+	if (context.pipeline == nullptr || !context.bTrackingEnabled)
+		return;
+
+	const CameraProfile& profile= m_config->camera(context.cameraIndex);
+	if (!profile.intrinsics.present || !profile.extrinsics.present)
+		return;
+
+	if (context.hintCooldownFrames > 0)
+	{
+		context.hintCooldownFrames--;
+		return;
+	}
+
+	const glm::dmat4 cameraFromWorld= glm::inverse(profile.extrinsics.markerFromCamera);
+	const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
+	const double fx= cameraMatrix.x0, fy= cameraMatrix.y1;
+	const double cx= cameraMatrix.z0, cy= cameraMatrix.z1;
+	const double width= profile.intrinsics.intrinsics.pixel_width;
+	const double height= profile.intrinsics.intrinsics.pixel_height;
+
+	// Projects a world point into this camera's (undistorted) image; false
+	// when behind or implausibly close to the camera
+	auto projectPoint= [&](const glm::vec3& world, glm::vec2& outPx, double& outDepth) {
+		const glm::dvec4 cameraPt= cameraFromWorld * glm::dvec4(glm::dvec3(world), 1.0);
+		if (cameraPt.z < 0.05)
+			return false;
+		outPx= glm::vec2((float)(fx * cameraPt.x / cameraPt.z + cx), (float)(fy * cameraPt.y / cameraPt.z + cy));
+		outDepth= cameraPt.z;
+		return true;
+	};
+
+	std::vector<HandSearchHint> hints;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const HandPose& fusedPose= lastFused.poses[sideIndex];
+		if (!fusedPose.tracked || !fusedPose.hasWorldPose)
+			continue;
+
+		// Only seed hands THIS camera is missing (some other camera sees it)
+		if (context.lastResult.valid && context.lastResult.result.poses[sideIndex].tracked)
+			continue;
+
+		glm::vec2 centerPx;
+		double depth= 0.0;
+		if (!projectPoint(fusedPose.palmPositionWorld, centerPx, depth))
+			continue;
+		if (centerPx.x < 0.f || centerPx.x >= (float)width || centerPx.y < 0.f || centerPx.y >= (float)height)
+			continue;
+
+		// Palm +X points toward the fingers; its projection orients the crop
+		const glm::vec3 fingersDirWorld= fusedPose.palmOrientationWorld * glm::vec3(1.f, 0.f, 0.f);
+		glm::vec2 aheadPx;
+		double unusedDepth= 0.0;
+		if (!projectPoint(fusedPose.palmPositionWorld + fingersDirWorld * 0.05f, aheadPx, unusedDepth))
+			continue;
+		glm::vec2 dirPx= aheadPx - centerPx;
+		const float dirLength= glm::length(dirPx);
+
+		const float refLengthMeters=
+			(float)(m_config->handScale.refLengthMeters * (double)m_autoScaleFactor.load());
+
+		HandSearchHint hint;
+		hint.centerPx= centerPx;
+		hint.dirPx= dirLength > 1e-3f ? dirPx / dirLength : glm::vec2(0.f, -1.f);
+		hint.palmSizePx= (float)(fx * (double)refLengthMeters / depth);
+		hints.push_back(hint);
+	}
+
+	if (!hints.empty())
+	{
+		context.pipeline->setSearchHints(hints);
+		context.hintCooldownFrames= 2; // retry every ~3 frames while unseen
 	}
 }
 
@@ -323,6 +402,10 @@ void VisionThread::threadLoop()
 
 	std::vector<const CameraFrameResult*> fusionCandidates;
 
+	// Previous iteration's fused world result, used to seed cross-camera
+	// search hints (vision-thread-local; the published copy is mutex-guarded)
+	TrackingFrameResult lastFusedForHints;
+
 	while (m_bRunning)
 	{
 		if (m_bConfigRefreshRequested.exchange(false))
@@ -335,6 +418,9 @@ void VisionThread::threadLoop()
 		double newestTimestampMs= 0.0;
 		for (std::unique_ptr<CameraContext>& context : m_cameras)
 		{
+			if (m_cameras.size() > 1 && m_config->tracking.crossCameraSeeding)
+				seedSearchHints(*context, lastFusedForHints);
+
 			if (processCameraFrame(*context))
 			{
 				bAnyNewResult= true;
@@ -365,6 +451,7 @@ void VisionThread::threadLoop()
 		if (bAnyWorldCandidate)
 		{
 			m_fusion.fuse(fusionCandidates, newestTimestampMs, outputResult);
+			lastFusedForHints= outputResult;
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
 			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
 
@@ -390,6 +477,7 @@ void VisionThread::threadLoop()
 			// No calibrated camera: preserve the single-camera camera-space
 			// behavior (OSC announces space=camera) using camera 0's result
 			outputResult= m_cameras.empty() ? TrackingFrameResult() : m_cameras[0]->lastResult.result;
+			lastFusedForHints= TrackingFrameResult(); // camera-space - can't project
 			m_dominantCamera[0]= -1;
 			m_dominantCamera[1]= -1;
 		}

@@ -114,6 +114,10 @@ private:
 		cv::Mat undistortedScratch;
 		double lastFrameTimestampMs= 0.0;
 		float captureFps= 0.f;
+
+		// Cross-camera seeding retry throttle (a failed speculative landmark
+		// pass costs a few ms - don't pay it every frame)
+		int hintCooldownFrames= 0;
 	};
 
 	void threadLoop();
@@ -121,6 +125,9 @@ private:
 	// Processes one newly popped frame for a context; returns true if a new
 	// result was produced
 	bool processCameraFrame(CameraContext& context);
+	// Cross-camera search seeding: hands the fused result tracks but this
+	// camera lost get projected into its image as pipeline search hints
+	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);
 
 	VideoCaptureSystem* m_videoCapture= nullptr;
 	AppConfig* m_config= nullptr;

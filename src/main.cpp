@@ -469,6 +469,89 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (f) Ray-aware clustering: camera 1 sees ONLY the left hand, but
+			// with a 45% depth overestimate along its view ray (bad hand scale)
+			// AND mislabels it Right. Euclidean clustering would split it into
+			// a phantom "right hand" fighting camera 2's real right hand; ray-
+			// aware clustering must merge it into the left cluster.
+			{
+				HandFusion freshFusion; // no temporal prior from earlier tests
+				freshFusion.configure(fusionConfig);
+
+				const glm::vec3 rightPalmTruth= palmTruth + glm::vec3(0.3f, 0.f, 0.f);
+				// displaced ALONG cam1's view ray: euclidean offset ~0.32m (> the
+				// 0.25m wrist gate), perpendicular offset 0
+				const glm::vec3 leftPalmDisplaced= cam1Pos + 1.45f * (palmTruth - cam1Pos);
+
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now,
+					makeObservation(leftPalmDisplaced, faceUpToCam1, 0.7f, eHandSide::Right, 0.9f, 0.f));
+				TrackingFrameResult camBFrame=
+					makeObservation(palmTruth, faceUpToCam1, 0.9f, eHandSide::Left, 0.05f, 0.f);
+				{
+					// add camera 2's decisively-labeled right hand to the same frame
+					const TrackingFrameResult rightFrame=
+						makeObservation(rightPalmTruth, faceUpToCam1, 0.9f, eHandSide::Right, 0.95f, 0.f);
+					camBFrame.poses[(int)eHandSide::Right]= rightFrame.poses[(int)eHandSide::Right];
+					camBFrame.hands[(int)eHandSide::Right]= rightFrame.hands[(int)eHandSide::Right];
+				}
+				const auto camB= makeCameraResult(1, cam2Pos, now, camBFrame);
+
+				TrackingFrameResult fused;
+				freshFusion.fuse({&camA, &camB}, now, fused);
+
+				const HandPose& left= fused.poses[(int)eHandSide::Left];
+				const HandPose& right= fused.poses[(int)eHandSide::Right];
+				const float rightErr= right.tracked ? glm::length(right.palmPositionWorld - rightPalmTruth) : 1e9f;
+				const float leftErr= left.tracked ? glm::length(left.palmPositionWorld - palmTruth) : 1e9f;
+				MIKAN_LOG_INFO("test-fusion") << "(f) ray clustering: L tracked=" << left.tracked
+					<< " R tracked=" << right.tracked << " Lerr mm=" << leftErr * 1000.f
+					<< " Rerr mm=" << rightErr * 1000.f;
+				// Right must be the exact passthrough of camera 2's right hand
+				// (no phantom competing for it); left may be pulled along cam1's
+				// ray by the blend but must stay near the truth
+				if (!left.tracked || !right.tracked || rightErr > 0.001f || leftErr > 0.25f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(f) FAILED: depth-displaced observation must merge into the left cluster";
+					result= 1;
+				}
+			}
+
+			// (g) Spatial side prior: two hands, both (mis)labeled Left - the
+			// one on the +X side even decisively so. With the prior configured
+			// (+X = right side), assignment must follow geometry, not the votes.
+			{
+				HandFusionConfig priorConfig= fusionConfig;
+				priorConfig.spatialSidePriorAxis= 1; // +X toward the right hand
+				HandFusion freshFusion;
+				freshFusion.configure(priorConfig);
+
+				const glm::vec3 leftPalm(-0.15f, 0.05f, 0.1f);
+				const glm::vec3 rightPalm(0.15f, 0.05f, 0.1f);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(leftPalm, faceUpToCam1, 0.9f, eHandSide::Left, 0.45f, 0.f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now, makeObservation(rightPalm, faceUpToCam1, 0.8f, eHandSide::Left, 0.05f, 0.f));
+
+				TrackingFrameResult fused;
+				freshFusion.fuse({&camA, &camB}, now, fused);
+
+				const HandPose& left= fused.poses[(int)eHandSide::Left];
+				const HandPose& right= fused.poses[(int)eHandSide::Right];
+				const float leftErr= left.tracked ? glm::length(left.palmPositionWorld - leftPalm) : 1e9f;
+				const float rightErr= right.tracked ? glm::length(right.palmPositionWorld - rightPalm) : 1e9f;
+				MIKAN_LOG_INFO("test-fusion") << "(g) spatial prior: L tracked=" << left.tracked
+					<< " R tracked=" << right.tracked << " Lerr mm=" << leftErr * 1000.f
+					<< " Rerr mm=" << rightErr * 1000.f;
+				if (!left.tracked || !right.tracked || leftErr > 0.001f || rightErr > 0.001f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(g) FAILED: spatial prior must overrule a decisive mislabel";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

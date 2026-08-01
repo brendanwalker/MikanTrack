@@ -19,6 +19,14 @@ static constexpr float kTemporalWeight= 2.f;
 static constexpr float kMinRayAngleCos= 0.985f; // rays closer than ~10 deg apart are degenerate
 static constexpr float kScaleCorrectionMin= 0.7f;
 static constexpr float kScaleCorrectionMax= 1.4f;
+// Ray-aware clustering: max plausible depth error along a camera's view ray
+// (depth scales with hand-scale/PnP error; lateral accuracy is much better)
+static constexpr float kRayDepthSlackM= 0.5f;
+// Spatial side prior: full strength this far along the chosen axis
+static constexpr float kSpatialPriorFullDistM= 0.15f;
+// Below temporal continuity (2.0) so a tracked hand never swaps sides mid-
+// flight, but strong enough to beat a single camera's decisive mislabel
+static constexpr float kSpatialPriorWeight= 1.f;
 
 void HandFusion::configure(const HandFusionConfig& config)
 {
@@ -62,6 +70,40 @@ float HandFusion::visibilityFactor(const glm::quat& palmOrientationWorld, const 
 	return 0.05f + fabsf(glm::dot(palmNormal, viewRay / viewLength));
 }
 
+// Same-physical-hand test for clustering. Depth along the observing camera's
+// view ray is the noisy dimension (it scales linearly with hand-scale / PnP
+// error), so a plain euclidean gate splits one hand into two clusters when a
+// camera's depth is off - which then fights the real hand for a side. Two
+// observations match if they're close in 3D, OR one lies close to the view
+// ray through the other (same image position, different depth).
+static bool isSameHandObservation(const glm::vec3& palmA, const glm::vec3& cameraPosA,
+								  const glm::vec3& palmB, const glm::vec3& cameraPosB,
+								  float maxDistM)
+{
+	if (glm::length(palmA - palmB) <= maxDistM)
+		return true;
+
+	// Tighter lateral gate for the ray test: hands genuinely lined up along a
+	// view ray (one behind the other) must not merge
+	const float rayGateM= maxDistM * 0.5f;
+	auto nearViewRay= [rayGateM](const glm::vec3& point, const glm::vec3& rayOrigin, const glm::vec3& through) {
+		glm::vec3 dir= through - rayOrigin;
+		const float observedDepth= glm::length(dir);
+		if (observedDepth < 1e-4f)
+			return false;
+		dir/= observedDepth;
+
+		const glm::vec3 toPoint= point - rayOrigin;
+		const float along= glm::dot(toPoint, dir);
+		if (along <= 0.f || fabsf(along - observedDepth) > kRayDepthSlackM)
+			return false;
+
+		return glm::length(toPoint - dir * along) <= rayGateM;
+	};
+
+	return nearViewRay(palmB, cameraPosA, palmA) || nearViewRay(palmA, cameraPosB, palmB);
+}
+
 float HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
 {
 	// Classifier votes: each camera's assigned side, weighted by presence and
@@ -79,7 +121,20 @@ float HandFusion::sideAffinity(const HandCluster& cluster, eHandSide side) const
 			std::clamp(1.f - (dist - kTemporalFullDistM) / kTemporalFullDistM, -1.f, 1.f);
 	}
 
-	return voteScore + temporalScore;
+	// Spatial prior (opt-in): hands that never cross stay on their own side of
+	// the marker, so position along the configured axis is side evidence
+	float spatialScore= 0.f;
+	if (m_config.spatialSidePriorAxis != 0)
+	{
+		static const glm::vec3 kRightAxes[]= {
+			{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}};
+		const glm::vec3 rightAxis= kRightAxes[std::clamp(m_config.spatialSidePriorAxis, 0, 4)];
+		const float along= glm::dot(cluster.palmWorld, rightAxis);
+		const float prior= std::clamp(along / kSpatialPriorFullDistM, -1.f, 1.f);
+		spatialScore= kSpatialPriorWeight * (side == eHandSide::Right ? prior : -prior);
+	}
+
+	return voteScore + temporalScore + spatialScore;
 }
 
 void HandFusion::updateStereoScale(const HandCluster& cluster)
@@ -206,7 +261,10 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			for (const HandCandidate& member : cluster.candidates)
 				bCameraAlreadyInCluster|= member.camera->cameraIndex == observation.camera->cameraIndex;
 
-			if (!bCameraAlreadyInCluster && glm::length(palm - cluster.palmWorld) <= m_config.wristMatchMaxDistM)
+			if (!bCameraAlreadyInCluster &&
+				isSameHandObservation(palm, glm::vec3(observation.camera->markerFromCamera[3]),
+									  cluster.palmWorld, cluster.anchorCameraPos,
+									  m_config.wristMatchMaxDistM))
 			{
 				target= &cluster;
 				break;
@@ -222,6 +280,7 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			HandCluster cluster;
 			cluster.candidates.push_back(observation);
 			cluster.palmWorld= palm; // best-weighted member (observations are sorted)
+			cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
 			cluster.bestWeight= observation.weight;
 			clusters.push_back(cluster);
 		}

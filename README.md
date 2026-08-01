@@ -29,8 +29,11 @@ client-side with Two-Bone IK from the palm transform.
   panel -> Add Camera), calibrate it against the same printed marker, and the
   visibility-weighted pose/angle blend rides through hand poses that defeat
   a single view (e.g. clapping edge-on to an overhead camera). Left/right is
-  resolved at the fusion level (world-space clustering + votes), and the two
-  views continuously refine the hand scale by stereo triangulation.
+  resolved at the fusion level (view-ray-aware world-space clustering + votes +
+  an optional "right hand toward +X" spatial prior for users who don't cross
+  their hands), the two views continuously refine the hand scale by stereo
+  triangulation, and a hand tracked by one camera but lost by another is
+  projected into the lost camera's image to re-seed its search directly.
   Prefer 720p per camera and separate USB controllers for two streams.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),

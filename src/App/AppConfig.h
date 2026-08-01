@@ -60,6 +60,9 @@ struct TrackingConfig
 	bool usePnpDepth= true;
 	// Restrict the PnP solve to the 6 quasi-rigid palm points
 	bool pnpPalmOnly= false;
+	// When one camera tracks a hand another camera lost, project it into the
+	// lost camera's image and try the landmark model there directly
+	bool crossCameraSeeding= true;
 	float smoothingMinCutoff= 1.0f;
 	float smoothingBeta= 0.05f;
 	bool smoothingEnabled= true;
@@ -91,6 +94,10 @@ struct FusionConfig
 	// Two cameras' world wrists further apart than this can't be the same
 	// physical hand (cross-camera handedness-conflict gate)
 	float wristMatchMaxDistM= 0.25f;
+	// Spatial side prior for users who never cross their hands: world axis
+	// (marker frame) pointing toward the RIGHT hand's side of the desk.
+	// 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y
+	int spatialSidePriorAxis= 0;
 };
 
 class AppConfig

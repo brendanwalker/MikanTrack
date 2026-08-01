@@ -106,7 +106,11 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 	else
 		m_framesSinceDetector++;
 
+	applySearchHints();
+
 	runHandLandmarkStage(bgrFrame);
+
+	killDuplicateSlots();
 
 	resolveHandedness(bgrFrame.cols);
 	publishHands(outResult);
@@ -170,6 +174,69 @@ void HandTrackingPipeline::runPalmDetectionStage(const cv::Mat& bgrFrame, Tracki
 	}
 }
 
+// Synthesizes a PalmDetection at a hinted image location. Only the wrist->
+// middle-MCP keypoint pair (crop rotation) and the keypoint bounding box
+// (crop extent) feed the landmark model's crop math, so approximate anatomy
+// is fine - the first landmark pass corrects the ROI or rejects it.
+static PalmDetection synthesizeDetectionFromHint(const HandSearchHint& hint)
+{
+	const glm::vec2 c= hint.centerPx;
+	const glm::vec2 d= hint.dirPx;
+	const glm::vec2 p(-d.y, d.x);
+	const float s= hint.palmSizePx;
+
+	PalmDetection detection;
+	detection.keypoints[0]= c - d * (0.5f * s);                   // wrist
+	detection.keypoints[1]= c + d * (0.5f * s) + p * (0.35f * s); // index MCP
+	detection.keypoints[2]= c + d * (0.5f * s);                   // middle MCP
+	detection.keypoints[3]= c + d * (0.45f * s) - p * (0.3f * s); // ring MCP
+	detection.keypoints[4]= c + d * (0.3f * s) - p * (0.45f * s); // pinky MCP
+	detection.keypoints[5]= c - d * (0.3f * s) + p * (0.4f * s);  // thumb CMC
+	detection.keypoints[6]= c + p * (0.5f * s);                   // thumb MCP
+	detection.boxMin= c - glm::vec2(0.55f * s);
+	detection.boxMax= c + glm::vec2(0.55f * s);
+	detection.score= 0.5f;
+	detection.rotationRadians= PalmDetector::computeRotation(detection.keypoints[0], detection.keypoints[2]);
+	return detection;
+}
+
+void HandTrackingPipeline::applySearchHints()
+{
+	for (const HandSearchHint& hint : m_searchHints)
+	{
+		if (hint.palmSizePx < 8.f)
+			continue;
+
+		// A hint landing on an already-tracked hand is redundant (this also
+		// covers the camera tracking the right physical hand under the wrong
+		// side label - the guard is positional, not label-based)
+		bool bOverlapsActiveSlot= false;
+		for (const HandSlot& slot : m_slots)
+		{
+			if (slot.active && pointInBox(hint.centerPx, slot.roiBoxMin, slot.roiBoxMax))
+				bOverlapsActiveSlot= true;
+		}
+		if (bOverlapsActiveSlot)
+			continue;
+
+		for (HandSlot& slot : m_slots)
+		{
+			if (slot.active)
+				continue;
+
+			slot.deactivate();
+			slot.active= true;
+			slot.hasPendingDetection= true;
+			slot.bSeededFromHint= true;
+			slot.pendingDetection= synthesizeDetectionFromHint(hint);
+			slot.roiBoxMin= slot.pendingDetection.boxMin;
+			slot.roiBoxMax= slot.pendingDetection.boxMax;
+			break;
+		}
+	}
+	m_searchHints.clear();
+}
+
 void HandTrackingPipeline::runHandLandmarkStage(const cv::Mat& bgrFrame)
 {
 	for (HandSlot& slot : m_slots)
@@ -184,12 +251,16 @@ void HandTrackingPipeline::runHandLandmarkStage(const cv::Mat& bgrFrame)
 			? HandRoi::fromPalmDetection(slot.pendingDetection)
 			: HandRoi::fromLandmarks(slot.imagePoints);
 
+		const bool bSpeculativeSeed= slot.hasPendingDetection && slot.bSeededFromHint;
+
 		m_handLandmarkModel.estimate(bgrFrame, roi, m_handResult);
-		if (!m_handResult.valid)
+		if (!m_handResult.valid ||
+			(bSpeculativeSeed && m_handResult.confidence < m_config.handPresenceThreshold))
 		{
 			slot.deactivate();
 			continue;
 		}
+		slot.bSeededFromHint= false;
 
 		slot.hasPendingDetection= false;
 		slot.framesSinceDetection++;
@@ -216,6 +287,38 @@ void HandTrackingPipeline::runHandLandmarkStage(const cv::Mat& bgrFrame)
 		{
 			slot.lowPresenceFrames= 0;
 		}
+	}
+}
+
+void HandTrackingPipeline::killDuplicateSlots()
+{
+	// After hands overlap (a clap), both slots' landmark ROIs can converge on
+	// the SAME physical hand and track it indefinitely - the pipeline thinks
+	// both hands are accounted for, so the separated hand has no free slot to
+	// be detected into. Sustained near-identical hand boxes mean one physical
+	// hand: kill the lower-presence duplicate so the detector (which runs
+	// every frame while a slot is free) can re-acquire the other hand.
+	HandSlot& a= m_slots[0];
+	HandSlot& b= m_slots[1];
+	if (!a.active || !b.active)
+	{
+		m_duplicateOverlapFrames= 0;
+		return;
+	}
+
+	const float iou= boxIou(a.roiBoxMin, a.roiBoxMax, b.roiBoxMin, b.roiBoxMax);
+	if (iou <= m_config.slotDuplicateIouThreshold)
+	{
+		m_duplicateOverlapFrames= 0;
+		return;
+	}
+
+	m_duplicateOverlapFrames++;
+	if (m_duplicateOverlapFrames >= m_config.slotDuplicateKillFrames)
+	{
+		HandSlot& loser= a.presence <= b.presence ? a : b;
+		loser.deactivate();
+		m_duplicateOverlapFrames= 0;
 	}
 }
 

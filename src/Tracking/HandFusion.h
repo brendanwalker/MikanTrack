@@ -30,6 +30,11 @@ struct HandFusionConfig
 	float wristMatchMaxDistM= 0.25f;
 	float presenceThreshold= 0.5f;
 
+	// Spatial side prior for users who never cross their hands: which world
+	// axis (marker frame, origin = marker center) points toward where the
+	// RIGHT hand lives. 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y.
+	int spatialSidePriorAxis= 0;
+
 	bool smoothingEnabled= true;
 	float smoothingMinCutoff= 1.f;
 	float smoothingBeta= 0.05f;
@@ -99,7 +104,8 @@ private:
 	struct HandCluster
 	{
 		std::vector<HandCandidate> candidates;
-		glm::vec3 palmWorld{0.f}; // best candidate's palm position (cluster anchor)
+		glm::vec3 palmWorld{0.f};        // best candidate's palm position (cluster anchor)
+		glm::vec3 anchorCameraPos{0.f};  // that candidate's camera position (for ray matching)
 		float bestWeight= 0.f;
 	};
 
