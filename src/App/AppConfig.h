@@ -88,9 +88,6 @@ struct FusionConfig
 {
 	// A camera's last result older than this is excluded from fusion
 	double stalenessWindowMs= 66.0;
-	// Softmax sharpness for the per-landmark visibility weights: higher
-	// values let the better view dominate faster
-	float softmaxTemperature= 8.f;
 	// Two cameras' world wrists further apart than this can't be the same
 	// physical hand (cross-camera handedness-conflict gate)
 	float wristMatchMaxDistM= 0.25f;

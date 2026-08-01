@@ -5,24 +5,17 @@
 
 // Per-side OSC address tables, indexed by eHandSide (Left= 0, Right= 1)
 static const char* k_handTrackedAddress[2]= {"/mikan/hand/left/tracked", "/mikan/hand/right/tracked"};
-static const char* k_handWristAddress[2]= {"/mikan/hand/left/wrist", "/mikan/hand/right/wrist"};
 static const char* k_handPalmAddress[2]= {"/mikan/hand/left/palm", "/mikan/hand/right/palm"};
-static const char* k_handLandmarksAddress[2]= {"/mikan/hand/left/landmarks", "/mikan/hand/right/landmarks"};
-static const char* k_armElbowAddress[2]= {"/mikan/arm/left/elbow", "/mikan/arm/right/elbow"};
-static const char* k_armForearmAddress[2]= {"/mikan/arm/left/forearm", "/mikan/arm/right/forearm"};
+static const char* k_handFingersAddress[2]= {"/mikan/hand/left/fingers", "/mikan/hand/right/fingers"};
+static const char* k_handSkeletonAddress[2]= {"/mikan/hand/left/skeleton", "/mikan/hand/right/skeleton"};
 
 static const char* k_frameAddress= "/mikan/frame";
 static const char* k_infoAddress= "/mikan/info";
 
-static const char* k_infoWorldSpace= "space=marker;units=m;handed=RH;up=Z";
-static const char* k_infoCameraSpace= "space=camera;units=m;handed=RH;up=Z";
-
-/// Pick the best available point set for a hand: world (marker-anchored) if
-/// valid, otherwise camera space.
-static const std::array<glm::vec3, HAND_LANDMARK_COUNT>& getHandPoints(const TrackedHand& hand)
-{
-	return hand.hasWorldSpace ? hand.worldPoints : hand.cameraPoints;
-}
+static const char* k_infoWorldSpace=
+	"space=marker;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=rad";
+static const char* k_infoCameraSpace=
+	"space=camera;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=rad";
 
 static void addVec3(OscMessage& message, const glm::vec3& point)
 {
@@ -105,14 +98,9 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 
 	// Do we have a marker-anchored world transform this frame?
 	bool hasWorldSpace= false;
-	for (const TrackedHand& hand : frame.hands)
+	for (const HandPose& pose : frame.poses)
 	{
-		if (hand.tracked && hand.hasWorldSpace)
-			hasWorldSpace= true;
-	}
-	for (const TrackedArm& arm : frame.arms)
-	{
-		if (arm.valid && arm.hasWorldSpace)
+		if (pose.tracked && pose.hasWorldPose)
 			hasWorldSpace= true;
 	}
 
@@ -125,13 +113,15 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 	frameMessage.addInt32(static_cast<int32_t>(frame.timestampMs));
 	frameMessage.addFloat(frame.captureFps);
 
+	// Skeleton geometry is slowly varying - ride the 1 Hz info cadence
+	const ClockTimePoint now= std::chrono::steady_clock::now();
+	const bool bSendSkeleton= !m_hasSentInfo || (now - m_lastInfoTime) >= std::chrono::seconds(1);
+
 	for (int sideIndex= 0; sideIndex < static_cast<int>(eHandSide::Count); ++sideIndex)
 	{
-		appendHandMessages(frame, sideIndex);
-		appendArmMessages(frame, sideIndex);
+		appendHandMessages(frame, sideIndex, bSendSkeleton);
 	}
 
-	const ClockTimePoint now= std::chrono::steady_clock::now();
 	appendInfoMessage(hasWorldSpace, now);
 
 	m_scratchBuffer.clear();
@@ -146,58 +136,59 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 	updateSendStats(now);
 }
 
-void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideIndex)
+void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton)
 {
-	const TrackedHand& hand= frame.hands[sideIndex];
+	const HandPose& pose= frame.poses[sideIndex];
 
 	// /mikan/hand/{s}/tracked ,if tracked(0|1) presence
 	OscMessage& trackedMessage= m_bundle.addMessage(k_handTrackedAddress[sideIndex]);
-	trackedMessage.addInt32(hand.tracked ? 1 : 0);
-	trackedMessage.addFloat(hand.presence);
+	trackedMessage.addInt32(pose.tracked ? 1 : 0);
+	trackedMessage.addFloat(pose.presence);
 
-	if (!hand.tracked)
+	if (!pose.tracked)
 		return;
 
-	const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points= getHandPoints(hand);
+	const bool bWorld= pose.hasWorldPose;
+	const glm::vec3& palmPosition= bWorld ? pose.palmPositionWorld : pose.palmPositionCamera;
+	const glm::quat& palmOrientation= bWorld ? pose.palmOrientationWorld : pose.palmOrientationCamera;
 
-	// /mikan/hand/{s}/wrist ,fff
-	addVec3(m_bundle.addMessage(k_handWristAddress[sideIndex]),
-			points[static_cast<int>(eHandLandmark::WRIST)]);
+	// /mikan/hand/{s}/palm ,fffffff -- palm transform: position xyz +
+	// quaternion xyzw. Palm frame: +X toward the fingers, +Z out of the
+	// palmar surface, +Y right-handed; meters.
+	OscMessage& palmMessage= m_bundle.addMessage(k_handPalmAddress[sideIndex]);
+	addVec3(palmMessage, palmPosition);
+	palmMessage.addFloat(palmOrientation.x)
+		.addFloat(palmOrientation.y)
+		.addFloat(palmOrientation.z)
+		.addFloat(palmOrientation.w);
 
-	// /mikan/hand/{s}/palm ,fff -- centroid of the four finger MCP knuckles
-	const glm::vec3 palmCenter=
-		(points[static_cast<int>(eHandLandmark::INDEX_MCP)] +
-		 points[static_cast<int>(eHandLandmark::MIDDLE_MCP)] +
-		 points[static_cast<int>(eHandLandmark::RING_MCP)] +
-		 points[static_cast<int>(eHandLandmark::PINKY_MCP)]) * 0.25f;
-	addVec3(m_bundle.addMessage(k_handPalmAddress[sideIndex]), palmCenter);
-
-	// /mikan/hand/{s}/landmarks ,fff x21 -- 63 floats in MediaPipe index order
-	OscMessage& landmarksMessage= m_bundle.addMessage(k_handLandmarksAddress[sideIndex]);
-	for (int landmarkIndex= 0; landmarkIndex < HAND_LANDMARK_COUNT; ++landmarkIndex)
+	// /mikan/hand/{s}/fingers ,f x20 -- per finger (thumb..pinky):
+	// [lateral, proximalBend, intermediateBend, distalBend] radians,
+	// relative to the neutral straight pose
+	OscMessage& fingersMessage= m_bundle.addMessage(k_handFingersAddress[sideIndex]);
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
 	{
-		addVec3(landmarksMessage, points[landmarkIndex]);
+		const FingerAngles& angles= pose.fingers[finger];
+		fingersMessage.addFloat(angles.lateral)
+			.addFloat(angles.proximal)
+			.addFloat(angles.intermediate)
+			.addFloat(angles.distal);
 	}
-}
 
-void OscStreamer::appendArmMessages(const TrackingFrameResult& frame, int sideIndex)
-{
-	const TrackedArm& arm= frame.arms[sideIndex];
-	if (!arm.valid)
-		return;
-
-	const glm::vec3& elbow= arm.hasWorldSpace ? arm.elbowWorld : arm.elbowCamera;
-	const glm::vec3& wrist= arm.hasWorldSpace ? arm.wristWorld : arm.wristCamera;
-
-	// /mikan/arm/{s}/elbow ,ffff x y z confidence
-	OscMessage& elbowMessage= m_bundle.addMessage(k_armElbowAddress[sideIndex]);
-	addVec3(elbowMessage, elbow);
-	elbowMessage.addFloat(arm.confidence);
-
-	// /mikan/arm/{s}/forearm ,ffffff elbowXyz wristXyz
-	OscMessage& forearmMessage= m_bundle.addMessage(k_armForearmAddress[sideIndex]);
-	addVec3(forearmMessage, elbow);
-	addVec3(forearmMessage, wrist);
+	// /mikan/hand/{s}/skeleton ,f x30 (1 Hz) -- per finger: base position in
+	// the palm frame (xyz) + phalanx lengths [proximal, intermediate, distal],
+	// meters. Everything a client-side forward-kinematics setup needs.
+	if (bSendSkeleton)
+	{
+		OscMessage& skeletonMessage= m_bundle.addMessage(k_handSkeletonAddress[sideIndex]);
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			addVec3(skeletonMessage, pose.skeleton.baseInPalm[finger]);
+			skeletonMessage.addFloat(pose.skeleton.phalanxLengths[finger][0])
+				.addFloat(pose.skeleton.phalanxLengths[finger][1])
+				.addFloat(pose.skeleton.phalanxLengths[finger][2]);
+		}
+	}
 }
 
 void OscStreamer::appendInfoMessage(bool hasWorldSpace, const ClockTimePoint& now)

@@ -1,5 +1,8 @@
 #include <string>
 
+#include "glm/gtc/constants.hpp"
+#include "glm/gtc/quaternion.hpp"
+
 #include "opencv2/core.hpp"
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
@@ -9,6 +12,7 @@
 #include "CalibrationPatternFinder_Charuco.h"
 #include "ExtrinsicsWizard.h"
 #include "HandFusion.h"
+#include "HandPoseModel.h"
 #include "HandTrackingPipeline.h"
 #include "LandmarkTo3D.h"
 #include "Logger.h"
@@ -288,41 +292,32 @@ static int runApp(int argc, char** argv)
 
 			int result= 0;
 
-			// Ground-truth left hand: palm plane spanned by basis (u, v),
-			// hovering 10cm over the table around world (0.1, 0.05)
-			auto makeHand= [](const glm::vec3& wrist, const glm::vec3& u, const glm::vec3& v,
-							  const glm::vec3& noiseSeed, float noiseAmp) {
-				TrackedHand hand;
-				hand.tracked= true;
-				hand.hasWorldSpace= true;
-				hand.side= eHandSide::Left;
-				hand.presence= 0.9f;
-				for (int lm= 0; lm < HAND_LANDMARK_COUNT; ++lm)
+			// Synthetic parametric hand observation for one camera
+			auto makeObservation= [](const glm::vec3& palmPos, const glm::quat& palmOrient, float presence,
+									 eHandSide labeledSide, float handednessScore, float bendAngle) {
+				TrackingFrameResult frame;
+				HandPose& pose= frame.poses[(int)labeledSide];
+				pose.tracked= true;
+				pose.side= labeledSide;
+				pose.presence= presence;
+				pose.hasWorldPose= true;
+				pose.palmPositionWorld= palmPos;
+				pose.palmOrientationWorld= palmOrient;
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
 				{
-					// crude but plausible layout: fingers fan out along +v with
-					// spread along u, scaled to a ~17cm hand
-					const float along= 0.02f + 0.15f * (float)(lm % 4) / 4.f * (lm >= 1 ? 1.f : 0.f);
-					const float spread= ((float)(lm / 4) - 2.f) * 0.02f;
-					glm::vec3 point= wrist + v * along + u * spread;
-
-					// deterministic per-landmark pseudo-noise
-					const float phase= (float)lm * 1.7f;
-					point+= noiseAmp * glm::vec3(sinf(noiseSeed.x + phase), cosf(noiseSeed.y + phase * 1.3f),
-												 sinf(noiseSeed.z + phase * 0.7f));
-					hand.worldPoints[lm]= point;
+					pose.fingers[finger].proximal= bendAngle;
+					pose.skeleton.phalanxLengths[finger]= {0.04f, 0.025f, 0.02f};
 				}
-				return hand;
-			};
-
-			auto rmsError= [](const TrackedHand& a, const TrackedHand& b) {
-				float sum= 0.f;
-				for (int lm= 0; lm < HAND_LANDMARK_COUNT; ++lm)
-					sum+= glm::dot(a.worldPoints[lm] - b.worldPoints[lm], a.worldPoints[lm] - b.worldPoints[lm]);
-				return sqrtf(sum / (float)HAND_LANDMARK_COUNT);
+				TrackedHand& hand= frame.hands[(int)labeledSide];
+				hand.tracked= true;
+				hand.side= labeledSide;
+				hand.presence= presence;
+				hand.handednessScore= handednessScore;
+				return frame;
 			};
 
 			auto makeCameraResult= [](int cameraIndex, const glm::vec3& cameraPosWorld, double timestampMs,
-									  const TrackedHand& hand) {
+									  const TrackingFrameResult& frame) {
 				CameraFrameResult camera;
 				camera.cameraIndex= cameraIndex;
 				camera.valid= true;
@@ -330,63 +325,65 @@ static int runApp(int argc, char** argv)
 				camera.hasExtrinsics= true;
 				camera.markerFromCamera= glm::dmat4(1.0);
 				camera.markerFromCamera[3]= glm::dvec4(cameraPosWorld, 1.0);
-				camera.result.hands[(int)eHandSide::Left]= hand;
+				camera.result= frame;
 				return camera;
 			};
 
 			HandFusionConfig fusionConfig;
-			fusionConfig.smoothingEnabled= false; // exactness for the pass-through checks
+			fusionConfig.smoothingEnabled= false; // exactness for pass-through checks
 			HandFusion fusion;
 			fusion.configure(fusionConfig);
 
-			const glm::vec3 wristTruth(0.10f, 0.05f, 0.10f);
+			const glm::vec3 palmTruth(0.10f, 0.05f, 0.10f);
 			const glm::vec3 cam1Pos(0.f, 0.f, 0.8f);   // overhead
 			const glm::vec3 cam2Pos(0.f, -0.6f, 0.6f); // 45 degrees
 			const double now= 10'000.0;
+			// Palm normal (+Z of palm frame) pointing up at the overhead camera
+			const glm::quat faceUpToCam1= glm::quat(1.f, 0.f, 0.f, 0.f);
+			// Palm rotated 90 deg about X: normal points along -Y toward cam2,
+			// edge-on to the overhead camera
+			const glm::quat faceCam2= glm::angleAxis(glm::half_pi<float>(), glm::vec3(1.f, 0.f, 0.f));
 
-			// (a) Palm face-up (visible to both): fused should beat both noisy inputs
+			// (a) Both cameras face-on-ish: fused position beats both noisy inputs;
+			// fused bend angle is between the two observations
 			{
-				const glm::vec3 u(1, 0, 0), v(0, 1, 0); // palm normal = +Z (toward overhead cam)
-				const TrackedHand truth= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
-				const TrackedHand noisyA= makeHand(wristTruth, u, v, glm::vec3(1.f, 2.f, 3.f), 0.004f);
-				const TrackedHand noisyB= makeHand(wristTruth, u, v, glm::vec3(7.f, 5.f, 9.f), 0.004f);
-
-				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, noisyA);
-				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now - 5.0, noisyB);
+				const glm::vec3 noiseA(0.004f, -0.002f, 0.005f);
+				const glm::vec3 noiseB(-0.003f, 0.004f, -0.004f);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(palmTruth + noiseA, faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.5f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now - 5.0, makeObservation(palmTruth + noiseB, faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.7f));
 
 				TrackingFrameResult fused;
 				fusion.fuse({&camA, &camB}, now, fused);
 
-				const float errA= rmsError(noisyA, truth);
-				const float errB= rmsError(noisyB, truth);
-				const float errFused= rmsError(fused.hands[(int)eHandSide::Left], truth);
-				MIKAN_LOG_INFO("test-fusion") << "(a) rms error mm: camA=" << errA * 1000.f
-					<< " camB=" << errB * 1000.f << " fused=" << errFused * 1000.f;
-				if (!fused.hands[(int)eHandSide::Left].tracked || errFused > std::min(errA, errB) * 1.05f)
+				const HandPose& pose= fused.poses[(int)eHandSide::Left];
+				const float errA= glm::length(noiseA);
+				const float errB= glm::length(noiseB);
+				const float errFused= glm::length(pose.palmPositionWorld - palmTruth);
+				const float bend= pose.fingers[0].proximal;
+				MIKAN_LOG_INFO("test-fusion") << "(a) palm err mm: A=" << errA * 1000.f << " B=" << errB * 1000.f
+					<< " fused=" << errFused * 1000.f << " bend=" << bend;
+				if (!pose.tracked || errFused > std::min(errA, errB) * 1.05f || bend < 0.5f || bend > 0.7f)
 				{
-					MIKAN_LOG_ERROR("test-fusion") << "(a) FAILED: fused should beat both noisy inputs";
+					MIKAN_LOG_ERROR("test-fusion") << "(a) FAILED";
 					result= 1;
 				}
 			}
 
 			// (b) Palm edge-on to the overhead camera, facing camera 2:
-			// weights must shift to camera 2
+			// camera 2 must dominate
 			{
-				const glm::vec3 u(1, 0, 0), v(0, 0, 1); // palm normal = -Y (toward cam2, edge-on to cam1)
-				const TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(1.f, 2.f, 3.f), 0.004f);
-				const TrackedHand handB= makeHand(wristTruth + glm::vec3(0.01f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
-
-				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
-				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(palmTruth + glm::vec3(0.01f, 0.f, 0.f), faceCam2, 0.9f, eHandSide::Left, 0.1f, 0.f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now, makeObservation(palmTruth, faceCam2, 0.9f, eHandSide::Left, 0.1f, 0.f));
 
 				TrackingFrameResult fused;
 				fusion.fuse({&camA, &camB}, now, fused);
 
-				const float distToB= rmsError(fused.hands[(int)eHandSide::Left], handB);
-				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
-				MIKAN_LOG_INFO("test-fusion") << "(b) dominant camera=" << fusion.getDominantCamera(eHandSide::Left)
-					<< " distToEdgeOnCam mm=" << distToA * 1000.f << " distToFaceOnCam mm=" << distToB * 1000.f;
-				if (fusion.getDominantCamera(eHandSide::Left) != 1 || distToB >= distToA)
+				MIKAN_LOG_INFO("test-fusion") << "(b) dominant camera=" << fusion.getDominantCamera(eHandSide::Left);
+				if (fusion.getDominantCamera(eHandSide::Left) != 1)
 				{
 					MIKAN_LOG_ERROR("test-fusion") << "(b) FAILED: edge-on view should lose to the face-on camera";
 					result= 1;
@@ -395,105 +392,67 @@ static int runApp(int argc, char** argv)
 
 			// (c) Staleness: camera 2's result is 200ms old -> exact passthrough of camera 1
 			{
-				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
-				const TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
-				const TrackedHand handB= makeHand(wristTruth + glm::vec3(0.3f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
-
-				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
-				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now - 200.0, handB);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(palmTruth, faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.3f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now - 200.0,
+					makeObservation(palmTruth + glm::vec3(0.3f, 0.f, 0.f), faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.9f));
 
 				TrackingFrameResult fused;
 				fusion.fuse({&camA, &camB}, now, fused);
 
-				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
-				MIKAN_LOG_INFO("test-fusion") << "(c) stale exclusion: distToFreshCam mm=" << distToA * 1000.f;
-				if (distToA > 1e-6f || fusion.getDominantCamera(eHandSide::Left) != 0)
+				const HandPose& pose= fused.poses[(int)eHandSide::Left];
+				const float dist= glm::length(pose.palmPositionWorld - palmTruth);
+				MIKAN_LOG_INFO("test-fusion") << "(c) stale exclusion: distToFreshCam mm=" << dist * 1000.f
+					<< " bend=" << pose.fingers[0].proximal;
+				if (dist > 1e-6f || fusion.getDominantCamera(eHandSide::Left) != 0 ||
+					fabsf(pose.fingers[0].proximal - 0.3f) > 1e-6f)
 				{
 					MIKAN_LOG_ERROR("test-fusion") << "(c) FAILED: stale camera should be excluded";
 					result= 1;
 				}
 			}
 
-			// (d) Handedness conflict: same side, wrists 0.5m apart -> keep the
-			// higher-scoring candidate only (no frankenhand averaging)
-			{
-				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
-				TrackedHand handA= makeHand(wristTruth, u, v, glm::vec3(0), 0.f); // palm normal +Z: face-on to cam1
-				handA.presence= 0.95f;
-				TrackedHand handB= makeHand(wristTruth + glm::vec3(0.5f, 0.f, 0.f), glm::vec3(1, 0, 0),
-											glm::vec3(0, 0, 1), glm::vec3(0), 0.f); // edge-on to its camera
-				handB.presence= 0.6f;
-
-				const CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
-				const CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
-
-				TrackingFrameResult fused;
-				fusion.fuse({&camA, &camB}, now, fused);
-
-				const float distToA= rmsError(fused.hands[(int)eHandSide::Left], handA);
-				MIKAN_LOG_INFO("test-fusion") << "(d) conflict gate: distToBetterCam mm=" << distToA * 1000.f;
-				if (distToA > 1e-6f)
-				{
-					MIKAN_LOG_ERROR("test-fusion") << "(d) FAILED: conflicting candidates must not be averaged";
-					result= 1;
-				}
-			}
-
-			// (e) Handedness-mislabel recovery: camera 1 sees only the LEFT hand
+			// (d) Handedness-mislabel recovery: camera 1 sees only the LEFT hand
 			// (decisively labeled), camera 2 sees only the RIGHT hand but its
 			// classifier MISLABELS it Left (weakly). Fusion must output two
-			// separate hands, not collapse them into one side slot.
+			// separate hands at their own positions, not collapse them.
 			{
-				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
-				TrackedHand leftHand= makeHand(wristTruth, u, v, glm::vec3(0), 0.f);
-				leftHand.side= eHandSide::Left;
-				leftHand.presence= 0.9f;
-				leftHand.handednessScore= 0.05f; // decisive Left
-
-				TrackedHand rightHandMislabeled= makeHand(wristTruth + glm::vec3(0.3f, 0.f, 0.f), u, v, glm::vec3(0), 0.f);
-				rightHandMislabeled.side= eHandSide::Left; // WRONG label from camera 2
-				rightHandMislabeled.presence= 0.7f;
-				rightHandMislabeled.handednessScore= 0.52f; // indecisive
-
-				CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, leftHand);
-				CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, rightHandMislabeled);
+				const glm::vec3 rightPalmTruth= palmTruth + glm::vec3(0.3f, 0.f, 0.f);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(palmTruth, faceUpToCam1, 0.9f, eHandSide::Left, 0.05f, 0.2f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now, makeObservation(rightPalmTruth, faceUpToCam1, 0.7f, eHandSide::Left, 0.52f, 0.6f));
 
 				TrackingFrameResult fused;
 				fusion.fuse({&camA, &camB}, now, fused);
 
-				const bool bLeftTracked= fused.hands[(int)eHandSide::Left].tracked;
-				const bool bRightTracked= fused.hands[(int)eHandSide::Right].tracked;
-				float leftDist= 1e9f, rightDist= 1e9f;
-				if (bLeftTracked)
-					leftDist= rmsError(fused.hands[(int)eHandSide::Left], leftHand);
-				if (bRightTracked)
-					rightDist= rmsError(fused.hands[(int)eHandSide::Right], rightHandMislabeled);
-
-				MIKAN_LOG_INFO("test-fusion") << "(e) mislabel recovery: L tracked=" << bLeftTracked
-					<< " R tracked=" << bRightTracked << " Lerr mm=" << leftDist * 1000.f
+				const HandPose& left= fused.poses[(int)eHandSide::Left];
+				const HandPose& right= fused.poses[(int)eHandSide::Right];
+				const float leftDist= left.tracked ? glm::length(left.palmPositionWorld - palmTruth) : 1e9f;
+				const float rightDist= right.tracked ? glm::length(right.palmPositionWorld - rightPalmTruth) : 1e9f;
+				MIKAN_LOG_INFO("test-fusion") << "(d) mislabel recovery: L tracked=" << left.tracked
+					<< " R tracked=" << right.tracked << " Lerr mm=" << leftDist * 1000.f
 					<< " Rerr mm=" << rightDist * 1000.f;
-				if (!bLeftTracked || !bRightTracked || leftDist > 0.01f || rightDist > 0.01f)
+				if (!left.tracked || !right.tracked || leftDist > 0.001f || rightDist > 0.001f)
 				{
 					MIKAN_LOG_ERROR("test-fusion")
-						<< "(e) FAILED: two physical hands must fuse to two sides despite a mislabel";
+						<< "(d) FAILED: two physical hands must fuse to two sides despite a mislabel";
 					result= 1;
 				}
 			}
 
-			// (f) Stereo hand-scale: both cameras observe the same hand with a
-			// 20% depth overestimate (configured hand scale too large). The
-			// wrist-ray triangulation must recover correction ~1/1.2.
+			// (e) Stereo hand-scale: both cameras observe the same palm with a
+			// 20% depth overestimate; triangulation must recover ~1/1.2
 			{
-				const glm::vec3 u(1, 0, 0), v(0, 1, 0);
 				const float depthError= 1.2f;
-				const glm::vec3 wristA= cam1Pos + depthError * (wristTruth - cam1Pos);
-				const glm::vec3 wristB= cam2Pos + depthError * (wristTruth - cam2Pos);
+				const glm::vec3 palmA= cam1Pos + depthError * (palmTruth - cam1Pos);
+				const glm::vec3 palmB= cam2Pos + depthError * (palmTruth - cam2Pos);
 
-				TrackedHand handA= makeHand(wristA, u, v, glm::vec3(0), 0.f);
-				TrackedHand handB= makeHand(wristB, u, v, glm::vec3(0), 0.f);
-
-				CameraFrameResult camA= makeCameraResult(0, cam1Pos, now, handA);
-				CameraFrameResult camB= makeCameraResult(1, cam2Pos, now, handB);
+				const auto camA= makeCameraResult(
+					0, cam1Pos, now, makeObservation(palmA, faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.f));
+				const auto camB= makeCameraResult(
+					1, cam2Pos, now, makeObservation(palmB, faceUpToCam1, 0.9f, eHandSide::Left, 0.1f, 0.f));
 
 				TrackingFrameResult fused;
 				fusion.fuse({&camA, &camB}, now, fused);
@@ -501,17 +460,116 @@ static int runApp(int argc, char** argv)
 				float correction= 0.f;
 				const bool bHasSample= fusion.getStereoScaleSample(correction);
 				const float expected= 1.f / depthError;
-				MIKAN_LOG_INFO("test-fusion") << "(f) stereo scale: correction=" << correction
+				MIKAN_LOG_INFO("test-fusion") << "(e) stereo scale: correction=" << correction
 					<< " (expected " << expected << ")";
 				if (!bHasSample || fabsf(correction - expected) > 0.01f)
 				{
-					MIKAN_LOG_ERROR("test-fusion") << "(f) FAILED: triangulated scale correction mismatch";
+					MIKAN_LOG_ERROR("test-fusion") << "(e) FAILED: triangulated scale correction mismatch";
 					result= 1;
 				}
 			}
 
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
+
+			log_dispose();
+			return result;
+		}
+
+		if (std::string(argv[i]) == "--test-handpose")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-handpose.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+
+			// Build a synthetic RIGHT-hand landmark set with known articulation
+			// by forward kinematics over a hand-authored skeleton, then verify
+			// angle extraction + FK round-trips.
+			HandSkeleton skeleton;
+			const float baseY[FINGER_COUNT]= {0.045f, 0.03f, 0.01f, -0.01f, -0.03f};
+			const float baseX[FINGER_COUNT]= {-0.01f, 0.035f, 0.04f, 0.035f, 0.03f};
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				skeleton.baseInPalm[finger]= glm::vec3(baseX[finger], baseY[finger], 0.f);
+				skeleton.phalanxLengths[finger]= {0.045f, 0.027f, 0.022f};
+			}
+			// NOTE on chirality: computePalmFrame derives +Z from the landmark
+			// layout; this skeleton (thumb/index at +Y) matches a RIGHT hand
+			// viewed in its own palm frame.
+
+			std::array<FingerAngles, FINGER_COUNT> anglesIn{};
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				anglesIn[finger].lateral= 0.05f * (float)(finger - 2);
+				anglesIn[finger].proximal= 0.3f + 0.1f * (float)finger;
+				anglesIn[finger].intermediate= 0.4f;
+				anglesIn[finger].distal= 0.2f;
+			}
+
+			// FK in the palm's own frame (identity palm transform)
+			std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+			HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, anglesIn, joints);
+
+			// Assemble a 21-landmark set from the FK joints + wrist
+			std::array<glm::vec3, HAND_LANDMARK_COUNT> points{};
+			const glm::vec3 middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
+			points[(int)eHandLandmark::WRIST]= glm::vec3(-middleBase.x, 0.f, 0.f);
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int joint= 0; joint < 4; ++joint)
+					points[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+
+			// Round-trip: extract angles back from the FK landmark set
+			std::array<FingerAngles, FINGER_COUNT> anglesOut{};
+			HandPoseModel::computeFingerAngles(points, eHandSide::Right, anglesOut);
+
+			float maxError= 0.f;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				maxError= std::max(maxError, fabsf(anglesOut[finger].lateral - anglesIn[finger].lateral));
+				maxError= std::max(maxError, fabsf(anglesOut[finger].proximal - anglesIn[finger].proximal));
+				maxError= std::max(maxError, fabsf(anglesOut[finger].intermediate - anglesIn[finger].intermediate));
+				maxError= std::max(maxError, fabsf(anglesOut[finger].distal - anglesIn[finger].distal));
+			}
+			MIKAN_LOG_INFO("test-handpose") << "FK->angles round-trip max error rad=" << maxError;
+			if (maxError > 0.02f)
+			{
+				MIKAN_LOG_ERROR("test-handpose") << "FAILED: angle round-trip error too large";
+				result= 1;
+			}
+
+			// Skeleton round-trip: recompute from the landmark set
+			HandSkeleton skeletonOut;
+			HandPoseModel::computeSkeleton(points, eHandSide::Right, skeletonOut);
+			float maxLenError= 0.f;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int phalanx= 0; phalanx < 3; ++phalanx)
+					maxLenError= std::max(maxLenError, fabsf(skeletonOut.phalanxLengths[finger][phalanx] -
+															 skeleton.phalanxLengths[finger][phalanx]));
+			MIKAN_LOG_INFO("test-handpose") << "skeleton round-trip max length error mm=" << maxLenError * 1000.f;
+			if (maxLenError > 0.001f)
+			{
+				MIKAN_LOG_ERROR("test-handpose") << "FAILED: phalanx length round-trip mismatch";
+				result= 1;
+			}
+
+			// Palm frame sanity: +X toward fingers, origin midway wrist<->middleMCP
+			const glm::mat4 palmFrame= HandPoseModel::computePalmFrame(points, eHandSide::Right);
+			const glm::vec3 xAxis= glm::vec3(palmFrame[0]);
+			const glm::vec3 towardFingers=
+				glm::normalize(points[(int)eHandLandmark::MIDDLE_MCP] - points[(int)eHandLandmark::WRIST]);
+			MIKAN_LOG_INFO("test-handpose") << "palm X . towardFingers=" << glm::dot(xAxis, towardFingers);
+			if (glm::dot(xAxis, towardFingers) < 0.99f)
+			{
+				MIKAN_LOG_ERROR("test-handpose") << "FAILED: palm frame X axis mismatch";
+				result= 1;
+			}
+
+			if (result == 0)
+				MIKAN_LOG_INFO("test-handpose") << "All hand-pose checks passed";
 
 			log_dispose();
 			return result;

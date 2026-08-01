@@ -73,23 +73,38 @@ data is meaningful (no metric 3D / world space).
 
 ## OSC output
 
-Default target `127.0.0.1:8000` (configurable). One OSC 1.0 bundle per frame:
+Default target `127.0.0.1:8000` (configurable). One OSC 1.0 bundle per frame.
+Hands are streamed as a PARAMETRIC model - palm transform + finger bend
+angles - rather than raw landmarks: angles come from the network's local
+articulation (its most reliable output) and are depth-noise-free, and
+poses/angles fuse cleanly across cameras where landmark blending distorted
+bones. Elbows are not streamed - solve arms client-side with IK from the
+palm transform.
 
 | Address | Types | Meaning |
 |---|---|---|
 | `/mikan/frame` | `iif` | frameId, timestampMs, fps |
 | `/mikan/hand/{left,right}/tracked` | `if` | tracked (0/1), presence |
-| `/mikan/hand/{left,right}/wrist` | `fff` | wrist position |
-| `/mikan/hand/{left,right}/palm` | `fff` | palm centroid (MCPs 5/9/13/17) |
-| `/mikan/hand/{left,right}/landmarks` | `fff`×21 | all 21 landmarks, MediaPipe order |
-| `/mikan/arm/{left,right}/elbow` | `ffff` | elbow xyz + confidence |
-| `/mikan/arm/{left,right}/forearm` | `ffffff` | elbow xyz, wrist xyz |
-| `/mikan/info` | `ss` | space/units convention, app version (1 Hz) |
+| `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
+| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (radians, 0 = straight neutral) |
+| `/mikan/hand/{left,right}/skeleton` | `30f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m); sent at 1 Hz |
+| `/mikan/info` | `ss` | space/units/palm-frame convention, app version (1 Hz) |
 
-**Coordinate convention** (`space=marker`): right-handed, **meters**, origin at
-the marker center, +X along the marker's right edge, +Y along its top edge,
-**+Z up out of the table**. Before extrinsics calibration, positions are in
-OpenCV camera space (`space=camera`: +X right, +Y down, +Z away from camera).
+**Palm frame** (Ultraleap-compatible): origin at the palm center (midway
+wrist to middle knuckle), **+X toward the fingers**, **+Z out of the palmar
+surface**, +Y completing right-handed. Positions are in the marker-anchored
+world frame (right-handed, meters, +Z up out of the table); before extrinsics
+calibration they fall back to OpenCV camera space (`/mikan/info` says which).
+
+**Client-side hand reconstruction**: place each finger base at its skeleton
+offset in the palm frame; the neutral finger direction is the (palm-plane
+projected) direction from the wrist to that base; apply lateral rotation
+about palm +Z, then bend the three phalanx segments about the finger's
+lateral axis by the three bend angles. The app's own 3D view renders exactly
+this reconstruction, so it shows what your client will see.
+
+**Skeleton/bone lengths** come from MediaPipe's metric hand model scaled by
+the calibrated hand scale - no separate bone calibration needed.
 
 ### Consuming in Unreal Engine
 
@@ -101,10 +116,11 @@ UE.Y = 100 * mikan.X
 UE.Z = 100 * mikan.Z
 ```
 
-(the axis swap performs the handedness flip). In UE: enable the **OSC plugin**,
-create an OSC Server bound to the configured port, and bind addresses with
-`,fff` messages to your actors. Low-confidence elbows (fallback mode sends
-confidence 0.1) should be blended or ignored.
+(the axis swap performs the handedness flip; rotate the palm quaternion
+accordingly). In UE: enable the **OSC plugin**, create an OSC Server bound to
+the configured port, and drive your hand rig from the palm transform + finger
+angles - the same representation the Ultraleap SDK feeds it. Solve elbows
+with Two-Bone IK from the palm transform.
 
 ## Notes
 

@@ -11,8 +11,11 @@
 #include "DebugDraw.h"
 #include "GlFrameBuffer.h"
 #include "GlLineRenderer.h"
+#include "HandPoseModel.h"
 #include "MikanVideoSourceTypes.h"
 #include "OrbitCamera.h"
+
+#include "glm/gtc/quaternion.hpp"
 
 // World is Z-up (marker plane = XY); the renderer/orbit camera are Y-up.
 // displayFromWorld rotates world +Z to display +Y: (x,y,z) -> (x, z, -y)
@@ -102,46 +105,44 @@ void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vecto
 
 void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightness, const glm::vec3* colorOverride)
 {
-	// Hand skeletons (world space only in this panel)
+	// Forward-kinematics render from the parametric pose: palm frame axes +
+	// finger chains rebuilt from skeleton geometry and bend angles. This is
+	// exactly what an OSC client reconstructs, so what you see here is what
+	// the client gets.
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		const TrackedHand& hand= result.hands[sideIndex];
-		if (!hand.tracked || !hand.hasWorldSpace)
+		const HandPose& pose= result.poses[sideIndex];
+		if (!pose.tracked || !pose.hasWorldPose)
 			continue;
 
 		const glm::vec3 baseColor=
 			colorOverride != nullptr ? *colorOverride
-									 : (hand.side == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red);
+									 : (pose.side == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red);
 		const glm::vec3 color= baseColor * brightness;
 
-		for (int i= 0; i < HAND_CONNECTION_COUNT; ++i)
+		// Palm transform in world space
+		glm::mat4 palmTransform= glm::mat4_cast(pose.palmOrientationWorld);
+		palmTransform[3]= glm::vec4(pose.palmPositionWorld, 1.f);
+
+		// Palm frame axes (small: X toward fingers, Z out of the palm)
+		drawTransformedAxes(*m_lineRenderer, k_displayFromWorld * palmTransform, 0.03f);
+
+		// Palm outline: wrist -> each finger base
+		const glm::vec3& middleBase= pose.skeleton.baseInPalm[(int)eFinger::Middle];
+		const glm::vec3 wristInPalm(-middleBase.x, 0.f, 0.f);
+		const glm::vec3 wristWorld= glm::vec3(palmTransform * glm::vec4(wristInPalm, 1.f));
+
+		std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+		HandPoseModel::buildFingerJoints(palmTransform, pose.skeleton, pose.fingers, joints);
+
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
 		{
-			drawSegment(*m_lineRenderer, k_displayFromWorld,
-						hand.worldPoints[HAND_CONNECTIONS[i][0]],
-						hand.worldPoints[HAND_CONNECTIONS[i][1]],
-						color);
+			drawSegment(*m_lineRenderer, k_displayFromWorld, wristWorld, joints[finger][0], color);
+			for (int joint= 0; joint < 3; ++joint)
+				drawSegment(*m_lineRenderer, k_displayFromWorld, joints[finger][joint], joints[finger][joint + 1], color);
+			for (int joint= 0; joint < 4; ++joint)
+				drawPoint(*m_lineRenderer, k_displayFromWorld, joints[finger][joint], Colors::White * brightness, 4.f);
 		}
-		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
-		{
-			drawPoint(*m_lineRenderer, k_displayFromWorld, hand.worldPoints[i], Colors::White * brightness, 4.f);
-		}
-	}
-
-	// Forearms
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const TrackedArm& arm= result.arms[sideIndex];
-		if (!arm.valid || !arm.hasWorldSpace)
-			continue;
-
-		const glm::vec3 baseColor=
-			colorOverride != nullptr
-				? *colorOverride
-				: ((eHandSide)sideIndex == eHandSide::Left ? Colors::CornflowerBlue : Colors::Red);
-		const glm::vec3 color= baseColor * brightness;
-
-		drawSegment(*m_lineRenderer, k_displayFromWorld, arm.elbowWorld, arm.wristWorld, color);
-		drawPoint(*m_lineRenderer, k_displayFromWorld, arm.elbowWorld, color, 6.f);
 	}
 }
 

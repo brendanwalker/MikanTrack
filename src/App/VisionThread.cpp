@@ -209,7 +209,6 @@ void VisionThread::refreshConfigOnThread()
 	// Fusion
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
-	fusionConfig.softmaxTemperature= m_config->fusion.softmaxTemperature;
 	fusionConfig.wristMatchMaxDistM= m_config->fusion.wristMatchMaxDistM;
 	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;
 	fusionConfig.smoothingMinCutoff= m_config->tracking.smoothingMinCutoff;
@@ -292,13 +291,7 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 
 			// Camera space -> marker/world space (needs extrinsics)
 			if (profile.extrinsics.present)
-			{
 				applyWorldTransform(result, profile.extrinsics.markerFromCamera);
-
-				// Recompute fallback elbows in world space with the
-				// table-plane clamp (fixes below-the-table elbows)
-				context.landmarkTo3D->refineFallbackArms(result, profile.extrinsics.markerFromCamera);
-			}
 		}
 
 		bProducedTracking= true;

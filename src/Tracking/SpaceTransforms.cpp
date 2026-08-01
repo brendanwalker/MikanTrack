@@ -1,6 +1,7 @@
 #include "SpaceTransforms.h"
 
 #include "glm/ext/vector_double4.hpp"
+#include "glm/gtc/quaternion.hpp"
 
 static glm::vec3 transformPoint(const glm::dmat4& transform, const glm::vec3& point)
 {
@@ -10,6 +11,9 @@ static glm::vec3 transformPoint(const glm::dmat4& transform, const glm::vec3& po
 
 void applyWorldTransform(TrackingFrameResult& ioResult, const glm::dmat4& markerFromCamera)
 {
+	const glm::mat3 rotation= glm::mat3(glm::dmat3(markerFromCamera));
+	const glm::quat rotationQuat= glm::quat_cast(rotation);
+
 	for (TrackedHand& hand : ioResult.hands)
 	{
 		if (!hand.tracked || !hand.hasCameraSpace)
@@ -21,13 +25,16 @@ void applyWorldTransform(TrackingFrameResult& ioResult, const glm::dmat4& marker
 		hand.hasWorldSpace= true;
 	}
 
-	for (TrackedArm& arm : ioResult.arms)
+	for (HandPose& pose : ioResult.poses)
 	{
-		if (!arm.valid || !arm.hasCameraSpace)
+		if (!pose.tracked || !pose.hasCameraPose)
 			continue;
 
-		arm.elbowWorld= transformPoint(markerFromCamera, arm.elbowCamera);
-		arm.wristWorld= transformPoint(markerFromCamera, arm.wristCamera);
-		arm.hasWorldSpace= true;
+		// Palm transform: position through the full transform, orientation
+		// through its rotation. Finger angles and skeleton are palm-local
+		// and unaffected by the world transform.
+		pose.palmPositionWorld= transformPoint(markerFromCamera, pose.palmPositionCamera);
+		pose.palmOrientationWorld= glm::normalize(rotationQuat * pose.palmOrientationCamera);
+		pose.hasWorldPose= true;
 	}
 }

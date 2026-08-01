@@ -89,8 +89,8 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 	outResult.palmDetections.clear();
 	for (TrackedHand& hand : outResult.hands)
 		hand= TrackedHand();
-	for (TrackedArm& arm : outResult.arms)
-		arm= TrackedArm();
+	for (HandPose& pose : outResult.poses)
+		pose= HandPose();
 
 	if (bgrFrame.empty() || !m_palmDetector.isLoaded())
 		return;
@@ -110,7 +110,6 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 
 	resolveHandedness(bgrFrame.cols);
 	publishHands(outResult);
-	publishArms(outResult);
 
 	// slot ROI debug boxes ride along with the raw detector boxes
 	for (const HandSlot& slot : m_slots)
@@ -293,43 +292,5 @@ void HandTrackingPipeline::publishHands(TrackingFrameResult& outResult)
 		hand.modelPoints= slot.modelPoints;
 		hand.hasCameraSpace= false;
 		hand.hasWorldSpace= false;
-	}
-}
-
-void HandTrackingPipeline::publishArms(TrackingFrameResult& outResult)
-{
-	// Elbow/forearm estimation from hand geometry: extend up the forearm
-	// direction from the palm orientation. When extrinsics are calibrated,
-	// LandmarkTo3D::refineFallbackArms recomputes this in world space with an
-	// anatomical forearm length and a table-plane clamp.
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		TrackedArm& arm= outResult.arms[sideIndex];
-		const TrackedHand& hand= outResult.hands[sideIndex];
-
-		if (!hand.tracked)
-			continue;
-
-		const glm::vec2 wrist= glm::vec2(hand.imagePoints[(int)eHandLandmark::WRIST]);
-		const glm::vec2 mcpCentroid=
-			(glm::vec2(hand.imagePoints[(int)eHandLandmark::INDEX_MCP]) +
-			 glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]) +
-			 glm::vec2(hand.imagePoints[(int)eHandLandmark::RING_MCP]) +
-			 glm::vec2(hand.imagePoints[(int)eHandLandmark::PINKY_MCP])) * 0.25f;
-
-		const glm::vec2 toWrist= wrist - mcpCentroid;
-		const float toWristLength= glm::length(toWrist);
-		if (toWristLength > 1e-3f)
-		{
-			const glm::vec2 dir= toWrist / toWristLength;
-			const float handLength=
-				glm::length(wrist - glm::vec2(hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP]));
-
-			arm.valid= true;
-			arm.fromFallback= true;
-			arm.confidence= 0.1f;
-			arm.wristPixel= wrist;
-			arm.elbowPixel= wrist + dir * (m_config.armFallbackElbowScale * handLength);
-		}
 	}
 }

@@ -5,27 +5,6 @@ static const ImU32 k_rightHandColor= IM_COL32(255, 96, 96, 255);   // red
 static const ImU32 k_jointColor= IM_COL32(255, 255, 255, 220);
 static const ImU32 k_palmDetectColor= IM_COL32(255, 220, 60, 180); // yellow
 
-static void drawDashedLine(ImDrawList* drawList, const ImVec2& a, const ImVec2& b, ImU32 color, float thickness,
-						   float dashLength= 8.f)
-{
-	const float dx= b.x - a.x;
-	const float dy= b.y - a.y;
-	const float length= sqrtf(dx * dx + dy * dy);
-	if (length < 1.f)
-		return;
-
-	const int dashCount= (int)(length / dashLength);
-	for (int i= 0; i < dashCount; i+= 2)
-	{
-		const float t0= (float)i / (float)dashCount;
-		const float t1= (float)(i + 1) / (float)dashCount;
-		drawList->AddLine(
-			ImVec2(a.x + dx * t0, a.y + dy * t0),
-			ImVec2(a.x + dx * t1, a.y + dy * t1),
-			color, thickness);
-	}
-}
-
 void HandOverlay::drawTrackingResult(ImDrawList* drawList, const TrackingFrameResult& result,
 									 const ImageToScreenMapping& mapping, bool bShowDetectionBoxes)
 {
@@ -77,22 +56,4 @@ void HandOverlay::drawTrackingResult(ImDrawList* drawList, const TrackingFrameRe
 		drawList->AddText(labelPos, boneColor, label);
 	}
 
-	// Forearms
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const TrackedArm& arm= result.arms[sideIndex];
-		if (!arm.valid)
-			continue;
-
-		const ImU32 color= (eHandSide)sideIndex == eHandSide::Left ? k_leftHandColor : k_rightHandColor;
-		const ImVec2 elbow= mapping.toScreen(arm.elbowPixel.x, arm.elbowPixel.y);
-		const ImVec2 wrist= mapping.toScreen(arm.wristPixel.x, arm.wristPixel.y);
-
-		if (arm.fromFallback)
-			drawDashedLine(drawList, elbow, wrist, color, 3.f);
-		else
-			drawList->AddLine(elbow, wrist, color, 3.f);
-
-		drawList->AddCircleFilled(elbow, 5.f, color);
-	}
 }

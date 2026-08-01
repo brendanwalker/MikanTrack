@@ -69,8 +69,7 @@ public:
 private:
 	using ClockTimePoint= std::chrono::steady_clock::time_point;
 
-	void appendHandMessages(const TrackingFrameResult& frame, int sideIndex);
-	void appendArmMessages(const TrackingFrameResult& frame, int sideIndex);
+	void appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton);
 	void appendInfoMessage(bool hasWorldSpace, const ClockTimePoint& now);
 	void updateSendStats(const ClockTimePoint& now);
 

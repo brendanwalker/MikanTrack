@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "glm/ext/quaternion_float.hpp"
 #include "glm/ext/vector_float2.hpp"
 #include "glm/ext/vector_float3.hpp"
 
@@ -91,25 +92,81 @@ struct TrackedHand
 	std::array<glm::vec3, HAND_LANDMARK_COUNT> worldPoints;
 };
 
-struct TrackedArm
+// -- Parametric hand representation -----
+// Palm transform + per-finger bend angles (Ultraleap-style), computed from
+// the landmark model's metric hand. Angles live in the model's LOCAL
+// articulation - the network's most reliable output - and are scale- and
+// depth-invariant, so all depth noise concentrates in the palm transform.
+// This is also the natural state for cross-camera fusion (poses/angles
+// compose; blending raw landmarks distorts bones) and for a future EKF
+// (position + error quaternion + angle vector).
+
+constexpr int FINGER_COUNT= 5;
+enum class eFinger : int
 {
-	bool valid= false;
-	// Elbows are geometric estimates extended from the hand orientation
-	// (BlazePose measurement was removed - it never fires on overhead rigs);
-	// kept in the schema so OSC consumers can distinguish estimate quality
-	bool fromFallback= true;
-	float confidence= 0.f;
+	Thumb= 0,
+	Index= 1,
+	Middle= 2,
+	Ring= 3,
+	Pinky= 4,
+};
 
-	glm::vec2 elbowPixel{0.f};
-	glm::vec2 wristPixel{0.f};
+// MediaPipe landmark indices of each finger's 4 joints, base -> tip.
+// (Thumb: CMC, MCP, IP, TIP; fingers: MCP, PIP, DIP, TIP)
+constexpr int FINGER_JOINTS[FINGER_COUNT][4]= {
+	{1, 2, 3, 4},     // thumb
+	{5, 6, 7, 8},     // index
+	{9, 10, 11, 12},  // middle
+	{13, 14, 15, 16}, // ring
+	{17, 18, 19, 20}, // pinky
+};
 
-	bool hasCameraSpace= false;
-	glm::vec3 elbowCamera{0.f};
-	glm::vec3 wristCamera{0.f};
+// Bend angles for one finger, radians, relative to the neutral (straight,
+// along the metacarpal direction) pose:
+//   lateral:      signed splay in the palm plane (+ toward the thumb side)
+//   proximal:     base-bone curl toward the palm (+ = curling in)
+//   intermediate: hinge angle vs the proximal bone (0 = straight)
+//   distal:       hinge angle vs the intermediate bone (0 = straight)
+struct FingerAngles
+{
+	float lateral= 0.f;
+	float proximal= 0.f;
+	float intermediate= 0.f;
+	float distal= 0.f;
+};
 
-	bool hasWorldSpace= false;
-	glm::vec3 elbowWorld{0.f};
-	glm::vec3 wristWorld{0.f};
+// Slowly-varying skeleton geometry in the palm frame, metric (scaled by the
+// calibrated hand scale; MediaPipe's model is canonical average-hand scale)
+struct HandSkeleton
+{
+	// Each finger's base joint position in the palm frame
+	std::array<glm::vec3, FINGER_COUNT> baseInPalm{};
+	// Phalanx lengths base->tip: [proximal, intermediate, distal]
+	std::array<std::array<float, 3>, FINGER_COUNT> phalanxLengths{};
+};
+
+// Palm frame convention (Ultraleap-compatible):
+//   origin: palm center (midpoint of wrist and middle MCP)
+//   +X: toward the fingers (wrist -> middle MCP)
+//   +Z: out of the palmar surface (chirality-corrected per hand)
+//   +Y: completes right-handed
+struct HandPose
+{
+	bool tracked= false;
+	eHandSide side= eHandSide::Left;
+	float presence= 0.f;
+	float visibility= 0.f; // palm face-on factor for the observing camera
+
+	bool hasCameraPose= false;
+	glm::vec3 palmPositionCamera{0.f}; // OpenCV camera convention, meters
+	glm::quat palmOrientationCamera{1.f, 0.f, 0.f, 0.f};
+
+	bool hasWorldPose= false;
+	glm::vec3 palmPositionWorld{0.f}; // marker-anchored Z-up world, meters
+	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};
+
+	std::array<FingerAngles, FINGER_COUNT> fingers{};
+	HandSkeleton skeleton;
 };
 
 struct TrackingFrameResult
@@ -122,9 +179,11 @@ struct TrackingFrameResult
 	float captureFps= 0.f;
 	float inferenceMs= 0.f;
 
-	// Indexed by eHandSide
+	// Indexed by eHandSide. hands carries the raw landmark data (overlays,
+	// debug, stereo scale); poses is the parametric output that gets fused
+	// and streamed.
 	std::array<TrackedHand, 2> hands;
-	std::array<TrackedArm, 2> arms;
+	std::array<HandPose, 2> poses;
 
 	// Debug: raw palm detector output + active hand ROI boxes
 	std::vector<DetectionBox> palmDetections;

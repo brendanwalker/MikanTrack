@@ -191,7 +191,6 @@ bool AppConfig::load()
 
 		const json& fu= j.value("fusion", json::object());
 		fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
-		fusion.softmaxTemperature= fu.value("softmaxTemperature", 8.f);
 		fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
 
 		const json& hs= j.value("handScale", json::object());
@@ -245,7 +244,6 @@ bool AppConfig::save() const
 
 	j["fusion"]= {
 		{"stalenessWindowMs", fusion.stalenessWindowMs},
-		{"softmaxTemperature", fusion.softmaxTemperature},
 		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
 	};
 

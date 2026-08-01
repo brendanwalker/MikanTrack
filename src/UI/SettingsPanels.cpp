@@ -58,9 +58,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 		ImGui::SetItemTooltip("A camera's last result older than this is\nexcluded from fusion");
 
-		bChanged|= ImGui::SliderFloat("Softmax temperature", &fusion.softmaxTemperature, 1.f, 30.f, "%.1f");
-		ImGui::SetItemTooltip("Higher = the better view dominates faster\n(30 approaches best-camera switching)");
-
 		// Which camera won each hand in the last fusion
 		const int leftCam= visionThread->getDominantCamera(eHandSide::Left);
 		const int rightCam= visionThread->getDominantCamera(eHandSide::Right);

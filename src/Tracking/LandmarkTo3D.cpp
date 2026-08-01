@@ -8,13 +8,13 @@
 #include "opencv2/calib3d.hpp"
 #include "opencv2/core.hpp"
 
+#include "glm/gtc/quaternion.hpp"
+
+#include "HandPoseModel.h"
 #include "Logger.h"
 
 static constexpr float kMinDepthMeters= 0.05f;
 static constexpr float kDefaultDtSeconds= 1.f / 60.f;
-// Anatomical forearm length as a multiple of the wrist->middle-MCP distance
-// (forearm ~26cm vs palm ~8cm)
-static constexpr float kForearmToHandScaleRatio= 3.2f;
 
 void LandmarkTo3D::configure(
 	const MikanMonoIntrinsics& intrinsics,
@@ -35,11 +35,6 @@ void LandmarkTo3D::configure(
 	m_bSmoothingEnabled= smoothingEnabled;
 	m_filterBank.configure(smoothingMinCutoff, smoothingBeta, 1.f);
 	m_filterBank.resetAll();
-	for (OneEuroFilterVec3& filter : m_worldElbowFilters)
-	{
-		filter.configure(smoothingMinCutoff, smoothingBeta, 1.f);
-		filter.reset();
-	}
 	m_lastTimestampMs= -1.0;
 	m_bSideWasTracked[0]= false;
 	m_bSideWasTracked[1]= false;
@@ -79,7 +74,6 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult)
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		TrackedHand& hand= ioResult.hands[sideIndex];
-		TrackedArm& arm= ioResult.arms[sideIndex];
 
 		if (hand.tracked)
 		{
@@ -87,17 +81,43 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult)
 			if (!m_bSideWasTracked[sideIndex])
 			{
 				m_filterBank.resetSide((eHandSide)sideIndex);
-				m_worldElbowFilters[sideIndex].reset();
 				m_bPnpPoseValid[sideIndex]= false;
 			}
 
 			processHand(hand, dtSeconds);
+
+			if (hand.hasCameraSpace)
+				fillHandPose(hand, ioResult.poses[sideIndex]);
 		}
 		m_bSideWasTracked[sideIndex]= hand.tracked && hand.hasCameraSpace;
-
-		if (arm.valid)
-			processArm(arm, hand, (eHandSide)sideIndex, dtSeconds);
 	}
+}
+
+void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
+{
+	outPose.tracked= true;
+	outPose.side= hand.side;
+	outPose.presence= hand.presence;
+
+	// Palm transform from the (rigid, PnP-consistent) camera-space landmarks
+	const glm::mat4 palmFrame= HandPoseModel::computePalmFrame(hand.cameraPoints, hand.side);
+	outPose.palmPositionCamera= glm::vec3(palmFrame[3]);
+	outPose.palmOrientationCamera= glm::quat_cast(glm::mat3(palmFrame));
+	outPose.hasCameraPose= true;
+
+	// Angles + skeleton from the model's LOCAL articulation (scale/depth
+	// invariant - all depth noise stays in the palm transform above).
+	// Skeleton is rescaled to metric by the calibrated hand scale.
+	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.fingers);
+
+	std::array<glm::vec3, HAND_LANDMARK_COUNT> metricModel;
+	const glm::vec3 modelWrist= hand.modelPoints[(int)eHandLandmark::WRIST];
+	const float modelBone=
+		glm::length(hand.modelPoints[(int)eHandLandmark::MIDDLE_MCP] - modelWrist);
+	const float modelScale= modelBone > 1e-4f ? m_refLengthMeters / modelBone : 1.f;
+	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+		metricModel[i]= hand.modelPoints[i] * modelScale;
+	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton);
 }
 
 void LandmarkTo3D::processHand(TrackedHand& hand, float dtSeconds)
@@ -238,82 +258,4 @@ void LandmarkTo3D::processHandLegacy(TrackedHand& hand, float dtSeconds)
 	}
 
 	hand.hasCameraSpace= true;
-}
-
-void LandmarkTo3D::processArm(TrackedArm& arm, const TrackedHand& hand, eHandSide side, float dtSeconds)
-{
-	// The wrist depth is the arm's only scale reference; without a tracked
-	// hand in camera space the arm stays image-space only
-	if (!hand.tracked || !hand.hasCameraSpace)
-		return;
-
-	const glm::vec3& wristCamera= hand.cameraPoints[(int)eHandLandmark::WRIST];
-	const float zWrist= wristCamera.z;
-
-	const float zElbow= std::max(zWrist, kMinDepthMeters);
-
-	glm::vec3 elbowCamera= backProject(arm.elbowPixel.x, arm.elbowPixel.y, zElbow);
-	if (m_bSmoothingEnabled)
-		elbowCamera= m_filterBank.elbowFilter(side).filter(elbowCamera, dtSeconds);
-
-	arm.elbowCamera= elbowCamera;
-	arm.wristCamera= wristCamera;
-	arm.hasCameraSpace= true;
-}
-
-void LandmarkTo3D::refineFallbackArms(TrackingFrameResult& ioResult, const glm::dmat4& markerFromCamera)
-{
-	if (!m_bConfigured)
-		return;
-
-	const glm::dmat4 cameraFromMarker= glm::inverse(markerFromCamera);
-
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		TrackedArm& arm= ioResult.arms[sideIndex];
-		const TrackedHand& hand= ioResult.hands[sideIndex];
-
-		if (!arm.valid || !arm.fromFallback || !hand.tracked || !hand.hasWorldSpace)
-			continue;
-
-		// Forearm direction from the hand's world-space orientation:
-		// knuckle centroid -> wrist, extended up the forearm
-		const glm::vec3& wristWorld= hand.worldPoints[(int)eHandLandmark::WRIST];
-		const glm::vec3 mcpCentroid=
-			(hand.worldPoints[(int)eHandLandmark::INDEX_MCP] + hand.worldPoints[(int)eHandLandmark::MIDDLE_MCP] +
-			 hand.worldPoints[(int)eHandLandmark::RING_MCP] + hand.worldPoints[(int)eHandLandmark::PINKY_MCP]) *
-			0.25f;
-
-		const glm::vec3 handSegment= wristWorld - mcpCentroid;
-		const float handSegmentLength= glm::length(handSegment);
-		if (handSegmentLength < 1e-4f)
-			continue;
-
-		const glm::vec3 forearmDir= handSegment / handSegmentLength;
-		const float forearmLength= m_refLengthMeters * kForearmToHandScaleRatio;
-
-		glm::vec3 elbowWorld= wristWorld + forearmDir * forearmLength;
-
-		// Table clamp: the marker plane is world z=0 and the arm can't be
-		// below the table the hand is resting on
-		elbowWorld.z= std::max(elbowWorld.z, 0.f);
-
-		if (m_bSmoothingEnabled)
-			elbowWorld= m_worldElbowFilters[sideIndex].filter(elbowWorld, m_lastDtSeconds);
-
-		arm.elbowWorld= elbowWorld;
-		arm.wristWorld= wristWorld;
-		arm.hasWorldSpace= true;
-
-		// Back-fill camera space + pixel position for the overlay
-		const glm::vec3 elbowCamera= glm::vec3(cameraFromMarker * glm::dvec4(elbowWorld, 1.0));
-		arm.elbowCamera= elbowCamera;
-		arm.hasCameraSpace= true;
-		if (elbowCamera.z > kMinDepthMeters)
-		{
-			arm.elbowPixel= glm::vec2(
-				m_fx * elbowCamera.x / elbowCamera.z + m_cx,
-				m_fy * elbowCamera.y / elbowCamera.z + m_cy);
-		}
-	}
 }

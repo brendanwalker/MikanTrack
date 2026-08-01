@@ -33,17 +33,17 @@ struct HandTrackingPipelineConfig
 	int handPresenceLostFrames= 2;      // consecutive low-presence frames before slot deactivates
 	float slotDedupeIouThreshold= 0.3f; // palm detection vs active slot IoU
 	int handednessSwitchFrames= 15;     // consecutive contradictions before a slot flips side
-	float armFallbackElbowScale= 2.2f;  // elbow= wrist + dir * scale * |wrist - middleMCP|
 };
 
 // Orchestrates the MediaPipe-style tracking graph on the inference thread:
 //   - two hand slots with landmark-driven ROI reuse (palm detector only runs
 //     when a slot is free or every detectorIntervalFrames as a drift guard)
 //   - handedness resolution with temporal stickiness
-//   - forearm/elbow estimation from hand geometry (extended up the forearm
-//     direction; refined in world space with a table clamp by LandmarkTo3D)
-// Fills the image-space fields of TrackingFrameResult; camera/world space is
-// filled later by the Tracking module (LandmarkTo3D / SpaceTransforms).
+// Fills the image-space fields of TrackingFrameResult; camera/world space and
+// the parametric hand poses are filled later by the Tracking module
+// (LandmarkTo3D / SpaceTransforms). Elbow estimation was removed entirely -
+// there isn't enough information in a hand-only view for a useful estimate;
+// clients solve arms with IK from the palm pose.
 //
 // NOTE: BlazePose elbow measurement was removed - its person detector never
 // fires on top-down/overhead views, so the pose stage never produced usable
@@ -109,7 +109,6 @@ private:
 	void runHandLandmarkStage(const cv::Mat& bgrFrame);
 	void resolveHandedness(int frameWidth);
 	void publishHands(TrackingFrameResult& outResult);
-	void publishArms(TrackingFrameResult& outResult);
 
 	int countActiveSlots() const;
 
