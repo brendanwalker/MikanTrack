@@ -651,6 +651,33 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (j) Pipeline slot side-collision ordering - regression from the
+			// 2026-08-01_13-51-16 dump. Both slots' classifiers scored
+			// "right"; the decisive one (0.98) must claim Right and displace
+			// the weak one (0.64) to Left, regardless of the noise-level
+			// presence difference that used to decide it.
+			{
+				// slot A = physical LEFT hand, weakly (wrongly) scored right,
+				// marginally HIGHER presence; slot B = physical RIGHT hand,
+				// decisively scored right
+				const int order= HandTrackingPipeline::preferredSlotOrder(0.644f, 0.991f, 0.981f, 0.978f);
+				MIKAN_LOG_INFO("test-fusion") << "(j) slot collision: first claim = slot " << order
+					<< " (expected 1, the decisive one)";
+				if (order != 1)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(j) FAILED: the decisive classifier must win the contested side";
+					result= 1;
+				}
+
+				// Equal decisiveness falls back to presence
+				if (HandTrackingPipeline::preferredSlotOrder(0.8f, 0.9f, 0.2f, 0.95f) != 1)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(j) FAILED: presence must break decisiveness ties";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

@@ -86,6 +86,12 @@ public:
 	// boxes and inferenceMs on outResult
 	void process(const cv::Mat& bgrFrame, TrackingFrameResult& outResult);
 
+	// Which of two contending slots claims its preferred side first (0 = A,
+	// 1 = B). The loser is displaced to the free side, so this decides the
+	// published L/R labels whenever both slots want the same side. Exposed
+	// for the --test-fusion self test.
+	static int preferredSlotOrder(float rightProbA, float presenceA, float rightProbB, float presenceB);
+
 	// Queues cross-camera search hints for the next process() call (same
 	// thread as process; hints landing on an already-tracked hand are ignored)
 	void setSearchHints(const std::vector<HandSearchHint>& hints) { m_searchHints= hints; }
@@ -109,6 +115,7 @@ private:
 
 		float presence= 0.f;
 		float handednessScore= 0.5f; // smoothed raw model score
+		float rightProb= 0.5f;       // flip-adjusted P(right hand)
 		int lowPresenceFrames= 0;
 		int framesSinceDetection= 0;
 
@@ -123,6 +130,7 @@ private:
 			bSeededFromHint= false;
 			presence= 0.f;
 			handednessScore= 0.5f;
+			rightProb= 0.5f;
 			lowPresenceFrames= 0;
 			framesSinceDetection= 0;
 			sideInitialized= false;

@@ -336,6 +336,7 @@ void HandTrackingPipeline::resolveHandedness(int frameWidth)
 		float rightProb= slot.handednessScore;
 		if (m_config.flipHandedness)
 			rightProb= 1.f - rightProb;
+		slot.rightProb= rightProb;
 		eHandSide candidate= rightProb > 0.5f ? eHandSide::Right : eHandSide::Left;
 
 		// temporal stickiness: keep the assigned side unless contradicted for
@@ -362,11 +363,30 @@ void HandTrackingPipeline::resolveHandedness(int frameWidth)
 	}
 }
 
+int HandTrackingPipeline::preferredSlotOrder(float rightProbA, float presenceA, float rightProbB,
+											 float presenceB)
+{
+	// The loser of a side collision is displaced to the OTHER side, so this
+	// decides both hands' labels. Order by classifier DECISIVENESS, not
+	// presence: presence measures tracking quality and says nothing about
+	// which hand is which. (Live 2026-08-01: both slots scored "right"
+	// (0.98 and 0.64) at presence 0.978 vs 0.991 - a 1.3% presence
+	// difference, pure noise, displaced the decisively-right hand to Left
+	// and stuck there for seconds.)
+	const float decisivenessA= fabsf(rightProbA - 0.5f);
+	const float decisivenessB= fabsf(rightProbB - 0.5f);
+	if (decisivenessB != decisivenessA)
+		return decisivenessB > decisivenessA ? 1 : 0;
+
+	return presenceB > presenceA ? 1 : 0;
+}
+
 void HandTrackingPipeline::publishHands(TrackingFrameResult& outResult)
 {
-	// higher-presence slot claims its side first; at most one hand per side
+	// The more decisive slot claims its side first; at most one hand per side
 	int order[2]= {0, 1};
-	if (m_slots[1].presence > m_slots[0].presence)
+	if (preferredSlotOrder(m_slots[0].rightProb, m_slots[0].presence, m_slots[1].rightProb,
+						   m_slots[1].presence) == 1)
 		std::swap(order[0], order[1]);
 
 	for (int i= 0; i < 2; ++i)
@@ -391,7 +411,7 @@ void HandTrackingPipeline::publishHands(TrackingFrameResult& outResult)
 		hand.slotId= slotIndex;
 		hand.presence= slot.presence;
 		hand.handednessScore= slot.handednessScore;
-		hand.rightProb= m_config.flipHandedness ? 1.f - slot.handednessScore : slot.handednessScore;
+		hand.rightProb= slot.rightProb;
 		hand.imagePoints= slot.imagePoints;
 		hand.modelPoints= slot.modelPoints;
 		hand.hasCameraSpace= false;
