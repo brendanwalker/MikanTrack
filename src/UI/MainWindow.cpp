@@ -213,7 +213,8 @@ void MainWindow::update(float deltaSeconds)
 
 	// Panels
 	m_devicePanel->draw();
-	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get());
+	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
+									  m_trackingPanelState);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
 
 	const CalibrationPanel::DrawResult calibrationAction= m_calibrationPanel->draw(bWizardActive);

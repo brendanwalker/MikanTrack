@@ -7,8 +7,15 @@
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
 
+// Seconds between pressing Capture Rest Pose and the sample being taken -
+// long enough to get the mouse hand back into the rest pose
+static constexpr float k_restPoseCountdownSeconds= 3.f;
+// How long the "captured" banner stays up afterwards
+static constexpr float k_restPoseResultSeconds= 4.f;
+
 void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionThread,
-									   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel)
+									   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel,
+									   TrackingPanelState& panelState)
 {
 	if (!ImGui::Begin("Tracking"))
 	{
@@ -156,23 +163,56 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		ImGui::Text("Calibrated  L: %s  R: %s", restPose.present[0] ? "yes" : "no",
 					restPose.present[1] ? "yes" : "no");
 
-		if (ImGui::Button("Capture Rest Pose"))
-			visionThread->requestRestPoseCapture();
-		ImGui::SetItemTooltip(
-			"Captures the currently tracked hands as the zero reference.\n"
-			"Without it, zero means the flat-hand default (fingers parallel\n"
-			"to the palm's forward axis), which ignores how your own hand\n"
-			"rests - a hand hovering over a keyboard genuinely holds tens of\n"
-			"degrees of knuckle flexion.");
+		const float deltaSeconds= ImGui::GetIO().DeltaTime;
 
-		if (restPose.present[0] || restPose.present[1])
+		if (panelState.restPoseCountdown > 0.f)
 		{
-			ImGui::SameLine();
-			if (ImGui::Button("Clear"))
+			// Counting down: both hands need to be free, so the sample is
+			// taken well after the mouse click that started this
+			panelState.restPoseCountdown-= deltaSeconds;
+			if (panelState.restPoseCountdown <= 0.f)
 			{
-				restPose.present[0]= false;
-				restPose.present[1]= false;
-				bChanged= true;
+				panelState.restPoseCountdown= 0.f;
+				visionThread->requestRestPoseCapture();
+			}
+
+			char countdownText[16];
+			snprintf(countdownText, sizeof(countdownText), "%d",
+					 (int)ceilf(panelState.restPoseCountdown));
+			ImGui::SetWindowFontScale(3.f);
+			const float textWidth= ImGui::CalcTextSize(countdownText).x;
+			ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
+			ImGui::SetWindowFontScale(1.f);
+			ImGui::ProgressBar(1.f - panelState.restPoseCountdown / k_restPoseCountdownSeconds,
+							   ImVec2(-1, 4), "");
+
+			if (ImGui::Button("Cancel", ImVec2(-1, 0)))
+				panelState.restPoseCountdown= 0.f;
+		}
+		else
+		{
+			if (ImGui::Button("Capture Rest Pose"))
+			{
+				panelState.restPoseCountdown= k_restPoseCountdownSeconds;
+				panelState.restPoseResultTimer= 0.f;
+			}
+			ImGui::SetItemTooltip(
+				"Counts down, then captures the tracked hands as the zero\n"
+				"reference. Without it, zero means the flat-hand default\n"
+				"(fingers parallel to the palm's forward axis), which ignores\n"
+				"how your own hand rests - a hand hovering over a keyboard\n"
+				"genuinely holds tens of degrees of knuckle flexion.");
+
+			if (restPose.present[0] || restPose.present[1])
+			{
+				ImGui::SameLine();
+				if (ImGui::Button("Clear"))
+				{
+					restPose.present[0]= false;
+					restPose.present[1]= false;
+					bChanged= true;
+				}
 			}
 		}
 
@@ -190,6 +230,27 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			}
 			if (bCaptured[0] || bCaptured[1])
 				bChanged= true;
+
+			panelState.bRestPoseResultCaptured[0]= bCaptured[0];
+			panelState.bRestPoseResultCaptured[1]= bCaptured[1];
+			panelState.restPoseResultTimer= k_restPoseResultSeconds;
+		}
+
+		// Result banner: a hand that was not tracked at the moment of capture
+		// is silently skipped otherwise
+		if (panelState.restPoseResultTimer > 0.f)
+		{
+			panelState.restPoseResultTimer-= deltaSeconds;
+
+			const bool bLeft= panelState.bRestPoseResultCaptured[0];
+			const bool bRight= panelState.bRestPoseResultCaptured[1];
+			if (bLeft && bRight)
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Captured both hands");
+			else if (bLeft || bRight)
+				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Captured %s hand only - the %s hand was not tracked",
+								   bLeft ? "left" : "right", bLeft ? "right" : "left");
+			else
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Nothing captured - no hand was tracked");
 		}
 	}
 

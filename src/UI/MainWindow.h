@@ -3,7 +3,8 @@
 #include <memory>
 #include <vector>
 
-#include "VisionThread.h" // VisionPreviewFrame
+#include "SettingsPanels.h" // TrackingPanelState
+#include "VisionThread.h"    // VisionPreviewFrame
 
 class App;
 class CalibrationPanel;
@@ -45,6 +46,8 @@ private:
 	// the UI still has data when no new frame arrived this tick)
 	std::vector<VisionPreviewFrame> m_latestPreviews;
 	TrackingFrameResult m_latestFused;
+
+	TrackingPanelState m_trackingPanelState;
 
 	bool m_bShowLogPanel= true;
 	bool m_bDockLayoutInitialized= false;
