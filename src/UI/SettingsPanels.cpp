@@ -121,7 +121,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	ImGui::End();
 }
 
-void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread)
+void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
+								  const TrackingFrameResult& fusedResult)
 {
 	if (!ImGui::Begin("OSC Output"))
 	{
@@ -153,7 +154,61 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread)
 
 	ImGui::Separator();
 	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
-	ImGui::TextDisabled("Addresses: /mikan/hand/{left,right}/...\n/mikan/arm/{left,right}/...");
+	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: radians on the wire, degrees below");
+
+	// Live readout of exactly what's being streamed: palm transform + the 20
+	// finger angles per hand (shown in degrees)
+	static const char* s_fingerNames[FINGER_COUNT]= {"Thumb", "Index", "Middle", "Ring", "Pinky"};
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const HandPose& pose= fusedResult.poses[sideIndex];
+		const char* sideName= sideIndex == (int)eHandSide::Left ? "Left Hand" : "Right Hand";
+
+		if (!ImGui::CollapsingHeader(sideName, ImGuiTreeNodeFlags_DefaultOpen))
+			continue;
+
+		if (!pose.tracked)
+		{
+			ImGui::TextDisabled("not tracked");
+			continue;
+		}
+
+		const bool bWorld= pose.hasWorldPose;
+		const glm::vec3& palmPos= bWorld ? pose.palmPositionWorld : pose.palmPositionCamera;
+		ImGui::Text("Palm: (%.3f, %.3f, %.3f) m %s", palmPos.x, palmPos.y, palmPos.z,
+					bWorld ? "" : "(camera space)");
+
+		ImGui::PushID(sideIndex);
+		if (ImGui::BeginTable("angles", 5,
+							  ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders))
+		{
+			ImGui::TableSetupColumn("Finger");
+			ImGui::TableSetupColumn("Lat");
+			ImGui::TableSetupColumn("Prox");
+			ImGui::TableSetupColumn("Inter");
+			ImGui::TableSetupColumn("Dist");
+			ImGui::TableHeadersRow();
+
+			constexpr float kRadToDeg= 57.29578f;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				const FingerAngles& angles= pose.fingers[finger];
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::TextUnformatted(s_fingerNames[finger]);
+				ImGui::TableNextColumn();
+				ImGui::Text("%+.0f", angles.lateral * kRadToDeg);
+				ImGui::TableNextColumn();
+				ImGui::Text("%+.0f", angles.proximal * kRadToDeg);
+				ImGui::TableNextColumn();
+				ImGui::Text("%+.0f", angles.intermediate * kRadToDeg);
+				ImGui::TableNextColumn();
+				ImGui::Text("%+.0f", angles.distal * kRadToDeg);
+			}
+			ImGui::EndTable();
+		}
+		ImGui::PopID();
+	}
 
 	if (bChanged)
 	{

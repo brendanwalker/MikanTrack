@@ -69,45 +69,42 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 		const glm::vec3& base= points[joints[0]];
 
 		// Neutral direction: the metacarpal (wrist -> finger base), projected
-		// into the palm plane so lateral splay is measured in-plane
+		// into the palm plane so lateral splay is measured in-plane. Always
+		// well-conditioned: metacarpals never point along the palm normal.
 		glm::vec3 metacarpal= base - wrist;
 		glm::vec3 neutralDir= safeNormalize(metacarpal - palmZ * glm::dot(metacarpal, palmZ));
 
-		// Proximal bone
 		const glm::vec3 proximalBone= safeNormalize(points[joints[1]] - base);
-
-		// Lateral: signed splay of the proximal bone's palm-plane projection
-		// vs the neutral direction, about the palm normal
-		const glm::vec3 proximalInPlane=
-			safeNormalize(proximalBone - palmZ * glm::dot(proximalBone, palmZ));
-		float lateral= signedAngle(neutralDir, proximalInPlane, palmZ);
-		// "+ toward the thumb side" for both hands: the palm Y axis points
-		// toward the thumb on a right hand and away on a left hand
-		if (side == eHandSide::Left)
-			lateral= -lateral;
-
-		// Proximal bend: rotation of the proximal bone out of the palm plane,
-		// positive when curling toward the palmar (+Z) side - a curled finger
-		// wraps around to the palm face, which +Z exits
-		const float proximal= atan2f(glm::dot(proximalBone, palmZ), glm::dot(proximalBone, proximalInPlane));
-
-		// Hinge axis for the finger: lateral axis = palmZ x boneDir
-		// (intermediate/distal joints are 1-DoF hinges about it)
 		const glm::vec3 intermediateBone= safeNormalize(points[joints[2]] - points[joints[1]]);
 		const glm::vec3 distalBone= safeNormalize(points[joints[3]] - points[joints[2]]);
 
-		float intermediate= acosf(std::clamp(glm::dot(proximalBone, intermediateBone), -1.f, 1.f));
-		// Sign: curling further toward the palmar (+Z) side is positive.
-		// The rotation axis of a palmar curl is cross(bone, palmZ); compare
-		// the joint's actual rotation axis against it to disambiguate.
-		if (glm::dot(glm::cross(proximalBone, intermediateBone), glm::cross(proximalBone, palmZ)) < 0.f)
-			intermediate= -intermediate;
+		// Lateral: signed splay of the proximal bone's palm-plane projection
+		// vs the neutral direction, about the palm normal. (The projection
+		// degenerates only at exactly 90 degrees of proximal curl, where
+		// lateral is visually meaningless anyway - safeNormalize guards it.)
+		const glm::vec3 proximalInPlane=
+			safeNormalize(proximalBone - palmZ * glm::dot(proximalBone, palmZ));
+		const float lateralGeometric= signedAngle(neutralDir, proximalInPlane, palmZ);
 
-		float distal= acosf(std::clamp(glm::dot(intermediateBone, distalBone), -1.f, 1.f));
-		if (glm::dot(glm::cross(intermediateBone, distalBone), glm::cross(intermediateBone, palmZ)) < 0.f)
-			distal= -distal;
+		// ONE fixed hinge axis per finger, exactly as the FK side builds it:
+		// from the post-lateral in-plane direction. All three bend angles are
+		// measured as signed rotations about this axis - measuring each
+		// joint's sign against cross(bone, palmZ) (the old approach) breaks
+		// down when a curled bone points along the palm normal and that cross
+		// degenerates, which flipped distal signs mid-curl (Z-shaped fingers).
+		const glm::quat lateralRotation= glm::angleAxis(lateralGeometric, palmZ);
+		const glm::vec3 directionLat= lateralRotation * neutralDir;
+		const glm::vec3 hingeAxis= safeNormalize(glm::cross(directionLat, -palmZ));
 
-		outAngles[finger].lateral= lateral;
+		// FK rotates by angleAxis(-bend, hinge), so the extracted bend is the
+		// NEGATED signed angle about the hinge (positive = toward palmar +Z)
+		const float proximal= -signedAngle(directionLat, proximalBone, hingeAxis);
+		const float intermediate= -signedAngle(proximalBone, intermediateBone, hingeAxis);
+		const float distal= -signedAngle(intermediateBone, distalBone, hingeAxis);
+
+		// "+ toward the thumb side" for both hands: the palm Y axis points
+		// toward the thumb on a right hand and away on a left hand
+		outAngles[finger].lateral= side == eHandSide::Left ? -lateralGeometric : lateralGeometric;
 		outAngles[finger].proximal= proximal;
 		outAngles[finger].intermediate= intermediate;
 		outAngles[finger].distal= distal;

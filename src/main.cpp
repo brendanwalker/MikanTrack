@@ -501,47 +501,69 @@ static int runApp(int argc, char** argv)
 			// layout; this skeleton (thumb/index at +Y) matches a RIGHT hand
 			// viewed in its own palm frame.
 
-			std::array<FingerAngles, FINGER_COUNT> anglesIn{};
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				anglesIn[finger].lateral= 0.05f * (float)(finger - 2);
-				anglesIn[finger].proximal= 0.3f + 0.1f * (float)finger;
-				anglesIn[finger].intermediate= 0.4f;
-				anglesIn[finger].distal= 0.2f;
-			}
-
-			// FK in the palm's own frame (identity palm transform)
-			std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
-			HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, anglesIn, joints);
-
-			// Assemble a 21-landmark set from the FK joints + wrist
+			// Round-trip helper: FK with the given angles -> landmark set ->
+			// re-extract angles -> max absolute error
 			std::array<glm::vec3, HAND_LANDMARK_COUNT> points{};
-			const glm::vec3 middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
-			points[(int)eHandLandmark::WRIST]= glm::vec3(-middleBase.x, 0.f, 0.f);
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-				for (int joint= 0; joint < 4; ++joint)
-					points[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+			auto roundTrip= [&](const std::array<FingerAngles, FINGER_COUNT>& anglesIn, const char* label) {
+				std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+				HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, anglesIn, joints);
 
-			// Round-trip: extract angles back from the FK landmark set
-			std::array<FingerAngles, FINGER_COUNT> anglesOut{};
-			HandPoseModel::computeFingerAngles(points, eHandSide::Right, anglesOut);
+				const glm::vec3 middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
+				points[(int)eHandLandmark::WRIST]= glm::vec3(-middleBase.x, 0.f, 0.f);
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+					for (int joint= 0; joint < 4; ++joint)
+						points[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
 
-			float maxError= 0.f;
+				std::array<FingerAngles, FINGER_COUNT> anglesOut{};
+				HandPoseModel::computeFingerAngles(points, eHandSide::Right, anglesOut);
+
+				float maxError= 0.f;
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					maxError= std::max(maxError, fabsf(anglesOut[finger].lateral - anglesIn[finger].lateral));
+					maxError= std::max(maxError, fabsf(anglesOut[finger].proximal - anglesIn[finger].proximal));
+					maxError=
+						std::max(maxError, fabsf(anglesOut[finger].intermediate - anglesIn[finger].intermediate));
+					maxError= std::max(maxError, fabsf(anglesOut[finger].distal - anglesIn[finger].distal));
+				}
+				MIKAN_LOG_INFO("test-handpose") << label << ": round-trip max error rad=" << maxError;
+				return maxError;
+			};
+
+			// Moderate articulation
+			std::array<FingerAngles, FINGER_COUNT> anglesModerate{};
 			for (int finger= 0; finger < FINGER_COUNT; ++finger)
 			{
-				maxError= std::max(maxError, fabsf(anglesOut[finger].lateral - anglesIn[finger].lateral));
-				maxError= std::max(maxError, fabsf(anglesOut[finger].proximal - anglesIn[finger].proximal));
-				maxError= std::max(maxError, fabsf(anglesOut[finger].intermediate - anglesIn[finger].intermediate));
-				maxError= std::max(maxError, fabsf(anglesOut[finger].distal - anglesIn[finger].distal));
+				anglesModerate[finger].lateral= 0.05f * (float)(finger - 2);
+				anglesModerate[finger].proximal= 0.3f + 0.1f * (float)finger;
+				anglesModerate[finger].intermediate= 0.4f;
+				anglesModerate[finger].distal= 0.2f;
 			}
-			MIKAN_LOG_INFO("test-handpose") << "FK->angles round-trip max error rad=" << maxError;
-			if (maxError > 0.02f)
+			if (roundTrip(anglesModerate, "moderate curl") > 0.02f)
 			{
-				MIKAN_LOG_ERROR("test-handpose") << "FAILED: angle round-trip error too large";
+				MIKAN_LOG_ERROR("test-handpose") << "FAILED: moderate-curl round-trip error too large";
 				result= 1;
 			}
 
-			// Skeleton round-trip: recompute from the landmark set
+			// Deep curl (fist): combined proximal+intermediate bend passes 90
+			// degrees, where the old per-joint palmZ-cross sign disambiguation
+			// degenerated and flipped the distal sign (Z-shaped fingers)
+			std::array<FingerAngles, FINGER_COUNT> anglesFist{};
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				anglesFist[finger].lateral= 0.02f * (float)(finger - 2);
+				anglesFist[finger].proximal= 1.2f;
+				anglesFist[finger].intermediate= 1.4f;
+				anglesFist[finger].distal= 1.0f;
+			}
+			if (roundTrip(anglesFist, "deep curl (fist)") > 0.02f)
+			{
+				MIKAN_LOG_ERROR("test-handpose") << "FAILED: deep-curl round-trip error too large "
+													"(distal sign degeneracy regression)";
+				result= 1;
+			}
+
+			// Skeleton round-trip: recompute from the (last) landmark set
 			HandSkeleton skeletonOut;
 			HandPoseModel::computeSkeleton(points, eHandSide::Right, skeletonOut);
 			float maxLenError= 0.f;
