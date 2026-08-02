@@ -1959,6 +1959,78 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (e) Mounting calibration round trip. The whole chain has three
+			// places a transpose/inverse could hide (mounting capture,
+			// forearm reconstruction, wrist rotation) and a mistake in any
+			// one produces plausible-looking but wrong wrist angles, so
+			// verify it end to end against a known truth.
+			{
+				// Arbitrary "how the strap happens to sit" rotation
+				const glm::quat trueForearmToSensor= glm::normalize(
+					glm::angleAxis(glm::radians(63.f), glm::normalize(glm::vec3(0.3f, -0.8f, 0.5f))));
+
+				// CALIBRATION: wrist straight, so forearm frame == palm frame
+				const glm::quat forearmAtCapture=
+					glm::angleAxis(glm::radians(21.f), glm::vec3(0.f, 0.f, 1.f));
+				const glm::quat palmAtCapture= forearmAtCapture; // straight wrist
+				// The sensor reports q_sw where q_fw = q_sw * q_fs
+				const glm::quat sensorAtCapture= forearmAtCapture * glm::inverse(trueForearmToSensor);
+
+				// captureMounting computes inverse(q_sw) * q_palm
+				const glm::quat capturedMounting=
+					glm::normalize(glm::inverse(sensorAtCapture) * palmAtCapture);
+				const glm::quat mountingError= glm::inverse(trueForearmToSensor) * capturedMounting;
+				const float mountingErrorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(mountingError.x, mountingError.y, mountingError.z)), 0.f, 1.f)));
+
+				// RUNTIME: forearm moved AND the wrist is now bent 35 deg
+				const glm::quat forearmNow= glm::normalize(
+					glm::angleAxis(glm::radians(-40.f), glm::normalize(glm::vec3(0.2f, 0.9f, 0.1f))));
+				const glm::quat trueWristLocal=
+					glm::angleAxis(glm::radians(35.f), glm::vec3(1.f, 0.f, 0.f));
+				const glm::quat palmNow= forearmNow * trueWristLocal;
+				const glm::quat sensorNow= forearmNow * glm::inverse(trueForearmToSensor);
+
+				// getForearmOrientation computes q_sw * q_fs
+				const glm::quat reconstructedForearm= glm::normalize(sensorNow * capturedMounting);
+				const glm::quat forearmError= glm::inverse(forearmNow) * reconstructedForearm;
+				const float forearmErrorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(forearmError.x, forearmError.y, forearmError.z)), 0.f, 1.f)));
+
+				// HandPose::getWristRotation computes inverse(forearm) * palm
+				HandPose pose;
+				pose.hasWorldPose= true;
+				pose.hasForearmPose= true;
+				pose.palmOrientationWorld= palmNow;
+				pose.forearmOrientationWorld= reconstructedForearm;
+				const glm::quat wristError= glm::inverse(trueWristLocal) * pose.getWristRotation();
+				const float wristErrorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(wristError.x, wristError.y, wristError.z)), 0.f, 1.f)));
+
+				// And a straight wrist must read identity, whatever the mounting
+				HandPose straightPose;
+				straightPose.hasWorldPose= true;
+				straightPose.hasForearmPose= true;
+				straightPose.palmOrientationWorld= forearmNow;
+				straightPose.forearmOrientationWorld= reconstructedForearm;
+				const float straightDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(straightPose.getWristRotation().x,
+										  straightPose.getWristRotation().y,
+										  straightPose.getWristRotation().z)), 0.f, 1.f)));
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(e) mounting round trip: mounting err=" << mountingErrorDegrees
+					<< " deg, forearm err=" << forearmErrorDegrees << " deg, wrist err="
+					<< wristErrorDegrees << " deg, straight-wrist reads " << straightDegrees << " deg";
+				if (mountingErrorDegrees > 0.01f || forearmErrorDegrees > 0.01f ||
+					wristErrorDegrees > 0.01f || straightDegrees > 0.01f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(e) FAILED: mounting calibration / wrist rotation chain is inconsistent";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-imufilter") << "All IMU filter checks passed";
 

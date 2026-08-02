@@ -75,6 +75,16 @@ public:
 	// what pins yaw.
 	void updateWithOrientation(const glm::quat& sensorToWorld);
 
+	// Yaw-ONLY correction from a reference orientation. Used when the visual
+	// reference is only loosely related to the sensor: vision measures the
+	// PALM, but the sensor rides the FOREARM, and the (unknown, time-varying)
+	// wrist joint sits between them. Roll/pitch from such a reference would
+	// fight gravity, which measures them properly - but its yaw is still the
+	// only absolute yaw information in the system, and yaw drifts otherwise.
+	// So this believes the reference about rotation around world-up and
+	// almost nothing else.
+	void updateWithYawReference(const glm::quat& sensorToWorldReference, float yawSigma);
+
 	// Convenience: feed a whole sample (predict + gravity update)
 	void processSample(const ImuSample& sample, float dtSeconds);
 

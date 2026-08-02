@@ -133,6 +133,23 @@ bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCapture
 	return true;
 }
 
+bool VisionThread::fetchImuMountingCapture(ImuMountingCapture& outCapture)
+{
+	std::lock_guard<std::mutex> lock(m_imuMutex);
+	if (!m_bImuMountingReady)
+		return false;
+
+	outCapture= m_capturedImuMounting;
+	m_bImuMountingReady= false;
+	return true;
+}
+
+ImuSideStatus VisionThread::getImuSideStatus(eHandSide side) const
+{
+	std::lock_guard<std::mutex> lock(m_imuMutex);
+	return m_imuStatus[(int)side];
+}
+
 void VisionThread::requestDiagnosticDump(const std::string& dumpDir)
 {
 	{
@@ -326,6 +343,20 @@ void VisionThread::refreshConfigOnThread()
 		fusionConfig.fusedRestAngles[sideIndex]= m_config->fusedRestAngles.angles[sideIndex];
 	}
 	m_fusion.configure(fusionConfig);
+
+	// Wrist IMU
+	{
+		ImuServiceConfig imuConfig;
+		imuConfig.enabled= m_config->imu.enabled;
+		imuConfig.visionYawSigma= m_config->imu.visionYawSigma;
+		imuConfig.swapSides= m_config->imu.swapSides;
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			imuConfig.mountingPresent[sideIndex]= m_config->imu.mountingPresent[sideIndex];
+			imuConfig.forearmToSensor[sideIndex]= m_config->imu.forearmToSensor[sideIndex];
+		}
+		m_imuService.setConfig(imuConfig);
+	}
 
 	// OSC
 	if (m_oscStreamer == nullptr)
@@ -647,6 +678,9 @@ void VisionThread::threadLoop()
 {
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread started";
 
+	// Wrist IMU devices live on this thread (HID handles + read threads)
+	m_imuService.startup();
+
 	std::vector<const CameraFrameResult*> fusionCandidates;
 
 	// Previous iteration's fused world result, used to seed cross-camera
@@ -705,6 +739,59 @@ void VisionThread::threadLoop()
 		if (bAnyWorldCandidate)
 		{
 			m_fusion.fuse(fusionCandidates, newestTimestampMs, outputResult);
+
+			// -- Wrist IMU ---------------------------------------------
+			// Integrate every buffered inertial sample (they carry their own
+			// timestamps, so running at camera rate loses no information),
+			// then let the fused palm orientation anchor yaw, then publish
+			// the forearm orientation onto the pose.
+			if (m_bImuRefreshRequested.exchange(false))
+				m_imuService.refreshDevices();
+			m_imuService.update();
+
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const HandPose& pose= outputResult.poses[sideIndex];
+				if (pose.tracked && pose.hasWorldPose)
+					m_imuService.applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
+			}
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				glm::quat forearmToWorld(1.f, 0.f, 0.f, 0.f);
+				if (m_imuService.getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
+				{
+					// The EKF owns this orientation outright - deliberately NOT
+					// run through the post-fusion one-euro filter, which would
+					// cascade two filters onto one signal
+					outputResult.poses[sideIndex].hasForearmPose= true;
+					outputResult.poses[sideIndex].forearmOrientationWorld= forearmToWorld;
+				}
+			}
+
+			// Mounting capture: needs a tracked palm AND a converged filter
+			if (m_bImuMountingCaptureRequested.exchange(false))
+			{
+				ImuMountingCapture capture;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					const HandPose& pose= outputResult.poses[sideIndex];
+					if (!pose.tracked || !pose.hasWorldPose)
+						continue;
+					capture.bCaptured[sideIndex]= m_imuService.captureMounting(
+						(eHandSide)sideIndex, pose.palmOrientationWorld,
+						capture.forearmToSensor[sideIndex]);
+				}
+
+				std::lock_guard<std::mutex> lock(m_imuMutex);
+				m_capturedImuMounting= capture;
+				m_bImuMountingReady= true;
+			}
+
+			{
+				std::lock_guard<std::mutex> lock(m_imuMutex);
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+					m_imuStatus[sideIndex]= m_imuService.getSideStatus((eHandSide)sideIndex);
+			}
 			lastFusedForHints= outputResult;
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
 			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
@@ -813,6 +900,7 @@ void VisionThread::threadLoop()
 	// ORT sessions must be destroyed on this thread
 	m_cameras.clear();
 	m_oscStreamer= nullptr;
+	m_imuService.shutdown();
 
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread stopped";
 }

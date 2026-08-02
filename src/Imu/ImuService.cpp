@@ -1,0 +1,224 @@
+#include "ImuService.h"
+
+#include <algorithm>
+
+#include "glm/gtc/quaternion.hpp"
+
+#include "JoyconDeviceManager.h"
+#include "Logger.h"
+
+ImuService::ImuService()= default;
+
+ImuService::~ImuService()
+{
+	shutdown();
+}
+
+bool ImuService::startup()
+{
+	if (m_bStarted)
+		return true;
+
+	m_deviceManager= std::make_unique<JoyconDeviceManager>();
+	m_deviceManager->startup();
+	m_bStarted= true;
+
+	refreshDevices();
+	return true;
+}
+
+void ImuService::shutdown()
+{
+	m_devices.clear();
+	if (m_deviceManager != nullptr)
+	{
+		m_deviceManager->shutdown();
+		m_deviceManager= nullptr;
+	}
+	m_bStarted= false;
+}
+
+void ImuService::setConfig(const ImuServiceConfig& config)
+{
+	const bool bFilterChanged=
+		config.filter.gyroNoiseDensity != m_config.filter.gyroNoiseDensity ||
+		config.filter.gyroBiasRandomWalk != m_config.filter.gyroBiasRandomWalk ||
+		config.filter.accelNoise != m_config.filter.accelNoise ||
+		config.filter.accelGate != m_config.filter.accelGate;
+
+	m_config= config;
+
+	// Only rebuild filter state when the filter itself was retuned - a
+	// mounting recapture or a side swap must not throw away a converged
+	// bias estimate that took 30 seconds to earn
+	if (bFilterChanged)
+	{
+		for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+			entry->filter.configure(m_config.filter);
+	}
+}
+
+void ImuService::refreshDevices()
+{
+	if (!m_bStarted || m_deviceManager == nullptr)
+		return;
+
+	m_deviceManager->refreshConnectedDevices();
+
+	std::vector<std::unique_ptr<DeviceEntry>> devices;
+	for (size_t deviceIndex= 0; deviceIndex < m_deviceManager->getDeviceCount(); ++deviceIndex)
+	{
+		IImuDevice* device= m_deviceManager->getDeviceByIndex(deviceIndex);
+		if (device == nullptr)
+			continue;
+
+		// Carry over the existing entry (and its converged filter) when this
+		// device was already known
+		std::unique_ptr<DeviceEntry> entry;
+		for (std::unique_ptr<DeviceEntry>& existing : m_devices)
+		{
+			if (existing != nullptr && existing->device == device)
+			{
+				entry= std::move(existing);
+				break;
+			}
+		}
+		if (entry == nullptr)
+		{
+			entry= std::make_unique<DeviceEntry>();
+			entry->device= device;
+			entry->filter.configure(m_config.filter);
+		}
+
+		if (!device->isOpen())
+			device->open();
+
+		devices.push_back(std::move(entry));
+	}
+
+	m_devices= std::move(devices);
+}
+
+int ImuService::findDeviceIndexForSide(eHandSide side) const
+{
+	const eImuSide wanted= m_config.swapSides
+		? (side == eHandSide::Left ? eImuSide::Right : eImuSide::Left)
+		: (side == eHandSide::Left ? eImuSide::Left : eImuSide::Right);
+
+	for (size_t deviceIndex= 0; deviceIndex < m_devices.size(); ++deviceIndex)
+	{
+		if (m_devices[deviceIndex]->device != nullptr && m_devices[deviceIndex]->device->getSide() == wanted)
+			return (int)deviceIndex;
+	}
+	return -1;
+}
+
+void ImuService::update()
+{
+	if (!m_config.enabled)
+		return;
+
+	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+	{
+		if (entry->device == nullptr)
+			continue;
+
+		m_sampleScratch.clear();
+		entry->device->fetchSamples(m_sampleScratch);
+
+		// Samples arrive in chronological order and carry their own
+		// timestamps, so integrating a whole backlog at once is exact - a
+		// caller running at camera rate loses nothing but output freshness
+		for (const ImuSample& sample : m_sampleScratch)
+		{
+			float dtSeconds= 1.f / 200.f; // nominal Joy-Con rate
+			if (entry->lastSampleTimestampMs >= 0.0 && sample.timestampMs > entry->lastSampleTimestampMs)
+				dtSeconds= (float)((sample.timestampMs - entry->lastSampleTimestampMs) / 1000.0);
+			entry->lastSampleTimestampMs= sample.timestampMs;
+
+			entry->filter.processSample(sample, dtSeconds);
+		}
+	}
+}
+
+void ImuService::applyVisionPalmOrientation(eHandSide side, const glm::quat& palmOrientationWorld)
+{
+	if (!m_config.enabled || !m_config.mountingPresent[(int)side])
+		return;
+
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return;
+
+	DeviceEntry& entry= *m_devices[deviceIndex];
+	if (!entry.filter.isInitialized())
+		return;
+
+	// Convert the vision PALM orientation into the equivalent SENSOR
+	// orientation using the mounting rotation, then let the filter take only
+	// its yaw (see updateWithYawReference for why not the whole thing).
+	const glm::quat referenceSensorToWorld=
+		palmOrientationWorld * glm::inverse(m_config.forearmToSensor[(int)side]);
+	entry.filter.updateWithYawReference(referenceSensorToWorld, m_config.visionYawSigma);
+}
+
+bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld) const
+{
+	if (!m_config.enabled || !m_config.mountingPresent[(int)side])
+		return false;
+
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return false;
+
+	const DeviceEntry& entry= *m_devices[deviceIndex];
+	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
+		return false;
+
+	// q_fw = q_sw * q_fs
+	outForearmToWorld=
+		glm::normalize(entry.filter.getOrientation() * m_config.forearmToSensor[(int)side]);
+	return true;
+}
+
+bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
+								 glm::quat& outForearmToSensor)
+{
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return false;
+
+	const DeviceEntry& entry= *m_devices[deviceIndex];
+	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
+		return false;
+
+	// With the wrist straight, the forearm frame IS the palm frame:
+	//   q_fs = inverse(q_sw) * q_palm
+	outForearmToSensor=
+		glm::normalize(glm::inverse(entry.filter.getOrientation()) * glm::normalize(palmOrientationWorld));
+	return true;
+}
+
+ImuSideStatus ImuService::getSideStatus(eHandSide side) const
+{
+	ImuSideStatus status;
+	status.calibrated= m_config.mountingPresent[(int)side];
+
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return status;
+
+	const DeviceEntry& entry= *m_devices[deviceIndex];
+	if (entry.device == nullptr)
+		return status;
+
+	status.deviceConnected= entry.device->isOpen();
+	status.streaming= entry.device->isStreaming();
+	status.sampleRateHz= entry.device->getSampleRateHz();
+	status.batteryLevel= entry.device->getBatteryLevel();
+	status.deviceName= entry.device->getFriendlyName();
+	status.gyroBiasDegreesPerSecond= glm::degrees(entry.filter.getGyroBias());
+	status.yawSigmaRadians= entry.filter.getOrientationSigma().z;
+	status.orientationValid= status.calibrated && status.streaming && entry.filter.isTiltConverged();
+	return status;
+}

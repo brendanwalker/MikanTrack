@@ -9,6 +9,7 @@
 #include "opencv2/core/mat.hpp"
 
 #include "DiagnosticDump.h"
+#include "ImuService.h"
 #include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
 #include "TrackingTypes.h"
@@ -97,6 +98,22 @@ public:
 	// each tracked hand. Per camera because the model landmarks are
 	// view-dependent - one camera's rest angles do not zero another's.
 	void requestRestPoseCapture() { m_bRestPoseCaptureRequested= true; }
+
+	// Wrist IMU: capture the mounting rotation for both wrists. Hold both
+	// hands STRAIGHT in line with the forearms (that pose defines the
+	// forearm frame as "the palm frame at neutral wrist") and request.
+	void requestImuMountingCapture() { m_bImuMountingCaptureRequested= true; }
+	struct ImuMountingCapture
+	{
+		bool bCaptured[2]= {false, false};
+		std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f),
+												 glm::quat(1.f, 0.f, 0.f, 0.f)};
+	};
+	bool fetchImuMountingCapture(ImuMountingCapture& outCapture);
+	// Live per-wrist IMU status for the UI (main thread safe: plain copies)
+	ImuSideStatus getImuSideStatus(eHandSide side) const;
+	// Re-scan for controllers (e.g. after pairing one mid-session)
+	void requestImuDeviceRefresh() { m_bImuRefreshRequested= true; }
 
 	// One camera's captured rest angles for both sides
 	struct RestPoseCapture
@@ -187,6 +204,16 @@ private:
 
 	std::vector<std::unique_ptr<CameraContext>> m_cameras;
 	HandFusion m_fusion;
+
+	// Wrist IMU service (devices + per-device orientation filters). Lives on
+	// the vision thread; the UI reads snapshots through a mutex.
+	ImuService m_imuService;
+	std::atomic_bool m_bImuMountingCaptureRequested{false};
+	std::atomic_bool m_bImuRefreshRequested{false};
+	mutable std::mutex m_imuMutex;
+	ImuMountingCapture m_capturedImuMounting;
+	bool m_bImuMountingReady= false;
+	ImuSideStatus m_imuStatus[2];
 	std::unique_ptr<OscStreamer> m_oscStreamer;
 
 	std::thread m_thread;

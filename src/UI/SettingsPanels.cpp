@@ -186,6 +186,147 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 	}
 
+	ImGui::SeparatorText("Wrist IMU");
+	{
+		ImuConfig& imu= config->imu;
+		bChanged|= ImGui::Checkbox("Enable wrist IMU", &imu.enabled);
+		ImGui::SetItemTooltip(
+			"Wrist-strapped inertial trackers supply FOREARM orientation at\n"
+			"~200 Hz, immune to occlusion. A wrist strap sits proximal to the\n"
+			"wrist joint, so it measures the forearm - not the palm - which is\n"
+			"what makes the wrist joint angle measurable (streamed on\n"
+			"/mikan/hand/{s}/wrist).");
+
+		ImGui::BeginDisabled(!imu.enabled);
+
+		if (ImGui::Button("Scan for controllers"))
+			visionThread->requestImuDeviceRefresh();
+		ImGui::SetItemTooltip("Pair Joy-Cons in Windows Bluetooth settings first");
+
+		if (ImGui::BeginTable("imu", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+		{
+			ImGui::TableSetupColumn("Wrist");
+			ImGui::TableSetupColumn("Device");
+			ImGui::TableSetupColumn("Rate");
+			ImGui::TableSetupColumn("Yaw drift");
+			ImGui::TableHeadersRow();
+
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const ImuSideStatus status= visionThread->getImuSideStatus((eHandSide)sideIndex);
+				ImGui::TableNextRow();
+				ImGui::TableNextColumn();
+				ImGui::Text("%s", sideIndex == 0 ? "Left" : "Right");
+
+				ImGui::TableNextColumn();
+				if (!status.deviceConnected)
+					ImGui::TextDisabled("none");
+				else if (!status.calibrated)
+					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "%s (uncalibrated)",
+									   status.deviceName.c_str());
+				else if (status.orientationValid)
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s", status.deviceName.c_str());
+				else
+					ImGui::TextDisabled("%s (converging)", status.deviceName.c_str());
+
+				ImGui::TableNextColumn();
+				if (status.streaming)
+					ImGui::Text("%.0f Hz  %d%%", status.sampleRateHz, (int)(status.batteryLevel * 100.f));
+				else
+					ImGui::TextDisabled("-");
+
+				ImGui::TableNextColumn();
+				// The yaw-axis gyro bias is the number that matters: it is the
+				// drift vision has to keep correcting
+				if (status.streaming)
+					ImGui::Text("%.2f deg/s", status.gyroBiasDegreesPerSecond.z);
+				else
+					ImGui::TextDisabled("-");
+			}
+			ImGui::EndTable();
+		}
+
+		bChanged|= ImGui::Checkbox("Swap wrists", &imu.swapSides);
+		ImGui::SetItemTooltip("If the Joy-Con L is strapped to your RIGHT wrist");
+
+		bChanged|= ImGui::SliderFloat("Vision yaw anchor", &imu.visionYawSigma, 0.05f, 1.f, "%.2f rad");
+		ImGui::SetItemTooltip(
+			"How strongly the vision-measured palm pins the IMU's yaw.\n"
+			"A 6-axis IMU cannot observe yaw at all, so without this it\n"
+			"drifts forever. Kept LOOSE because vision sees the palm while\n"
+			"the sensor rides the forearm - the wrist joint between them is\n"
+			"real motion, not error. LOWER = trust vision more.");
+
+		// Mounting calibration (same countdown pattern as the rest pose)
+		if (panelState.imuMountingCountdown > 0.f)
+		{
+			panelState.imuMountingCountdown-= ImGui::GetIO().DeltaTime;
+			if (panelState.imuMountingCountdown <= 0.f)
+			{
+				panelState.imuMountingCountdown= 0.f;
+				visionThread->requestImuMountingCapture();
+			}
+
+			char countdownText[16];
+			snprintf(countdownText, sizeof(countdownText), "%d",
+					 (int)ceilf(panelState.imuMountingCountdown));
+			ImGui::SetWindowFontScale(3.f);
+			const float textWidth= ImGui::CalcTextSize(countdownText).x;
+			ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
+			ImGui::SetWindowFontScale(1.f);
+			if (ImGui::Button("Cancel", ImVec2(-1, 0)))
+				panelState.imuMountingCountdown= 0.f;
+		}
+		else if (ImGui::Button("Calibrate Mounting", ImVec2(-1, 0)))
+		{
+			panelState.imuMountingCountdown= k_restPoseCountdownSeconds;
+			panelState.imuMountingResultTimer= 0.f;
+		}
+		ImGui::SetItemTooltip(
+			"Hold both hands STRAIGHT in line with your forearms (no wrist\n"
+			"bend) where the cameras can see them, then wait for the count.\n"
+			"That pose defines the forearm frame as 'the palm frame at a\n"
+			"neutral wrist', which is what makes the streamed wrist rotation\n"
+			"identity when your wrist is straight. Absorbs however the strap\n"
+			"happens to sit, so nothing about controller orientation matters.");
+
+		// Poll for a completed capture
+		VisionThread::ImuMountingCapture mounting;
+		if (visionThread->fetchImuMountingCapture(mounting))
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (!mounting.bCaptured[sideIndex])
+					continue;
+				imu.forearmToSensor[sideIndex]= mounting.forearmToSensor[sideIndex];
+				imu.mountingPresent[sideIndex]= true;
+				bChanged= true;
+			}
+			panelState.bImuMountingCaptured[0]= mounting.bCaptured[0];
+			panelState.bImuMountingCaptured[1]= mounting.bCaptured[1];
+			panelState.imuMountingResultTimer= k_restPoseResultSeconds;
+		}
+
+		if (panelState.imuMountingResultTimer > 0.f)
+		{
+			panelState.imuMountingResultTimer-= ImGui::GetIO().DeltaTime;
+			const bool bLeft= panelState.bImuMountingCaptured[0];
+			const bool bRight= panelState.bImuMountingCaptured[1];
+			if (bLeft && bRight)
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Calibrated both wrists");
+			else if (bLeft || bRight)
+				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Calibrated %s only",
+								   bLeft ? "left" : "right");
+			else
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+								   "Nothing captured - each wrist needs a TRACKED hand and a "
+								   "streaming, settled controller");
+		}
+
+		ImGui::EndDisabled();
+	}
+
 	ImGui::SeparatorText("Rest Pose");
 	{
 		ImGui::TextWrapped(

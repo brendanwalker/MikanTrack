@@ -387,6 +387,48 @@ void ImuOrientationFilter::updateWithOrientation(const glm::quat& sensorToWorld)
 	applyCorrection(residual, hTheta, hBias, measurementNoise);
 }
 
+void ImuOrientationFilter::updateWithYawReference(const glm::quat& sensorToWorldReference, float yawSigma)
+{
+	if (!m_bInitialized)
+		return;
+
+	glm::quat errorQuaternion=
+		glm::normalize(glm::inverse(m_orientation) * glm::normalize(sensorToWorldReference));
+	if (errorQuaternion.w < 0.f)
+		errorQuaternion= -errorQuaternion;
+
+	const glm::vec3 errorAxis(errorQuaternion.x, errorQuaternion.y, errorQuaternion.z);
+	const float axisLength= glm::length(errorAxis);
+	glm::vec3 residual(0.f);
+	if (axisLength > 1e-9f)
+	{
+		const float angle= 2.f * atan2f(axisLength, errorQuaternion.w);
+		residual= errorAxis / axisLength * angle;
+	}
+
+	// World up expressed in the BODY frame - the axis we actually trust.
+	// Measurement noise is tight along it and enormous perpendicular to it,
+	// so the correction collapses onto yaw.
+	const glm::vec3 bodyUp= glm::normalize(glm::transpose(glm::mat3_cast(m_orientation)) * k_worldUp);
+	constexpr float kIgnoredSigma= 100.f; // rad; effectively "no information"
+
+	Mat3 measurementNoise{};
+	const float yawVariance= yawSigma * yawSigma;
+	const float ignoredVariance= kIgnoredSigma * kIgnoredSigma;
+	for (int row= 0; row < 3; ++row)
+	{
+		for (int col= 0; col < 3; ++col)
+		{
+			const float projection= bodyUp[row] * bodyUp[col];
+			const float identity= row == col ? 1.f : 0.f;
+			at3(measurementNoise, row, col)=
+				yawVariance * projection + ignoredVariance * (identity - projection);
+		}
+	}
+
+	applyCorrection(residual, identity3(), Mat3{}, measurementNoise);
+}
+
 void ImuOrientationFilter::processSample(const ImuSample& sample, float dtSeconds)
 {
 	if (!m_bInitialized)

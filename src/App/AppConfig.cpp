@@ -259,6 +259,21 @@ bool AppConfig::load()
 
 		restAnglesFromJson(j.value("fusedRestAngles", json::object()), fusedRestAngles);
 
+		const json& im= j.value("imu", json::object());
+		imu.enabled= im.value("enabled", true);
+		imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
+		imu.swapSides= im.value("swapSides", false);
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const char* key= sideIndex == 0 ? "mountingLeft" : "mountingRight";
+			imu.mountingPresent[sideIndex]= false;
+			if (!im.contains(key) || !im[key].is_array() || im[key].size() != 4)
+				continue;
+			imu.forearmToSensor[sideIndex]=
+				glm::quat((float)im[key][3], (float)im[key][0], (float)im[key][1], (float)im[key][2]);
+			imu.mountingPresent[sideIndex]= true;
+		}
+
 		const json& hs= j.value("handScale", json::object());
 		handScale.present= hs.value("present", false);
 		handScale.refLengthMeters= hs.value("refLengthMeters", 0.08);
@@ -324,6 +339,22 @@ std::string AppConfig::toJsonString() const
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
+
+	{
+		json imuJson= {
+			{"enabled", imu.enabled},
+			{"visionYawSigma", imu.visionYawSigma},
+			{"swapSides", imu.swapSides},
+		};
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			if (!imu.mountingPresent[sideIndex])
+				continue;
+			const glm::quat& q= imu.forearmToSensor[sideIndex];
+			imuJson[sideIndex == 0 ? "mountingLeft" : "mountingRight"]= json::array({q.x, q.y, q.z, q.w});
+		}
+		j["imu"]= imuJson;
+	}
 
 	j["handScale"]= {
 		{"present", handScale.present},

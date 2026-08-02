@@ -112,6 +112,24 @@ struct CameraProfile
 	RestAnglesConfig restAngles;
 };
 
+// Wrist-strapped inertial trackers (Joy-Cons today, SlimeVR later).
+// The mounting rotation is captured per side with the wrist held straight,
+// which defines the forearm frame as "the palm frame at neutral wrist".
+struct ImuConfig
+{
+	bool enabled= true;
+	// Vision yaw-anchor strength, radians. Loose on purpose: vision sees the
+	// palm, the sensor rides the forearm, and the wrist joint between them is
+	// unknown - so vision should correct slow yaw drift without fighting real
+	// wrist motion.
+	float visionYawSigma= 0.35f;
+	// Swap which controller drives which wrist
+	bool swapSides= false;
+	// Captured mounting rotation (forearm -> sensor), indexed by eHandSide
+	bool mountingPresent[2]= {false, false};
+	std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f), glm::quat(1.f, 0.f, 0.f, 0.f)};
+};
+
 struct FusionConfig
 {
 	// A camera's last result older than this is excluded from fusion
@@ -150,6 +168,7 @@ public:
 	TrackingConfig tracking;
 	OscConfig osc;
 	FusionConfig fusion;
+	ImuConfig imu;
 	// Rest-pose zero for the stereo-TRIANGULATED path (one set, not per
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.
