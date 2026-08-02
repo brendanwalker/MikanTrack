@@ -53,6 +53,11 @@ struct TrackingConfig
 {
 	bool flipHandedness= true;
 	int detectorIntervalFrames= 30;
+	// Relaxed palm-detection cutoff used while reacquiring a recently-lost
+	// hand (a slot is free + a slot died within ~1.5s). Recall when it
+	// matters, strict precision otherwise; fusion's gates absorb the extra
+	// false positives.
+	float palmScoreThresholdRelaxed= 0.25f;
 	// With two calibrated cameras, continuously refine the hand scale from
 	// stereo wrist triangulation (overrides the wizard-measured scale live)
 	bool autoHandScaleFromStereo= true;

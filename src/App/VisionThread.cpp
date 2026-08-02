@@ -214,6 +214,7 @@ void VisionThread::refreshConfigOnThread()
 			HandTrackingPipelineConfig pipelineConfig;
 			pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
 			pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
+			pipelineConfig.palmScoreThresholdRelaxed= m_config->tracking.palmScoreThresholdRelaxed;
 			pipelineConfig.preferredEp= m_config->tracking.onnxEp;
 
 			context.pipeline= std::make_unique<HandTrackingPipeline>();
@@ -235,6 +236,7 @@ void VisionThread::refreshConfigOnThread()
 			HandTrackingPipelineConfig pipelineConfig= context.pipeline->getConfig();
 			pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
 			pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
+			pipelineConfig.palmScoreThresholdRelaxed= m_config->tracking.palmScoreThresholdRelaxed;
 			context.pipeline->setConfig(pipelineConfig);
 		}
 

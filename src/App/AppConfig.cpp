@@ -273,6 +273,7 @@ bool AppConfig::load()
 		const json& tr= j.value("tracking", json::object());
 		tracking.flipHandedness= tr.value("flipHandedness", true);
 		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
+		tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
 		tracking.autoHandScaleFromStereo= tr.value("autoHandScaleFromStereo", true);
 		tracking.usePnpDepth= tr.value("usePnpDepth", true);
 		tracking.pnpPalmOnly= tr.value("pnpPalmOnly", false);
@@ -357,6 +358,7 @@ std::string AppConfig::toJsonString() const
 	j["tracking"]= {
 		{"flipHandedness", tracking.flipHandedness},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
+		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
 		{"autoHandScaleFromStereo", tracking.autoHandScaleFromStereo},
 		{"usePnpDepth", tracking.usePnpDepth},
 		{"pnpPalmOnly", tracking.pnpPalmOnly},

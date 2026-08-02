@@ -28,6 +28,13 @@ struct HandTrackingPipelineConfig
 	int detectorIntervalFrames= 30;
 
 	float palmScoreThreshold= 0.5f;     // mp_palmdet.py default
+	// Relaxed detection cutoff used while REACQUIRING: a slot is free AND a
+	// slot was lost within relaxedDetectorWindowFrames. Recall when a known
+	// hand vanished, precision otherwise - safe because the fusion gates
+	// (clustering, residual veto, temporal/spatial priors) catch the extra
+	// false positives a lower cutoff lets through.
+	float palmScoreThresholdRelaxed= 0.25f;
+	int relaxedDetectorWindowFrames= 90; // ~1.5s at 60fps
 	float palmNmsIouThreshold= 0.3f;    // mp_palmdet.py default
 	float handPresenceThreshold= 0.5f;  // slot keepalive threshold
 	int handPresenceLostFrames= 2;      // consecutive low-presence frames before slot deactivates
@@ -157,6 +164,11 @@ private:
 	int64_t m_frameIndex= -1;
 	int m_framesSinceDetector= 0;
 	int m_duplicateOverlapFrames= 0;
+
+	// Reacquisition window bookkeeping: when the active slot count drops, the
+	// palm detector runs with the relaxed score threshold for a short window
+	int m_lastActiveSlotCount= 0;
+	int64_t m_lastSlotLossFrame= -1;
 
 	std::vector<HandSearchHint> m_searchHints;
 

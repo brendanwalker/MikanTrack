@@ -97,9 +97,23 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 
 	m_frameIndex++;
 
+	// Reacquisition window: a drop in active slots arms the relaxed detector
+	// threshold for a short window (recall for a hand we KNOW just vanished;
+	// strict precision otherwise). Drift-guard runs with both slots active
+	// always stay strict, so a fully-tracked frame gains no false positives.
+	const int activeSlots= countActiveSlots();
+	if (activeSlots < m_lastActiveSlotCount)
+		m_lastSlotLossFrame= m_frameIndex;
+	m_lastActiveSlotCount= activeSlots;
+
+	const bool bReacquiring= activeSlots < 2 && m_lastSlotLossFrame >= 0 &&
+		m_frameIndex - m_lastSlotLossFrame <= m_config.relaxedDetectorWindowFrames;
+	m_palmDetector.setScoreThreshold(
+		bReacquiring ? m_config.palmScoreThresholdRelaxed : m_config.palmScoreThreshold);
+
 	// Palm detector: only when a slot is free, or periodically as drift guard
 	const bool runDetector=
-		countActiveSlots() < 2 ||
+		activeSlots < 2 ||
 		m_framesSinceDetector >= std::max(m_config.detectorIntervalFrames, 1);
 	if (runDetector)
 		runPalmDetectionStage(bgrFrame, outResult);

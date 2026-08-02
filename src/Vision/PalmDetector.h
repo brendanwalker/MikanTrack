@@ -45,6 +45,10 @@ public:
 	// Full-frame BGR -> palm detections (weighted-NMS'd, score descending)
 	void detect(const cv::Mat& bgrFrame, std::vector<PalmDetection>& outDetections);
 
+	// Detection score cutoff for the next detect() call (the pipeline relaxes
+	// it while reacquiring a recently-lost hand)
+	void setScoreThreshold(float threshold) { m_scoreThreshold= threshold; }
+
 	// Axis-aligned detection box as a debug overlay box
 	static DetectionBox toDebugBox(const PalmDetection& detection);
 

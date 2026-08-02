@@ -32,6 +32,14 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bChanged|= ImGui::SliderInt("Detector interval", &tracking.detectorIntervalFrames, 5, 120);
 	ImGui::SetItemTooltip("Palm detector re-runs at least every N frames");
 
+	bChanged|= ImGui::SliderFloat("Reacquire threshold", &tracking.palmScoreThresholdRelaxed, 0.05f, 0.5f, "%.2f");
+	ImGui::SetItemTooltip(
+		"Relaxed palm-detection cutoff used for ~1.5s after a tracked\n"
+		"hand is lost (normal cutoff is 0.5). Lower = faster reacquisition\n"
+		"of a hand that dipped below the strict threshold, at the cost of\n"
+		"more detector false positives DURING reacquisition only - the\n"
+		"fusion gates (clustering, residual veto, priors) filter those.");
+
 	ImGui::SeparatorText("Depth Estimation");
 	bChanged|= ImGui::Checkbox("solvePnP depth", &tracking.usePnpDepth);
 	ImGui::SetItemTooltip(
