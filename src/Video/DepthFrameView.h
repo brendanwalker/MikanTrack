@@ -4,16 +4,23 @@
 
 #include "glm/ext/vector_float3.hpp"
 
-// Neutral (no librealsense types) description of one depth frame plus the
-// calibration needed to look up metric depth at a COLOR-image pixel. Filled
-// by the RealSense capture backend; consumed by the tracking layer.
+// VENDOR-NEUTRAL description of one depth frame plus the calibration needed
+// to look up metric depth at a COLOR-image pixel. This is the seam between
+// capture backends and the tracking layer: any depth source (RealSense
+// today; Orbbec, Kinect, ARKit-over-network, ... tomorrow) only has to fill
+// this struct, and nothing downstream changes. It deliberately contains no
+// vendor SDK types.
 //
 // The depth image is NOT pre-aligned to color (full-frame alignment costs a
 // per-pixel pass we don't need): sampleCameraPointAtColorPixel() projects a
 // color pixel onto the depth image through the factory depth<->color
 // calibration, which is exact and only pays for the pixels we actually
 // query (21 landmarks).
-struct RealSenseDepthView
+//
+// A backend that only produces depth ALIGNED to color can fill
+// depthIntrinsics= colorIntrinsics with an identity depth->color transform;
+// the sampler then degenerates to a direct lookup.
+struct DepthFrameView
 {
 	bool valid= false;
 
@@ -22,8 +29,9 @@ struct RealSenseDepthView
 	int depthHeight= 0;
 	float depthUnitsMeters= 0.001f; // meters per Z16 unit
 
-	// Factory intrinsics (Brown-Conrady coefficient layout mirrors
-	// rs2_intrinsics; model index: 0=none,2=inverse-BC,4=BC as in rs2_distortion)
+	// Pinhole + Brown-Conrady intrinsics for one stream.
+	// model: 0= none/pinhole, 2= inverse Brown-Conrady, 4= Brown-Conrady
+	// (indices match rs2_distortion so a RealSense backend can memcpy)
 	struct Intrinsics
 	{
 		int width= 0, height= 0;
@@ -34,8 +42,8 @@ struct RealSenseDepthView
 	Intrinsics colorIntrinsics;
 	Intrinsics depthIntrinsics;
 
-	// depth->color rigid transform (row-major 3x3 rotation + translation,
-	// meters; matches rs2_extrinsics layout)
+	// depth->color rigid transform (column-major 3x3 rotation + translation,
+	// meters; layout matches rs2_extrinsics)
 	float depthToColorRotation[9]= {1, 0, 0, 0, 1, 0, 0, 0, 1};
 	float depthToColorTranslation[3]= {0, 0, 0};
 

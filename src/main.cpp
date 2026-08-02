@@ -24,7 +24,7 @@
 #include "Logger.h"
 #include "MonoLensDistortionCalibrator.h"
 #include "OscWriterTest.h"
-#include "RealSenseDepthView.h"
+#include "DepthFrameView.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -1741,7 +1741,7 @@ static int runApp(int argc, char** argv)
 			constexpr int kW= 848, kH= 480;
 			std::vector<uint16_t> depthImage((size_t)kW * kH, 600); // 600 * 1mm = 0.6m
 
-			RealSenseDepthView view;
+			DepthFrameView view;
 			view.valid= true;
 			view.depthData= depthImage.data();
 			view.depthWidth= kW;

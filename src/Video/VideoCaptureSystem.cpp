@@ -606,7 +606,7 @@ IUsbVideoDevice* VideoCaptureSystem::findDeviceByPath(const std::string& deviceP
 	return m_deviceManager != nullptr ? m_deviceManager->getDeviceByPath(devicePath.c_str()) : nullptr;
 }
 
-bool VideoCaptureSystem::getDepthView(int cameraIndex, RealSenseDepthView& outView)
+bool VideoCaptureSystem::getDepthView(int cameraIndex, DepthFrameView& outView)
 {
 	const CameraSlot* slot= getSlot(cameraIndex);
 	if (slot == nullptr || slot->device == nullptr || m_realSenseManager == nullptr)

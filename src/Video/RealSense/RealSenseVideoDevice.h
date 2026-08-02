@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "IUsbVideoDevice.h"
-#include "RealSenseDepthView.h"
+#include "DepthFrameView.h"
 
 // One RealSense camera exposed through the app's USB-video-device interface.
 // Streams synchronized COLOR (RGB24) + DEPTH (Z16) via an rs2 pipeline on a
@@ -59,7 +59,7 @@ public:
 	// Copies the newest depth frame + calibration into outView's backing
 	// store (double-buffered inside the device; the returned pointers stay
 	// valid until the next fetch). Inference-thread safe.
-	bool fetchDepthView(RealSenseDepthView& outView, std::vector<uint16_t>& ioDepthStorage);
+	bool fetchDepthView(DepthFrameView& outView, std::vector<uint16_t>& ioDepthStorage);
 
 private:
 	void captureThreadLoop();
@@ -91,7 +91,7 @@ private:
 	// Depth handoff: capture thread writes, inference thread reads
 	std::mutex m_depthMutex;
 	std::vector<uint16_t> m_depthBuffer;
-	RealSenseDepthView m_depthCalib; // valid= stream running; depthData unused here
+	DepthFrameView m_depthCalib; // valid= stream running; depthData unused here
 	double m_depthTimestampMs= 0.0;
 	bool m_bDepthFresh= false;
 

@@ -11,7 +11,7 @@
 #include "LandmarkTo3D.h"
 #include "Logger.h"
 #include "OscStreamer.h"
-#include "RealSenseDepthView.h"
+#include "DepthFrameView.h"
 #include "SpaceTransforms.h"
 #include "ThreadUtils.h"
 #include "VideoCaptureSystem.h"
@@ -431,7 +431,7 @@ bool VisionThread::sampleHandDepth(CameraContext& context, const CameraProfile& 
 								   const TrackingFrameResult& result,
 								   std::array<HandDepthMeasurement, 2>& outMeasurements)
 {
-	RealSenseDepthView depthView;
+	DepthFrameView depthView;
 	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
 		return false;
 
@@ -605,7 +605,7 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 
 bool VisionThread::buildDepthPreview(CameraContext& context, const cv::Size& targetSize, cv::Mat& outBgr)
 {
-	RealSenseDepthView depthView;
+	DepthFrameView depthView;
 	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
 		return false;
 

@@ -21,7 +21,7 @@ static constexpr int kDepthWidth= 848;
 static constexpr int kDepthHeight= 480;
 static constexpr int kDepthFps= 30;
 
-static void copyIntrinsics(const rs2_intrinsics& in, RealSenseDepthView::Intrinsics& out)
+static void copyIntrinsics(const rs2_intrinsics& in, DepthFrameView::Intrinsics& out)
 {
 	out.width= in.width;
 	out.height= in.height;
@@ -346,7 +346,7 @@ void RealSenseVideoDevice::captureThreadLoop()
 	api->delete_pipeline(pipeline);
 }
 
-bool RealSenseVideoDevice::fetchDepthView(RealSenseDepthView& outView, std::vector<uint16_t>& ioDepthStorage)
+bool RealSenseVideoDevice::fetchDepthView(DepthFrameView& outView, std::vector<uint16_t>& ioDepthStorage)
 {
 	std::lock_guard<std::mutex> lock(m_depthMutex);
 	if (!m_depthCalib.valid || m_depthBuffer.empty())

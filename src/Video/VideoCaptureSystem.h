@@ -92,7 +92,7 @@ public:
 	// RealSense depth: true when the camera's open device is a RealSense and
 	// a depth frame + calibration are available. Copies the newest depth
 	// frame into the view's backing store (inference-thread safe).
-	bool getDepthView(int cameraIndex, struct RealSenseDepthView& outView);
+	bool getDepthView(int cameraIndex, struct DepthFrameView& outView);
 
 	// -- Inference thread API -----
 	// Returns the newest available frame for the camera, recycling any stale

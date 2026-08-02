@@ -1,4 +1,4 @@
-#include "RealSenseDepthView.h"
+#include "DepthFrameView.h"
 
 #include <algorithm>
 #include <cmath>
@@ -13,7 +13,7 @@
 namespace
 {
 // project a 3D point in a stream's own frame to its pixel coordinates
-void projectPoint(const RealSenseDepthView::Intrinsics& intrin, const glm::vec3& point, float& outU, float& outV)
+void projectPoint(const DepthFrameView::Intrinsics& intrin, const glm::vec3& point, float& outU, float& outV)
 {
 	float x= point.x / point.z;
 	float y= point.y / point.z;
@@ -33,7 +33,7 @@ void projectPoint(const RealSenseDepthView::Intrinsics& intrin, const glm::vec3&
 }
 
 // deproject a pixel + metric depth to a 3D point in the stream's own frame
-glm::vec3 deprojectPixel(const RealSenseDepthView::Intrinsics& intrin, float u, float v, float depthM)
+glm::vec3 deprojectPixel(const DepthFrameView::Intrinsics& intrin, float u, float v, float depthM)
 {
 	// Depth streams use Brown-Conrady with zero coefficients on D400s;
 	// treating it as an ideal pinhole matches librealsense's own fast path
@@ -42,7 +42,7 @@ glm::vec3 deprojectPixel(const RealSenseDepthView::Intrinsics& intrin, float u, 
 	return glm::vec3(x * depthM, y * depthM, depthM);
 }
 
-glm::vec3 transformDepthToColor(const RealSenseDepthView& view, const glm::vec3& p)
+glm::vec3 transformDepthToColor(const DepthFrameView& view, const glm::vec3& p)
 {
 	const float* r= view.depthToColorRotation;
 	const float* t= view.depthToColorTranslation;
@@ -54,7 +54,7 @@ glm::vec3 transformDepthToColor(const RealSenseDepthView& view, const glm::vec3&
 }
 } // namespace
 
-bool RealSenseDepthView::sampleCameraPointAtColorPixel(float colorU, float colorV, float minDepthM,
+bool DepthFrameView::sampleCameraPointAtColorPixel(float colorU, float colorV, float minDepthM,
 													   float maxDepthM, glm::vec3& outCameraPoint) const
 {
 	if (!valid || depthData == nullptr || depthWidth <= 0 || depthHeight <= 0)

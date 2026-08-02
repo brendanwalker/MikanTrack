@@ -6,7 +6,7 @@
 
 #include "IUsbVideoDevice.h"
 #include "IUsbVideoDeviceManager.h"
-#include "RealSenseDepthView.h"
+#include "DepthFrameView.h"
 
 // RealSense backend: enumerates connected RealSense devices through the
 // dynamically-loaded librealsense2 C API and exposes each as an
@@ -45,7 +45,7 @@ public:
 	// Safe to call from the inference thread: the view points into a
 	// double-buffered depth copy owned by the device that stays valid until
 	// the next fetch for the same device.
-	bool fetchDepthView(const std::string& devicePath, double colorTimestampMs, RealSenseDepthView& outView);
+	bool fetchDepthView(const std::string& devicePath, double colorTimestampMs, DepthFrameView& outView);
 
 private:
 	std::vector<IUsbVideoDeviceManagerListener*> m_listeners;

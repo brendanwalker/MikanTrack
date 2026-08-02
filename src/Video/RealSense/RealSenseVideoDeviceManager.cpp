@@ -143,7 +143,7 @@ bool RealSenseVideoDeviceManager::isRealSensePath(const std::string& devicePath)
 }
 
 bool RealSenseVideoDeviceManager::fetchDepthView(const std::string& devicePath, double colorTimestampMs,
-												 RealSenseDepthView& outView)
+												 DepthFrameView& outView)
 {
 	// The caller owns depth storage via a thread-local; simplest correct
 	// implementation routes through the device's double-buffered copy.
