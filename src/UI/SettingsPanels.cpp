@@ -95,6 +95,14 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"entirely. Off = blend the per-camera monocular poses (the\n"
 			"previous behavior).");
 
+		bChanged|= ImGui::Checkbox("Blend articulation (legacy)", &fusion.blendArticulation);
+		ImGui::SetItemTooltip(
+			"When triangulation is off or unavailable and two cameras see a\n"
+			"hand: ON = weighted blend of orientation + finger angles (the\n"
+			"old behavior; time-varying weights over disagreeing estimates\n"
+			"produce slow wander). OFF = pick the best single camera with\n"
+			"switching hysteresis. Palm position blends either way.");
+
 		ImGui::BeginDisabled(!fusion.triangulationEnabled);
 		bChanged|= ImGui::SliderFloat("Max tri residual", &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");
 		ImGui::SetItemTooltip(

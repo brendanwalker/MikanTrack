@@ -134,6 +134,9 @@ struct FusionConfig
 	// trustworthy - a TRUE pose-quality signal (unlike presence, which stays
 	// high on ill-conditioned views), folded into the fused confidence
 	float residualReferencePx= 8.f;
+	// Legacy A/B: weighted-blend orientation/angles across cameras on the
+	// non-triangulated path instead of selecting one source with hysteresis
+	bool blendArticulation= false;
 };
 
 class AppConfig

@@ -35,6 +35,11 @@ static constexpr float kVoteVetoDecisiveness= 0.8f; // both this decisive + oppo
 static constexpr float kVoteVetoMinDistM= 0.06f;    // ...unless practically the same point
 // Single-cluster side stickiness (affinity units, on top of votes/temporal)
 static constexpr float kSoloSideStickiness= 0.75f;
+// Articulation-source hysteresis (non-triangulated multi-camera path): a
+// challenger camera must beat the incumbent's weight by this margin for this
+// many consecutive fuses before the orientation/angle source switches
+static constexpr float kArticulationSwitchMargin= 1.2f;
+static constexpr int kArticulationSwitchFrames= 5;
 
 void HandFusion::configure(const HandFusionConfig& config)
 {
@@ -57,6 +62,9 @@ void HandFusion::configure(const HandFusionConfig& config)
 		m_lastFilteredQuat[sideIndex]= glm::quat(1, 0, 0, 0);
 		m_bSideWasTracked[sideIndex]= false;
 		m_bLastFusedPalmValid[sideIndex]= false;
+		m_articulationSource[sideIndex]= -1;
+		m_articulationChallenger[sideIndex]= -1;
+		m_articulationChallengerFrames[sideIndex]= 0;
 	}
 	m_lastTimestampMs= -1.0;
 	m_lastSoloSide= -1;
@@ -841,59 +849,128 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 		return;
 	}
 
-	// Fallback: weighted blend of the palm transform + finger angles across
-	// cameras. Poses/angles compose - unlike raw landmark blending,
-	// disagreeing articulation degrades gracefully instead of distorting
-	// bones.
+	// Fallback multi-camera path (triangulation off or unavailable)
 	if (candidates.size() >= 2)
 	{
+		// Palm POSITION blends in both modes: positions compose, and the
+		// cross-camera disagreement there is cm-scale, not tens of degrees
 		float weightSum= 0.f;
 		glm::vec3 blendedPosition(0.f);
-		glm::quat blendedQuat(0.f, 0.f, 0.f, 0.f);
-		std::array<FingerAngles, FINGER_COUNT> blendedAngles{};
-
-		const glm::quat referenceQuat= best.pose->palmOrientationWorld;
 		float maxPresence= 0.f;
 		for (const HandCandidate& candidate : candidates)
 		{
-			const float weight= candidate.weight;
-			weightSum+= weight;
+			weightSum+= candidate.weight;
+			blendedPosition+= candidate.pose->palmPositionWorld * candidate.weight;
 			maxPresence= std::max(maxPresence, candidate.pose->presence);
-
-			blendedPosition+= candidate.pose->palmPositionWorld * weight;
-
-			// Hemisphere-align before component-wise blending
-			glm::quat quat= candidate.pose->palmOrientationWorld;
-			if (glm::dot(quat, referenceQuat) < 0.f)
-				quat= -quat;
-			blendedQuat+= quat * weight;
-
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				blendedAngles[finger].lateral+= candidate.pose->fingers[finger].lateral * weight;
-				blendedAngles[finger].proximal+= candidate.pose->fingers[finger].proximal * weight;
-				blendedAngles[finger].intermediate+= candidate.pose->fingers[finger].intermediate * weight;
-				blendedAngles[finger].distal+= candidate.pose->fingers[finger].distal * weight;
-			}
 		}
-
 		if (weightSum > 1e-6f)
 		{
 			outPose.palmPositionWorld= blendedPosition / weightSum;
-			outPose.palmOrientationWorld= glm::normalize(blendedQuat);
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				outPose.fingers[finger].lateral= blendedAngles[finger].lateral / weightSum;
-				outPose.fingers[finger].proximal= blendedAngles[finger].proximal / weightSum;
-				outPose.fingers[finger].intermediate= blendedAngles[finger].intermediate / weightSum;
-				outPose.fingers[finger].distal= blendedAngles[finger].distal / weightSum;
-			}
 			outPose.presence= maxPresence;
+		}
+
+		if (m_config.blendArticulation)
+		{
+			// Legacy A/B path: weighted blend of orientation + finger angles.
+			// Poses/angles compose - but blending two estimators that disagree
+			// by tens of degrees with time-varying weights manufactures
+			// low-frequency wander inside the smoothing passband.
+			glm::quat blendedQuat(0.f, 0.f, 0.f, 0.f);
+			std::array<FingerAngles, FINGER_COUNT> blendedAngles{};
+
+			const glm::quat referenceQuat= best.pose->palmOrientationWorld;
+			for (const HandCandidate& candidate : candidates)
+			{
+				const float weight= candidate.weight;
+
+				// Hemisphere-align before component-wise blending
+				glm::quat quat= candidate.pose->palmOrientationWorld;
+				if (glm::dot(quat, referenceQuat) < 0.f)
+					quat= -quat;
+				blendedQuat+= quat * weight;
+
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					blendedAngles[finger].lateral+= candidate.pose->fingers[finger].lateral * weight;
+					blendedAngles[finger].proximal+= candidate.pose->fingers[finger].proximal * weight;
+					blendedAngles[finger].intermediate+= candidate.pose->fingers[finger].intermediate * weight;
+					blendedAngles[finger].distal+= candidate.pose->fingers[finger].distal * weight;
+				}
+			}
+
+			if (weightSum > 1e-6f)
+			{
+				outPose.palmOrientationWorld= glm::normalize(blendedQuat);
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					outPose.fingers[finger].lateral= blendedAngles[finger].lateral / weightSum;
+					outPose.fingers[finger].proximal= blendedAngles[finger].proximal / weightSum;
+					outPose.fingers[finger].intermediate= blendedAngles[finger].intermediate / weightSum;
+					outPose.fingers[finger].distal= blendedAngles[finger].distal / weightSum;
+				}
+			}
+		}
+		else
+		{
+			// Select one camera as the orientation/angle source, with
+			// hysteresis: the incumbent keeps the job until a challenger beats
+			// its weight by a decisive margin for several consecutive fuses.
+			// (Without it, weight noise would flip the source frame to frame -
+			// reintroducing the switching wander that selection exists to kill.)
+			const int sideIndex= (int)side;
+			const HandCandidate* incumbent= nullptr;
+			for (const HandCandidate& candidate : candidates)
+			{
+				if (candidate.camera->cameraIndex == m_articulationSource[sideIndex])
+					incumbent= &candidate;
+			}
+
+			const HandCandidate* source= &best;
+			if (incumbent == nullptr)
+			{
+				// No incumbent in this cluster: adopt the best immediately
+				m_articulationChallengerFrames[sideIndex]= 0;
+				m_articulationChallenger[sideIndex]= -1;
+			}
+			else if (best.camera->cameraIndex != incumbent->camera->cameraIndex &&
+					 best.weight > incumbent->weight * kArticulationSwitchMargin)
+			{
+				if (m_articulationChallenger[sideIndex] == best.camera->cameraIndex)
+					++m_articulationChallengerFrames[sideIndex];
+				else
+				{
+					m_articulationChallenger[sideIndex]= best.camera->cameraIndex;
+					m_articulationChallengerFrames[sideIndex]= 1;
+				}
+
+				if (m_articulationChallengerFrames[sideIndex] < kArticulationSwitchFrames)
+					source= incumbent;
+			}
+			else
+			{
+				m_articulationChallengerFrames[sideIndex]= 0;
+				m_articulationChallenger[sideIndex]= -1;
+				source= incumbent;
+			}
+			m_articulationSource[sideIndex]= source->camera->cameraIndex;
+			m_dominantCamera[sideIndex]= source->camera->cameraIndex;
+
+			outPose.palmOrientationWorld= source->pose->palmOrientationWorld;
+			outPose.fingers= source->pose->fingers;
+			outPose.skeleton= source->pose->skeleton;
+			outHand= *source->hand;
+			outHand.side= side;
 		}
 
 		// A two-camera observation of one physical hand also triangulates the
 		// true hand scale
 		updateStereoScale(cluster);
+	}
+	else
+	{
+		m_articulationSource[(int)side]= best.camera->cameraIndex;
+		m_articulationChallengerFrames[(int)side]= 0;
+		m_articulationChallenger[(int)side]= -1;
 	}
 
 	outPose.tracked= true;

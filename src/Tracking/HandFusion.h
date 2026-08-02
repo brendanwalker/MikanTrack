@@ -72,6 +72,15 @@ struct HandFusionConfig
 	// into the fused confidence, same shape as the jitter stability factor)
 	float residualReferencePx= 8.f;
 
+	// Legacy A/B switch for the NON-triangulated multi-camera path: true =
+	// weighted blend of orientation + finger angles across cameras (the old
+	// behavior). False (default) = select one source camera with hysteresis.
+	// Blending estimators that disagree by tens of degrees with time-varying
+	// weights manufactures low-frequency wander the smoothing can't remove;
+	// picking the best single view does not. (Palm POSITION still blends -
+	// positions compose, and the disagreement there is cm-scale.)
+	bool blendArticulation= false;
+
 	// Rest-pose zero for the TRIANGULATED path: raw stereo angles minus these
 	// read zero in the user's captured rest pose. Separate from the
 	// per-camera rest offsets (those fold in each camera's own model bias,
@@ -267,6 +276,12 @@ private:
 	// Raw triangulated angles of the last fuse (rest-pose capture source)
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_rawTriAngles{};
 	bool m_bRawTriAnglesValid[2]= {false, false};
+
+	// Articulation-source selection state (non-triangulated multi-camera
+	// path): incumbent camera per side + challenger streak for hysteresis
+	int m_articulationSource[2]= {-1, -1};
+	int m_articulationChallenger[2]= {-1, -1};
+	int m_articulationChallengerFrames[2]= {0, 0};
 
 	// Temporal side-assignment prior: last fused palm position per side
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};

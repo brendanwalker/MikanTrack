@@ -351,8 +351,9 @@ static int runApp(int argc, char** argv)
 			// edge-on to the overhead camera
 			const glm::quat faceCam2= glm::angleAxis(glm::half_pi<float>(), glm::vec3(1.f, 0.f, 0.f));
 
-			// (a) Both cameras face-on-ish: fused position beats both noisy inputs;
-			// fused bend angle is between the two observations
+			// (a) Both cameras face-on-ish: fused position beats both noisy
+			// inputs; the bend angle comes from the SELECTED source camera (the
+			// face-on overhead one), not a blend of the two
 			{
 				const glm::vec3 noiseA(0.004f, -0.002f, 0.005f);
 				const glm::vec3 noiseB(-0.003f, 0.004f, -0.004f);
@@ -371,7 +372,7 @@ static int runApp(int argc, char** argv)
 				const float bend= pose.fingers[0].proximal;
 				MIKAN_LOG_INFO("test-fusion") << "(a) palm err mm: A=" << errA * 1000.f << " B=" << errB * 1000.f
 					<< " fused=" << errFused * 1000.f << " bend=" << bend;
-				if (!pose.tracked || errFused > std::min(errA, errB) * 1.05f || bend < 0.5f || bend > 0.7f)
+				if (!pose.tracked || errFused > std::min(errA, errB) * 1.05f || fabsf(bend - 0.5f) > 1e-6f)
 				{
 					MIKAN_LOG_ERROR("test-fusion") << "(a) FAILED";
 					result= 1;
@@ -379,18 +380,21 @@ static int runApp(int argc, char** argv)
 			}
 
 			// (b) Palm edge-on to the overhead camera, facing camera 2:
-			// camera 2 must dominate
+			// camera 2 must dominate (fresh fusion state - this tests the
+			// weighting, not the articulation-source hysteresis)
 			{
+				HandFusion freshFusion;
+				freshFusion.configure(fusionConfig);
 				const auto camA= makeCameraResult(
 					0, cam1Pos, now, makeObservation(palmTruth + glm::vec3(0.01f, 0.f, 0.f), faceCam2, 0.9f, eHandSide::Left, 0.1f, 0.f));
 				const auto camB= makeCameraResult(
 					1, cam2Pos, now, makeObservation(palmTruth, faceCam2, 0.9f, eHandSide::Left, 0.1f, 0.f));
 
 				TrackingFrameResult fused;
-				fusion.fuse({&camA, &camB}, now, fused);
+				freshFusion.fuse({&camA, &camB}, now, fused);
 
-				MIKAN_LOG_INFO("test-fusion") << "(b) dominant camera=" << fusion.getDominantCamera(eHandSide::Left);
-				if (fusion.getDominantCamera(eHandSide::Left) != 1)
+				MIKAN_LOG_INFO("test-fusion") << "(b) dominant camera=" << freshFusion.getDominantCamera(eHandSide::Left);
+				if (freshFusion.getDominantCamera(eHandSide::Left) != 1)
 				{
 					MIKAN_LOG_ERROR("test-fusion") << "(b) FAILED: edge-on view should lose to the face-on camera";
 					result= 1;
@@ -987,6 +991,56 @@ static int runApp(int argc, char** argv)
 				{
 					MIKAN_LOG_ERROR("test-fusion")
 						<< "(m) FAILED: a mismatched pairing must be vetoed by the reprojection residual";
+					result= 1;
+				}
+			}
+
+			// (n) Articulation-source hysteresis (non-triangulated path): the
+			// incumbent camera keeps supplying angles until a challenger beats
+			// its weight decisively for several consecutive fuses - weight noise
+			// alone must not flip the source
+			{
+				HandFusion selFusion;
+				selFusion.configure(fusionConfig);
+
+				auto fuseStep= [&](int step, float presenceA, float presenceB, TrackingFrameResult& outFused) {
+					const double stepTime= now + step * 33.0;
+					const auto camA= makeCameraResult(
+						0, cam1Pos, stepTime,
+						makeObservation(palmTruth, faceUpToCam1, presenceA, eHandSide::Left, 0.1f, 0.5f));
+					const auto camB= makeCameraResult(
+						1, cam2Pos, stepTime,
+						makeObservation(palmTruth, faceUpToCam1, presenceB, eHandSide::Left, 0.1f, 0.9f));
+					selFusion.fuse({&camA, &camB}, stepTime, outFused);
+				};
+
+				TrackingFrameResult fused;
+				// Establish camera A as the incumbent
+				for (int step= 0; step < 3; ++step)
+					fuseStep(step, 0.9f, 0.7f, fused);
+				const float bendIncumbent= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
+
+				// Challenger decisively ahead (incumbent presence stays at the
+				// candidate threshold so it isn't dropped outright): the
+				// incumbent must survive the first kArticulationSwitchFrames-1
+				// fuses...
+				float bendHolding= -1.f;
+				for (int step= 3; step < 3 + 4; ++step)
+				{
+					fuseStep(step, 0.5f, 0.99f, fused);
+					bendHolding= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
+				}
+				// ...and lose the job on the 5th
+				fuseStep(7, 0.5f, 0.99f, fused);
+				const float bendSwitched= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
+
+				MIKAN_LOG_INFO("test-fusion") << "(n) articulation selection: incumbent bend=" << bendIncumbent
+					<< " holding bend=" << bendHolding << " switched bend=" << bendSwitched;
+				if (fabsf(bendIncumbent - 0.5f) > 1e-6f || fabsf(bendHolding - 0.5f) > 1e-6f ||
+					fabsf(bendSwitched - 0.9f) > 1e-6f)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(n) FAILED: source must hold through the hysteresis window, then switch";
 					result= 1;
 				}
 			}
