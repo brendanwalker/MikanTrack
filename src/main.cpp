@@ -87,7 +87,9 @@ static int runApp(int argc, char** argv)
 						cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
 					const cv::aruco::CharucoBoard board(cv::Size(11, 8), 0.016f, 0.012f, dictionary);
 					cv::Mat boardImage;
-					board.generateImage(cv::Size(1100, 800), boardImage, 40, 1);
+					// Generous margin: step 6 shifts the board 150px and detection
+					// requires the ENTIRE board visible (no partial captures)
+					board.generateImage(cv::Size(1100, 800), boardImage, 180, 1);
 
 					MonoLensDistortionCalibrator boardCalibrator(1100, 800, 11, 8, 16.f, 12.f,
 																 eCharucoDictionaryType::DICT_6X6, 12);

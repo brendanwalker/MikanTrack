@@ -85,9 +85,13 @@ CalibrationPatternFinder_Charuco::~CalibrationPatternFinder_Charuco() { delete m
 bool CalibrationPatternFinder_Charuco::findNewCalibrationPattern(const float minSeperationDist)
 {
 	const int cornerCount= (m_markerData->cols - 1) * (m_markerData->rows - 1);
-	// Accept partial board detections with at least half of the corners visible
-	// (computeMonoLensCameraCalibration needs at least 6 point correspondences per sample)
-	const int minCornerCount= int_max(cornerCount / 2, 6);
+	// Require the ENTIRE board: every corner detected. Partial detections
+	// technically calibrate (the solve matches corners by charuco id), but
+	// they are exactly the samples with marginal viewing conditions - edge
+	// clipping, glare, oblique blur - and they were feeding the wild-focal
+	// solves. Full-board-only trades a little capture convenience for
+	// uniformly well-conditioned samples.
+	const int minCornerCount= cornerCount;
 
 	// Clear out the previous images points
 	bool bImagePointsValid= false;
