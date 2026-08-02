@@ -436,6 +436,14 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		"0 = always send. Confidence is on /tracked as the 3rd value;\n"
 		"watch the live values below to pick a threshold.");
 
+	bChanged|= ImGui::SliderFloat("Dropout hold", &osc.holdOnDropoutMs, 0.f, 1000.f, "%.0f ms");
+	ImGui::SetItemTooltip(
+		"After a hand goes untracked (or below min confidence), keep\n"
+		"streaming its last good pose with the confidence decaying to\n"
+		"zero for this long before reporting tracked=0. Bridges brief\n"
+		"2-10 frame losses so the client doesn't slam to its rest-pose\n"
+		"blend and back. 0 = report dropouts immediately.");
+
 	ImGui::Separator();
 	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
 	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: radians on the wire, degrees below");

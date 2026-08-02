@@ -136,14 +136,47 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 	updateSendStats(now);
 }
 
+bool OscStreamer::resolveOutputPose(const HandPose& pose, double frameTimestampMs, float minConfidence,
+									float holdMs, HeldPoseState& ioHeld, HandPose& outPose)
+{
+	// Low-confidence hands are withheld like untracked ones: a client that
+	// holds its last good pose (or blends to a rest pose) looks far better
+	// than one following a jittering estimate.
+	const bool bLive= pose.tracked && pose.confidence >= minConfidence;
+	if (bLive)
+	{
+		ioHeld.valid= true;
+		ioHeld.timestampMs= frameTimestampMs;
+		ioHeld.pose= pose;
+		outPose= pose;
+		return true;
+	}
+
+	// Dropout: bridge with the last good pose while its confidence decays
+	// linearly to zero, so brief losses don't slam the client to rest pose
+	// and back. A backwards timestamp (video restart) drops the hold.
+	if (holdMs > 0.f && ioHeld.valid)
+	{
+		const double elapsedMs= frameTimestampMs - ioHeld.timestampMs;
+		if (elapsedMs >= 0.0 && elapsedMs <= (double)holdMs)
+		{
+			outPose= ioHeld.pose;
+			outPose.confidence= ioHeld.pose.confidence * (float)(1.0 - elapsedMs / (double)holdMs);
+			return true;
+		}
+	}
+
+	ioHeld.valid= false;
+	outPose= pose;
+	return false;
+}
+
 void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton)
 {
-	const HandPose& pose= frame.poses[sideIndex];
-
-	// Low-confidence hands are reported untracked and their pose messages are
-	// withheld: a client that holds its last good pose (or blends to a rest
-	// pose) looks far better than one following a jittering estimate.
-	const bool bSendPose= pose.tracked && pose.confidence >= m_config.minConfidence;
+	HandPose pose;
+	const bool bSendPose= resolveOutputPose(frame.poses[sideIndex], frame.timestampMs,
+											m_config.minConfidence, m_config.holdOnDropoutMs,
+											m_heldPose[sideIndex], pose);
 
 	// /mikan/hand/{s}/tracked ,iff tracked(0|1) presence confidence
 	OscMessage& trackedMessage= m_bundle.addMessage(k_handTrackedAddress[sideIndex]);

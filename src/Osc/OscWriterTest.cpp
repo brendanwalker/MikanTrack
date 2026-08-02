@@ -1,6 +1,7 @@
 #include "OscWriterTest.h"
 
 #include "Logger.h"
+#include "OscStreamer.h"
 #include "OscWriter.h"
 
 #include <cstdio>
@@ -186,6 +187,63 @@ bool runOscWriterSelfTest()
 		bundle.addMessage("/b").addFloat(0.5f);
 		allPassed&= checkBytes("two-message bundle after clear()",
 							   bundle.encode(), k_expectedTwoMessageBundle, sizeof(k_expectedTwoMessageBundle));
+	}
+
+	// -- Dropout hold-and-decay (OscStreamer::resolveOutputPose) --------------
+	{
+		bool holdPassed= true;
+
+		HandPose live;
+		live.tracked= true;
+		live.presence= 0.9f;
+		live.confidence= 0.8f;
+		live.palmPositionWorld= glm::vec3(0.1f, 0.2f, 0.3f);
+		live.hasWorldPose= true;
+
+		HandPose lost; // untracked default
+
+		OscStreamer::HeldPoseState held;
+		HandPose out;
+
+		// live pose passes through and arms the hold
+		holdPassed&= OscStreamer::resolveOutputPose(live, 1000.0, 0.f, 250.f, held, out);
+		holdPassed&= out.confidence == 0.8f;
+
+		// dropout at +100ms: held pose, confidence decayed by 100/250
+		holdPassed&= OscStreamer::resolveOutputPose(lost, 1100.0, 0.f, 250.f, held, out);
+		holdPassed&= fabsf(out.confidence - 0.8f * (1.f - 100.f / 250.f)) < 1e-4f;
+		holdPassed&= out.palmPositionWorld == live.palmPositionWorld;
+
+		// still down at +250ms: last held frame (confidence ~0)
+		holdPassed&= OscStreamer::resolveOutputPose(lost, 1250.0, 0.f, 250.f, held, out);
+		holdPassed&= out.confidence < 1e-4f;
+
+		// past the window: untracked, hold disarmed
+		holdPassed&= !OscStreamer::resolveOutputPose(lost, 1251.0, 0.f, 250.f, held, out);
+		holdPassed&= !held.valid;
+
+		// reacquisition re-arms; a low-confidence pose gates like a dropout
+		holdPassed&= OscStreamer::resolveOutputPose(live, 2000.0, 0.f, 250.f, held, out);
+		HandPose lowConfidence= live;
+		lowConfidence.confidence= 0.1f;
+		holdPassed&= OscStreamer::resolveOutputPose(lowConfidence, 2100.0, 0.5f, 250.f, held, out);
+		holdPassed&= out.confidence > 0.f && out.confidence < 0.8f;
+
+		// holdMs=0 reports the dropout immediately (legacy behavior)
+		OscStreamer::HeldPoseState heldOff;
+		holdPassed&= OscStreamer::resolveOutputPose(live, 3000.0, 0.f, 0.f, heldOff, out);
+		holdPassed&= !OscStreamer::resolveOutputPose(lost, 3016.0, 0.f, 0.f, heldOff, out);
+
+		// timestamp regression (video restart) drops the hold
+		OscStreamer::HeldPoseState heldRegress;
+		holdPassed&= OscStreamer::resolveOutputPose(live, 4000.0, 0.f, 250.f, heldRegress, out);
+		holdPassed&= !OscStreamer::resolveOutputPose(lost, 3900.0, 0.f, 250.f, heldRegress, out);
+
+		if (holdPassed)
+			MIKAN_LOG_INFO("runOscWriterSelfTest") << "dropout hold-and-decay passed";
+		else
+			MIKAN_LOG_ERROR("runOscWriterSelfTest") << "dropout hold-and-decay FAILED";
+		allPassed&= holdPassed;
 	}
 
 	if (allPassed)

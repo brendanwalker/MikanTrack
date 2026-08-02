@@ -1,6 +1,7 @@
 #pragma once
 
 #include "OscWriter.h"
+#include "TrackingTypes.h"
 #include "UdpSocket.h"
 
 #include <atomic>
@@ -23,6 +24,12 @@ struct OscStreamerConfig
 	// blends to a rest pose instead of following a jittering estimate.
 	// 0 = always send.
 	float minConfidence= 0.f;
+	// Dropout grace window: after a hand goes untracked (or below
+	// minConfidence), keep sending its last good pose with the confidence
+	// decaying linearly to zero over this window, and only then report
+	// tracked=0. Bridges 2-10 frame dropouts so clients don't slam to their
+	// rest-pose blend and back. 0 = report the dropout immediately.
+	float holdOnDropoutMs= 250.f;
 	std::string appVersion= "MikanMediaPipe";
 };
 
@@ -72,6 +79,21 @@ public:
 	/// UI thread.
 	float getMessagesPerSecond() const { return m_messagesPerSecond.load(std::memory_order_relaxed); }
 
+	// -- Dropout hold logic (pure; public for the self test) -----
+	struct HeldPoseState
+	{
+		bool valid= false;
+		double timestampMs= 0.0;
+		HandPose pose;
+	};
+	/// Decides what (if anything) to send for a hand this frame. A live,
+	/// confident pose passes through and refreshes ioHeld; on a dropout the
+	/// held pose bridges up to holdMs (confidence decaying linearly to 0);
+	/// past the window (or on a timestamp regression) the hold is dropped.
+	/// @returns true when outPose should be sent as tracked
+	static bool resolveOutputPose(const HandPose& pose, double frameTimestampMs, float minConfidence,
+								  float holdMs, HeldPoseState& ioHeld, HandPose& outPose);
+
 private:
 	using ClockTimePoint= std::chrono::steady_clock::time_point;
 
@@ -87,6 +109,9 @@ private:
 	// Per-frame encode state (reused to stay allocation-light)
 	OscBundle m_bundle;
 	std::vector<uint8_t> m_scratchBuffer;
+
+	// Dropout hold state per side
+	HeldPoseState m_heldPose[2];
 
 	// Rate decimation (frame timestamps) and info-message throttling (wall clock)
 	double m_lastSendTimestampMs= -1.0;

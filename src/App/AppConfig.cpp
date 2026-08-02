@@ -306,6 +306,7 @@ bool AppConfig::load()
 		osc.targetPort= os.value("port", 8000);
 		osc.maxRateHz= os.value("maxRateHz", 60);
 		osc.minConfidence= os.value("minConfidence", 0.f);
+		osc.holdOnDropoutMs= os.value("holdOnDropoutMs", 250.f);
 	}
 	catch (const std::exception& e)
 	{
@@ -377,6 +378,7 @@ std::string AppConfig::toJsonString() const
 		{"port", osc.targetPort},
 		{"maxRateHz", osc.maxRateHz},
 		{"minConfidence", osc.minConfidence},
+		{"holdOnDropoutMs", osc.holdOnDropoutMs},
 	};
 
 	return j.dump(2);

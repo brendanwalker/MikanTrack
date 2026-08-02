@@ -90,6 +90,10 @@ struct OscConfig
 	// Withhold a hand's pose messages (and report it untracked) below this
 	// fused confidence, so clients can hold/blend instead of jittering
 	float minConfidence= 0.f;
+	// Keep sending the last good pose (confidence decaying to zero) for this
+	// long after a dropout before reporting tracked=0 - bridges brief losses
+	// so clients don't slam to their rest-pose blend. 0 = report immediately.
+	float holdOnDropoutMs= 250.f;
 };
 
 // Everything specific to one physical camera. Each camera calibrates

@@ -337,6 +337,7 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.targetPort= (uint16_t)m_config->osc.targetPort;
 		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
 		oscConfig.minConfidence= m_config->osc.minConfidence;
+		oscConfig.holdOnDropoutMs= m_config->osc.holdOnDropoutMs;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
