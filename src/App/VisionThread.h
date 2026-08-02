@@ -98,9 +98,10 @@ public:
 		std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
 		bool bCaptured[2]= {false, false};
 	};
-	// Fetches a completed capture (one entry per camera, in camera order);
+	// Fetches a completed capture (one entry per camera, in camera order,
+	// plus the stereo-triangulated fused capture when it was available);
 	// returns false if none is pending
-	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures);
+	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused);
 
 	// Diagnostic dump (F9): the vision thread writes its rolling state history,
 	// the current camera frames (raw + annotated PNGs) and the live config to
@@ -192,6 +193,7 @@ private:
 	std::atomic_bool m_bRestPoseCaptureRequested{false};
 	std::mutex m_restPoseMutex;
 	std::vector<RestPoseCapture> m_capturedRestPose;
+	RestPoseCapture m_capturedFusedRest;
 	bool m_bRestPoseReady= false;
 
 	// Diagnostic dump: history lives on the vision thread; the request path

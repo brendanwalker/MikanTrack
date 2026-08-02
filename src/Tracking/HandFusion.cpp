@@ -6,6 +6,7 @@
 #include "glm/geometric.hpp"
 #include "glm/gtc/quaternion.hpp"
 
+#include "HandPoseModel.h"
 #include "Logger.h"
 
 // Temporal side-continuity: full-strength attraction within this distance of
@@ -419,12 +420,194 @@ void HandFusion::updateStereoScale(const HandCluster& cluster)
 	m_bStereoScaleFresh= true;
 }
 
+// Stereo landmark triangulation. Uses the best two observations from
+// DIFFERENT cameras: each 2D landmark back-projects to a world ray through
+// its camera's optical center, and the two rays' closest-point midpoint is
+// the world landmark. The network's monocular depth (modelPoints z / the PnP
+// translation) is never consulted - which is the point: that depth is the
+// view-dependent, noisy part of the per-camera estimate (measured live:
+// 15-25cm error along the view ray, 25-41 deg articulation disagreement).
+//
+// The reprojection residual doubles as a correspondence test: two DIFFERENT
+// physical hands wrongly merged into one cluster triangulate to points that
+// project nowhere near the observed pixels, so a large RMS vetoes the pair.
+bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand,
+									HandPose& outPose)
+{
+	// Best two candidates from distinct cameras with usable image geometry
+	const HandCandidate* obsA= nullptr;
+	const HandCandidate* obsB= nullptr;
+	for (const HandCandidate& candidate : cluster.candidates)
+	{
+		if (!candidate.camera->hasIntrinsics || !candidate.hand->tracked)
+			continue;
+		if (obsA == nullptr || candidate.weight > obsA->weight)
+		{
+			if (obsA != nullptr && obsA->camera->cameraIndex != candidate.camera->cameraIndex)
+				obsB= obsA;
+			obsA= &candidate;
+		}
+		else if (candidate.camera->cameraIndex != obsA->camera->cameraIndex &&
+				 (obsB == nullptr || candidate.weight > obsB->weight))
+		{
+			obsB= &candidate;
+		}
+	}
+	if (obsA == nullptr || obsB == nullptr)
+		return false;
+
+	struct View
+	{
+		const HandCandidate* obs;
+		glm::vec3 cameraPos;
+		glm::mat3 rotation;        // camera -> world
+		glm::dmat4 cameraFromWorld;
+	};
+	std::array<View, 2> views;
+	for (int v= 0; v < 2; ++v)
+	{
+		const HandCandidate* obs= v == 0 ? obsA : obsB;
+		views[v].obs= obs;
+		views[v].cameraPos= glm::vec3(obs->camera->markerFromCamera[3]);
+		views[v].rotation= glm::mat3(glm::mat4(obs->camera->markerFromCamera));
+		views[v].cameraFromWorld= glm::inverse(obs->camera->markerFromCamera);
+	}
+
+	std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
+	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+	{
+		glm::vec3 rayDir[2];
+		for (int v= 0; v < 2; ++v)
+		{
+			const CameraFrameResult* camera= views[v].obs->camera;
+			const glm::vec3& px= views[v].obs->hand->imagePoints[i];
+			// Undistorted pinhole back-projection, OpenCV camera convention
+			const glm::vec3 dirCamera((px.x - camera->cx) / camera->fx,
+									  (px.y - camera->cy) / camera->fy, 1.f);
+			rayDir[v]= glm::normalize(views[v].rotation * dirCamera);
+		}
+
+		// Closest-point parameters along the two rays (midpoint method)
+		const glm::vec3 baseline= views[1].cameraPos - views[0].cameraPos;
+		const float dotAB= glm::dot(rayDir[0], rayDir[1]);
+		const float denominator= 1.f - dotAB * dotAB;
+		if (denominator < 1e-6f || fabsf(dotAB) > kMinRayAngleCos)
+			return false; // near-parallel rays: no depth information
+
+		const float tA= (glm::dot(rayDir[0], baseline) - dotAB * glm::dot(rayDir[1], baseline)) / denominator;
+		const float tB= (dotAB * glm::dot(rayDir[0], baseline) - glm::dot(rayDir[1], baseline)) / denominator;
+		if (tA <= 0.f || tB <= 0.f)
+			return false; // intersection behind a camera: bogus correspondence
+
+		triPoints[i]= 0.5f * (views[0].cameraPos + rayDir[0] * tA + views[1].cameraPos + rayDir[1] * tB);
+	}
+
+	// Reprojection residual across both views - the correspondence test
+	float residualSquaredSum= 0.f;
+	float residualMax= 0.f;
+	for (const View& view : views)
+	{
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+		{
+			const glm::dvec4 camPoint= view.cameraFromWorld * glm::dvec4(glm::dvec3(triPoints[i]), 1.0);
+			if (camPoint.z < 1e-3)
+				return false;
+
+			const CameraFrameResult* camera= view.obs->camera;
+			const glm::vec2 projected(
+				(float)(camera->fx * camPoint.x / camPoint.z + camera->cx),
+				(float)(camera->fy * camPoint.y / camPoint.z + camera->cy));
+			const float residual= glm::length(projected - glm::vec2(view.obs->hand->imagePoints[i]));
+			residualSquaredSum+= residual * residual;
+			residualMax= std::max(residualMax, residual);
+		}
+	}
+	const float residualRms= sqrtf(residualSquaredSum / (2.f * HAND_LANDMARK_COUNT));
+	cluster.triResidualRmsPx= residualRms;
+	cluster.triResidualMaxPx= residualMax;
+
+	if (residualRms > m_config.triangulationMaxResidualPx)
+	{
+		cluster.triVetoed= true;
+		return false;
+	}
+
+	// Pose from the triangulated geometry. The skeleton stays the best
+	// candidate's (metric via the calibrated hand scale, and the wire
+	// contract wants a stable skeleton) - only the palm frame and the
+	// angles come from the stereo landmarks.
+	const glm::mat4 palmFrame= HandPoseModel::computePalmFrame(triPoints, side);
+	outPose.palmPositionWorld= glm::vec3(palmFrame[3]);
+	outPose.palmOrientationWorld= glm::quat_cast(glm::mat3(palmFrame));
+	outPose.hasWorldPose= true;
+
+	std::array<FingerAngles, FINGER_COUNT> rawAngles{};
+	HandPoseModel::computeFingerAngles(triPoints, side, outPose.skeleton.neutralDirInPalm, rawAngles);
+	m_rawTriAngles[(int)side]= rawAngles;
+	m_bRawTriAnglesValid[(int)side]= true;
+
+	// Fused rest offset (captured from a triangulated rest pose): NOT the
+	// per-camera offsets - those correct each camera's own model bias, which
+	// stereo geometry doesn't have
+	if (m_config.bHasFusedRestAngles[(int)side])
+	{
+		const std::array<FingerAngles, FINGER_COUNT>& rest= m_config.fusedRestAngles[(int)side];
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			rawAngles[finger].lateral-= rest[finger].lateral;
+			rawAngles[finger].proximal-= rest[finger].proximal;
+			rawAngles[finger].intermediate-= rest[finger].intermediate;
+			rawAngles[finger].distal-= rest[finger].distal;
+		}
+	}
+	outPose.fingers= rawAngles;
+
+	float maxPresence= 0.f;
+	for (const HandCandidate& candidate : cluster.candidates)
+		maxPresence= std::max(maxPresence, candidate.pose->presence);
+	outPose.presence= maxPresence;
+	outPose.stereoTriangulated= true;
+
+	// Overlays/debug see the triangulated geometry
+	outHand.worldPoints= triPoints;
+	outHand.hasWorldSpace= true;
+
+	// The triangulated wrist->middle-MCP bone IS the true hand scale; the
+	// best candidate's world bone carries the currently-assumed scale (the
+	// PnP object model is rescaled to it), so the ratio is the correction
+	if (outHand.tracked)
+	{
+		const glm::vec3& wrist= triPoints[(int)eHandLandmark::WRIST];
+		const glm::vec3& middleMcp= triPoints[(int)eHandLandmark::MIDDLE_MCP];
+		const float triBone= glm::length(middleMcp - wrist);
+
+		const TrackedHand* bestHand= obsA->weight >= obsB->weight ? obsA->hand : obsB->hand;
+		if (bestHand->hasWorldSpace)
+		{
+			const float assumedBone= glm::length(
+				bestHand->worldPoints[(int)eHandLandmark::MIDDLE_MCP] -
+				bestHand->worldPoints[(int)eHandLandmark::WRIST]);
+			if (assumedBone > 1e-4f && std::isfinite(triBone))
+			{
+				m_stereoScaleCorrection=
+					std::clamp(triBone / assumedBone, kScaleCorrectionMin, kScaleCorrectionMax);
+				m_bStereoScaleFresh= true;
+			}
+		}
+	}
+
+	cluster.triangulated= true;
+	return true;
+}
+
 void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, double nowTimestampMs,
 					  TrackingFrameResult& outFused)
 {
 	outFused= TrackingFrameResult();
 	outFused.timestampMs= nowTimestampMs;
 	m_bStereoScaleFresh= false;
+	m_bRawTriAnglesValid[0]= false;
+	m_bRawTriAnglesValid[1]= false;
 
 	// Carry frame bookkeeping from the freshest contributing camera
 	const CameraFrameResult* freshest= nullptr;
@@ -572,6 +755,17 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		m_lastDiagnostics.clusters[0].assignedSide= (int)side;
 	}
 
+	// Mirror triangulation outcomes into the diagnostics (fuseCluster runs
+	// after the diagnostics snapshot above; cluster order is preserved)
+	for (size_t i= 0; i < clusters.size() && i < m_lastDiagnostics.clusters.size(); ++i)
+	{
+		FusionDiagnostics::Cluster& diagCluster= m_lastDiagnostics.clusters[i];
+		diagCluster.triangulated= clusters[i].triangulated;
+		diagCluster.triVetoed= clusters[i].triVetoed;
+		diagCluster.triResidualRmsPx= clusters[i].triResidualRmsPx;
+		diagCluster.triResidualMaxPx= clusters[i].triResidualMaxPx;
+	}
+
 	// Track the solo-side incumbent for the hysteresis above
 	{
 		const bool bLeftTracked= outFused.poses[0].tracked;
@@ -619,9 +813,31 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 		outPose.confidence= std::max(outPose.confidence, candidate.confidence);
 	outPose.confidence= std::clamp(outPose.confidence, 0.f, 1.f);
 
-	// Weighted blend of the palm transform + finger angles across cameras.
-	// Poses/angles compose - unlike raw landmark blending, disagreeing
-	// articulation degrades gracefully instead of distorting bones.
+	// Primary path: triangulate the 21 landmarks across two cameras and
+	// extract the pose from real stereo geometry - no monocular depth, no
+	// cross-camera blending of disagreeing articulation.
+	if (m_config.triangulationEnabled && candidates.size() >= 2 &&
+		triangulateCluster(side, cluster, outHand, outPose))
+	{
+		outPose.tracked= true;
+		outPose.hasWorldPose= true;
+		return;
+	}
+
+	// A residual veto means the cluster's observations are probably two
+	// DIFFERENT physical hands - blending them would manufacture a hand
+	// between them. Keep the best single observation instead.
+	if (cluster.triVetoed)
+	{
+		outPose.tracked= true;
+		outPose.hasWorldPose= true;
+		return;
+	}
+
+	// Fallback: weighted blend of the palm transform + finger angles across
+	// cameras. Poses/angles compose - unlike raw landmark blending,
+	// disagreeing articulation degrades gracefully instead of distorting
+	// bones.
 	if (candidates.size() >= 2)
 	{
 		float weightSum= 0.f;

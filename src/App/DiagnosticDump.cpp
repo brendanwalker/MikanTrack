@@ -63,6 +63,7 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"visibility", hand.visibility},
 		{"confidence", hand.confidence},
 		{"fkReprojectionPx", hand.fkReprojectionPx},
+		{"stereoTriangulated", hand.stereoTriangulated},
 		{"hasWorldPose", hand.hasWorldPose},
 		{"palmPositionWorld", vec3ToJson(hand.palmPositionWorld)},
 		{"palmOrientationWorld", quatToJson(hand.palmOrientationWorld)},
@@ -107,6 +108,10 @@ static json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
 			{"palmWorld", vec3ToJson(cluster.palmWorld)},
 			{"bestWeight", cluster.bestWeight},
 			{"assignedSide", sideName(cluster.assignedSide)},
+			{"triangulated", cluster.triangulated},
+			{"triVetoed", cluster.triVetoed},
+			{"triResidualRmsPx", cluster.triResidualRmsPx},
+			{"triResidualMaxPx", cluster.triResidualMaxPx},
 			{"affinity", affinity},
 			{"observations", observations},
 		});
@@ -135,6 +140,7 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.visibility= pose.visibility;
 	outHand.confidence= pose.confidence;
 	outHand.fkReprojectionPx= pose.fkReprojectionPx;
+	outHand.stereoTriangulated= pose.stereoTriangulated;
 	outHand.hasWorldPose= pose.hasWorldPose;
 	outHand.palmPositionWorld= pose.hasWorldPose ? pose.palmPositionWorld : pose.palmPositionCamera;
 	outHand.palmOrientationWorld= pose.hasWorldPose ? pose.palmOrientationWorld : pose.palmOrientationCamera;
@@ -263,6 +269,7 @@ static json poseSnapshotToJson(const HandPose& pose)
 		{"confidence", pose.confidence},
 		{"fingers", fingersToJson(pose.fingers)},
 		{"fkReprojectionPx", pose.fkReprojectionPx},
+		{"stereoTriangulated", pose.stereoTriangulated},
 	};
 	if (pose.hasCameraPose)
 	{

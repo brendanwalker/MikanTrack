@@ -777,6 +777,187 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (m) Stereo landmark triangulation: two cameras with full projective
+			// geometry observe one synthetic hand. The fused pose must come from
+			// the triangulated landmarks (exact recovery), NOT from the
+			// (deliberately corrupted) per-camera monocular poses. A second run
+			// feeds one camera a DIFFERENT physical hand's pixels - the
+			// reprojection residual must veto the pairing.
+			{
+				// Authored RIGHT-hand skeleton (same conventions as --test-handpose;
+				// middle finger base exactly on palm +X)
+				HandSkeleton skeleton;
+				const float baseY[FINGER_COUNT]= {0.045f, 0.03f, 0.f, -0.01f, -0.03f};
+				const float baseX[FINGER_COUNT]= {-0.01f, 0.035f, 0.04f, 0.035f, 0.03f};
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					skeleton.baseInPalm[finger]= glm::vec3(baseX[finger], baseY[finger], 0.f);
+					skeleton.phalanxLengths[finger]= {0.045f, 0.027f, 0.022f};
+				}
+				skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
+
+				std::array<FingerAngles, FINGER_COUNT> anglesTruth{};
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					anglesTruth[finger].lateral= 0.04f * (float)(finger - 2);
+					anglesTruth[finger].proximal= 0.25f + 0.1f * (float)finger;
+					anglesTruth[finger].intermediate= 0.35f;
+					anglesTruth[finger].distal= 0.15f;
+				}
+
+				// World-space hand at palmTruth (identity orientation: palm +Z up,
+				// facing the overhead camera)
+				auto buildWorldHand= [&](const glm::vec3& palmCenter,
+										 std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints) {
+					glm::mat4 palmTransform(1.f);
+					palmTransform[3]= glm::vec4(palmCenter, 1.f);
+					std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+					HandPoseModel::buildFingerJoints(palmTransform, skeleton, anglesTruth, joints);
+					const glm::vec3 middleBase= skeleton.baseInPalm[(int)eFinger::Middle];
+					outPoints[(int)eHandLandmark::WRIST]= palmCenter + glm::vec3(-middleBase.x, 0.f, 0.f);
+					for (int finger= 0; finger < FINGER_COUNT; ++finger)
+						for (int joint= 0; joint < 4; ++joint)
+							outPoints[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+				};
+
+				// OpenCV-convention camera looking at a target (markerFromCamera
+				// columns = camera axes in world; +Z toward the scene)
+				auto makeLookAtCamera= [](const glm::vec3& cameraPos, const glm::vec3& target) {
+					const glm::vec3 z= glm::normalize(target - cameraPos);
+					const glm::vec3 x= glm::normalize(glm::cross(glm::vec3(0.f, 1.f, 0.f), z));
+					const glm::vec3 y= glm::cross(z, x);
+					glm::dmat4 markerFromCamera(1.0);
+					markerFromCamera[0]= glm::dvec4(x, 0.0);
+					markerFromCamera[1]= glm::dvec4(y, 0.0);
+					markerFromCamera[2]= glm::dvec4(z, 0.0);
+					markerFromCamera[3]= glm::dvec4(cameraPos, 1.0);
+					return markerFromCamera;
+				};
+
+				const float fx= 600.f, fy= 600.f, cx= 640.f, cy= 360.f;
+				auto projectTo= [&](const glm::dmat4& markerFromCamera, const glm::vec3& world) {
+					const glm::dvec4 camPoint= glm::inverse(markerFromCamera) * glm::dvec4(glm::dvec3(world), 1.0);
+					return glm::vec3((float)(fx * camPoint.x / camPoint.z + cx),
+									 (float)(fy * camPoint.y / camPoint.z + cy), 0.f);
+				};
+
+				// A camera observation: real image points (projected from
+				// worldHand), but a corrupted monocular pose - 3cm depth error
+				// along the view ray and +0.2 rad on every proximal angle. If any
+				// of that corruption reaches the fused output, the stereo path
+				// didn't run.
+				auto makeStereoResult= [&](int cameraIndex, const glm::vec3& cameraPos,
+										   const std::array<glm::vec3, HAND_LANDMARK_COUNT>& imageHand,
+										   const std::array<glm::vec3, HAND_LANDMARK_COUNT>& worldHand,
+										   const glm::vec3& palmCenter) {
+					const glm::dmat4 markerFromCamera= makeLookAtCamera(cameraPos, palmCenter);
+
+					TrackingFrameResult frame;
+					TrackedHand& hand= frame.hands[(int)eHandSide::Right];
+					hand.tracked= true;
+					hand.side= eHandSide::Right;
+					hand.presence= 0.9f;
+					hand.handednessScore= 0.9f;
+					hand.rightProb= 0.9f;
+					for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+						hand.imagePoints[i]= projectTo(markerFromCamera, imageHand[i]);
+					hand.worldPoints= worldHand; // carries the assumed hand scale
+					hand.hasWorldSpace= true;
+
+					HandPose& pose= frame.poses[(int)eHandSide::Right];
+					pose.tracked= true;
+					pose.side= eHandSide::Right;
+					pose.presence= 0.9f;
+					pose.hasWorldPose= true;
+					pose.palmPositionWorld= palmCenter + glm::normalize(palmCenter - cameraPos) * 0.03f;
+					pose.palmOrientationWorld= glm::quat(1.f, 0.f, 0.f, 0.f);
+					pose.fingers= anglesTruth;
+					for (int finger= 0; finger < FINGER_COUNT; ++finger)
+						pose.fingers[finger].proximal+= 0.2f; // monocular articulation error
+					pose.skeleton= skeleton;
+
+					CameraFrameResult camera;
+					camera.cameraIndex= cameraIndex;
+					camera.valid= true;
+					camera.timestampMs= now;
+					camera.hasExtrinsics= true;
+					camera.markerFromCamera= markerFromCamera;
+					camera.hasIntrinsics= true;
+					camera.fx= fx;
+					camera.fy= fy;
+					camera.cx= cx;
+					camera.cy= cy;
+					camera.result= frame;
+					return camera;
+				};
+
+				std::array<glm::vec3, HAND_LANDMARK_COUNT> worldHand;
+				buildWorldHand(palmTruth, worldHand);
+				const glm::vec3 camAPos= palmTruth + glm::vec3(0.f, 0.f, 0.8f);
+				const glm::vec3 camBPos= palmTruth + glm::vec3(0.f, -0.55f, 0.4f);
+
+				HandFusion triFusion;
+				triFusion.configure(fusionConfig); // triangulation on by default
+
+				const auto camA= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
+				const auto camB= makeStereoResult(1, camBPos, worldHand, worldHand, palmTruth);
+				TrackingFrameResult fused;
+				triFusion.fuse({&camA, &camB}, now, fused);
+
+				const HandPose& pose= fused.poses[(int)eHandSide::Right];
+				float maxAngleError= 0.f;
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					maxAngleError= std::max(maxAngleError, fabsf(pose.fingers[finger].lateral - anglesTruth[finger].lateral));
+					maxAngleError= std::max(maxAngleError, fabsf(pose.fingers[finger].proximal - anglesTruth[finger].proximal));
+					maxAngleError= std::max(maxAngleError, fabsf(pose.fingers[finger].intermediate - anglesTruth[finger].intermediate));
+					maxAngleError= std::max(maxAngleError, fabsf(pose.fingers[finger].distal - anglesTruth[finger].distal));
+				}
+				const float palmError= glm::length(pose.palmPositionWorld - palmTruth);
+				const FusionDiagnostics& diagnostics= triFusion.getLastDiagnostics();
+				const bool bDiagTriangulated=
+					!diagnostics.clusters.empty() && diagnostics.clusters[0].triangulated;
+				MIKAN_LOG_INFO("test-fusion") << "(m) triangulation: stereoTriangulated=" << pose.stereoTriangulated
+					<< " palm err mm=" << palmError * 1000.f << " max angle err rad=" << maxAngleError
+					<< " residual px=" << (diagnostics.clusters.empty() ? -1.f : diagnostics.clusters[0].triResidualRmsPx);
+				// The corrupted mono poses had 30mm palm error and +0.2 rad on the
+				// proximals - exact recovery proves the stereo geometry won
+				if (!pose.tracked || !pose.stereoTriangulated || !bDiagTriangulated ||
+					palmError > 0.002f || maxAngleError > 0.02f)
+				{
+					MIKAN_LOG_ERROR("test-fusion") << "(m) FAILED: triangulated pose must recover the true hand";
+					result= 1;
+				}
+
+				// Mismatched pairing: camera B's pixels come from a DIFFERENT hand
+				// 15cm away, while both monocular poses still cluster together.
+				// The reprojection residual must veto, and the output falls back
+				// to the best single observation (still tracked).
+				std::array<glm::vec3, HAND_LANDMARK_COUNT> otherHand;
+				buildWorldHand(palmTruth + glm::vec3(0.15f, 0.f, 0.f), otherHand);
+
+				HandFusion vetoFusion;
+				vetoFusion.configure(fusionConfig);
+				const auto camBWrong= makeStereoResult(1, camBPos, otherHand, worldHand, palmTruth);
+				TrackingFrameResult vetoFused;
+				vetoFusion.fuse({&camA, &camBWrong}, now, vetoFused);
+
+				const HandPose& vetoPose= vetoFused.poses[(int)eHandSide::Right];
+				const FusionDiagnostics& vetoDiagnostics= vetoFusion.getLastDiagnostics();
+				const bool bVetoed=
+					!vetoDiagnostics.clusters.empty() && vetoDiagnostics.clusters[0].triVetoed;
+				MIKAN_LOG_INFO("test-fusion") << "(m) veto: tracked=" << vetoPose.tracked
+					<< " stereoTriangulated=" << vetoPose.stereoTriangulated << " vetoed=" << bVetoed
+					<< " residual px="
+					<< (vetoDiagnostics.clusters.empty() ? -1.f : vetoDiagnostics.clusters[0].triResidualRmsPx);
+				if (!vetoPose.tracked || vetoPose.stereoTriangulated || !bVetoed)
+				{
+					MIKAN_LOG_ERROR("test-fusion")
+						<< "(m) FAILED: a mismatched pairing must be vetoed by the reprojection residual";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

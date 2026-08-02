@@ -191,6 +191,11 @@ struct HandPose
 	// 0 when not evaluated (e.g. after fusion, which has no single camera).
 	float fkReprojectionPx= 0.f;
 
+	// True when this pose came from cross-camera triangulation of the 2D
+	// landmarks (stereo geometry) rather than a single camera's monocular
+	// depth estimate - the network's depth output is not in the loop at all
+	bool stereoTriangulated= false;
+
 	bool hasCameraPose= false;
 	glm::vec3 palmPositionCamera{0.f}; // OpenCV camera convention, meters
 	glm::quat palmOrientationCamera{1.f, 0.f, 0.f, 0.f};

@@ -107,13 +107,14 @@ bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
 	return true;
 }
 
-bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures)
+bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused)
 {
 	std::lock_guard<std::mutex> lock(m_restPoseMutex);
 	if (!m_bRestPoseReady)
 		return false;
 
 	outCaptures= m_capturedRestPose;
+	outFused= m_capturedFusedRest;
 	m_bRestPoseReady= false;
 	return true;
 }
@@ -305,6 +306,13 @@ void VisionThread::refreshConfigOnThread()
 	fusionConfig.palmBeta= m_config->tracking.palmBeta;
 	fusionConfig.angleMinCutoff= m_config->tracking.angleMinCutoff;
 	fusionConfig.angleBeta= m_config->tracking.angleBeta;
+	fusionConfig.triangulationEnabled= m_config->fusion.triangulationEnabled;
+	fusionConfig.triangulationMaxResidualPx= m_config->fusion.triangulationMaxResidualPx;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		fusionConfig.bHasFusedRestAngles[sideIndex]= m_config->fusedRestAngles.present[sideIndex];
+		fusionConfig.fusedRestAngles[sideIndex]= m_config->fusedRestAngles.angles[sideIndex];
+	}
 	m_fusion.configure(fusionConfig);
 
 	// OSC
@@ -474,6 +482,16 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 	context.lastResult.timestampMs= timestampMs;
 	context.lastResult.hasExtrinsics= profile.extrinsics.present;
 	context.lastResult.markerFromCamera= profile.extrinsics.markerFromCamera;
+	// Undistorted pinhole for landmark triangulation (imagePoints space)
+	context.lastResult.hasIntrinsics= profile.intrinsics.present;
+	if (profile.intrinsics.present)
+	{
+		const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
+		context.lastResult.fx= (float)cameraMatrix.x0;
+		context.lastResult.fy= (float)cameraMatrix.y1;
+		context.lastResult.cx= (float)cameraMatrix.z0;
+		context.lastResult.cy= (float)cameraMatrix.z1;
+	}
 	context.lastResult.result= result;
 
 	// Publish this camera's preview (latest-wins)
@@ -627,8 +645,19 @@ void VisionThread::threadLoop()
 				captures.push_back(capture);
 			}
 
+			// The stereo-triangulated path has its own zero reference: the raw
+			// (pre-offset) triangulated angles of the fuse that just ran
+			RestPoseCapture fusedCapture;
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				fusedCapture.bCaptured[sideIndex]=
+					m_fusion.getLastRawTriangulatedAngles((eHandSide)sideIndex,
+														  fusedCapture.angles[sideIndex]);
+			}
+
 			std::lock_guard<std::mutex> lock(m_restPoseMutex);
 			m_capturedRestPose= std::move(captures);
+			m_capturedFusedRest= fusedCapture;
 			m_bRestPoseReady= true;
 		}
 

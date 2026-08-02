@@ -19,9 +19,15 @@ struct CameraFrameResult
 	double timestampMs= 0.0;   // capture timestamp (shared steady_clock base)
 	bool hasExtrinsics= false;
 	// World-from-camera transform (OpenCV camera convention -> Z-up marker
-	// world), as stored in ExtrinsicsConfig. Column 3 is the camera's world
-	// position, which is all fusion needs from it.
+	// world), as stored in ExtrinsicsConfig.
 	glm::dmat4 markerFromCamera{1.0};
+	// Undistorted pinhole intrinsics (the space TrackedHand::imagePoints live
+	// in) - what landmark triangulation needs to turn pixels into world rays
+	bool hasIntrinsics= false;
+	float fx= 0.f;
+	float fy= 0.f;
+	float cx= 0.f;
+	float cy= 0.f;
 	TrackingFrameResult result;
 };
 
@@ -52,6 +58,23 @@ struct HandFusionConfig
 	float palmBeta= 0.1f;
 	float angleMinCutoff= 0.75f;
 	float angleBeta= 0.02f;
+
+	// Stereo landmark triangulation: when two cameras observe the same hand,
+	// triangulate all 21 landmarks from the 2D image points and extract the
+	// pose from the result - the network's (view-dependent, noisy) monocular
+	// depth never enters. Falls back to the per-camera poses when off,
+	// unavailable, or vetoed by the residual gate.
+	bool triangulationEnabled= true;
+	// A triangulated hand whose RMS reprojection residual exceeds this is a
+	// wrong cross-camera pairing (two different physical hands) - reject it
+	float triangulationMaxResidualPx= 25.f;
+
+	// Rest-pose zero for the TRIANGULATED path: raw stereo angles minus these
+	// read zero in the user's captured rest pose. Separate from the
+	// per-camera rest offsets (those fold in each camera's own model bias,
+	// which triangulation does not have).
+	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> fusedRestAngles{};
+	bool bHasFusedRestAngles[2]= {false, false};
 };
 
 // Introspection into the last fuse() call's clustering + side assignment,
@@ -79,6 +102,12 @@ struct FusionDiagnostics
 		// Side-affinity components, indexed [side][0=vote,1=temporal,2=spatial]
 		float affinity[2][3]{};
 		int assignedSide= -1; // -1 = dropped (more clusters than hands)
+
+		// Stereo triangulation outcome for this cluster's fused pose
+		bool triangulated= false;      // pose came from landmark triangulation
+		bool triVetoed= false;         // residual gate rejected the pairing
+		float triResidualRmsPx= 0.f;   // RMS reprojection residual, both views
+		float triResidualMaxPx= 0.f;   // worst single landmark
 	};
 
 	int totalObservations= 0;
@@ -133,6 +162,18 @@ public:
 		return m_bStereoScaleFresh;
 	}
 
+	// Rest-pose capture support: the RAW (pre rest-offset, pre smoothing)
+	// triangulated finger angles from the last fuse() for this side; false
+	// when that side wasn't stereo-triangulated. Fusing thread only.
+	bool getLastRawTriangulatedAngles(eHandSide side,
+									  std::array<FingerAngles, FINGER_COUNT>& outAngles) const
+	{
+		if (!m_bRawTriAnglesValid[(int)side])
+			return false;
+		outAngles= m_rawTriAngles[(int)side];
+		return true;
+	}
+
 	// -- Pure scoring helpers (exposed for the --test-fusion self test) -----
 
 	// Visibility factor in [0.05, 1.05]: how face-on the palm is to the camera
@@ -167,6 +208,12 @@ private:
 		glm::vec3 anchorCameraPos{0.f};  // that candidate's camera position (for ray matching)
 		float anchorSignedVote= 0.f;
 		float bestWeight= 0.f;
+
+		// Triangulation outcome (mirrored into FusionDiagnostics after fusing)
+		bool triangulated= false;
+		bool triVetoed= false;
+		float triResidualRmsPx= 0.f;
+		float triResidualMaxPx= 0.f;
 	};
 
 	// Cost of merging an observation into a cluster (lateral-aware position
@@ -187,6 +234,11 @@ private:
 	// + optional spatial prior
 	AffinityBreakdown sideAffinity(const HandCluster& cluster, eHandSide side) const;
 	void updateStereoScale(const HandCluster& cluster);
+	// Stereo landmark triangulation for a >=2-camera cluster. On success fills
+	// outHand.worldPoints + the pose (palm frame, angles) from the
+	// triangulated geometry and returns true; records the residual (and any
+	// veto) on the cluster either way.
+	bool triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
 	void applySmoothing(TrackingFrameResult& ioFused);
 
@@ -200,6 +252,10 @@ private:
 	glm::quat m_lastFilteredQuat[2]= {glm::quat(1, 0, 0, 0), glm::quat(1, 0, 0, 0)};
 	double m_lastTimestampMs= -1.0;
 	bool m_bSideWasTracked[2]= {false, false};
+
+	// Raw triangulated angles of the last fuse (rest-pose capture source)
+	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_rawTriAngles{};
+	bool m_bRawTriAnglesValid[2]= {false, false};
 
 	// Temporal side-assignment prior: last fused palm position per side
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};

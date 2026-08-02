@@ -84,6 +84,26 @@ static json restAnglesToJson(const RestAnglesConfig& restAngles)
 	return out;
 }
 
+static void restAnglesFromJson(const json& ra, RestAnglesConfig& outRestAngles)
+{
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const char* key= sideIndex == 0 ? "left" : "right";
+		outRestAngles.present[sideIndex]= false;
+		if (!ra.contains(key) || !ra[key].is_array() || ra[key].size() != FINGER_COUNT * 4)
+			continue;
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			FingerAngles& angles= outRestAngles.angles[sideIndex][finger];
+			angles.lateral= ra[key][finger * 4 + 0];
+			angles.proximal= ra[key][finger * 4 + 1];
+			angles.intermediate= ra[key][finger * 4 + 2];
+			angles.distal= ra[key][finger * 4 + 3];
+		}
+		outRestAngles.present[sideIndex]= true;
+	}
+}
+
 // -- camera profile (de)serialization ----
 static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 {
@@ -110,23 +130,7 @@ static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 	if (in.contains("distortion"))
 		distortionFromJson(in["distortion"], mono.distortion_coefficients);
 
-	const json& ra= j.value("restAngles", json::object());
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const char* key= sideIndex == 0 ? "left" : "right";
-		profile.restAngles.present[sideIndex]= false;
-		if (!ra.contains(key) || !ra[key].is_array() || ra[key].size() != FINGER_COUNT * 4)
-			continue;
-		for (int finger= 0; finger < FINGER_COUNT; ++finger)
-		{
-			FingerAngles& angles= profile.restAngles.angles[sideIndex][finger];
-			angles.lateral= ra[key][finger * 4 + 0];
-			angles.proximal= ra[key][finger * 4 + 1];
-			angles.intermediate= ra[key][finger * 4 + 2];
-			angles.distal= ra[key][finger * 4 + 3];
-		}
-		profile.restAngles.present[sideIndex]= true;
-	}
+	restAnglesFromJson(j.value("restAngles", json::object()), profile.restAngles);
 
 	const json& ex= j.value("extrinsics", json::object());
 	profile.extrinsics.present= ex.value("present", false);
@@ -249,6 +253,10 @@ bool AppConfig::load()
 		fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
 		fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
 		fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
+		fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
+		fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
+
+		restAnglesFromJson(j.value("fusedRestAngles", json::object()), fusedRestAngles);
 
 		const json& hs= j.value("handScale", json::object());
 		handScale.present= hs.value("present", false);
@@ -324,7 +332,11 @@ std::string AppConfig::toJsonString() const
 		{"spatialSidePriorAxis", fusion.spatialSidePriorAxis},
 		{"minCameraConfidence", fusion.minCameraConfidence},
 		{"jitterReferenceMm", fusion.jitterReferenceMm},
+		{"triangulationEnabled", fusion.triangulationEnabled},
+		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
 	};
+
+	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
 
 	j["handScale"]= {
 		{"present", handScale.present},

@@ -124,6 +124,12 @@ struct FusionConfig
 	float minCameraConfidence= 0.f;
 	// Palm jitter (mm) at which an observation counts as half as trustworthy
 	float jitterReferenceMm= 15.f;
+	// Stereo landmark triangulation (two cameras -> world landmarks straight
+	// from image geometry; the network's monocular depth stays out of it)
+	bool triangulationEnabled= true;
+	// RMS reprojection residual above which a triangulated pairing is
+	// rejected as two different physical hands
+	float triangulationMaxResidualPx= 25.f;
 };
 
 class AppConfig
@@ -136,6 +142,10 @@ public:
 	TrackingConfig tracking;
 	OscConfig osc;
 	FusionConfig fusion;
+	// Rest-pose zero for the stereo-TRIANGULATED path (one set, not per
+	// camera: triangulated geometry has no per-camera model bias to fold in).
+	// Captured alongside the per-camera rest angles.
+	RestAnglesConfig fusedRestAngles;
 
 	CameraProfile& camera(size_t index)
 	{

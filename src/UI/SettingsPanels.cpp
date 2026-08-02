@@ -86,6 +86,24 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"into the lost camera's image and try the landmark model there\n"
 			"directly - much faster reacquisition after claps/occlusion.");
 
+		bChanged|= ImGui::Checkbox("Stereo landmark triangulation", &fusion.triangulationEnabled);
+		ImGui::SetItemTooltip(
+			"When two cameras see the same hand, triangulate all 21\n"
+			"landmarks from the 2D image points and extract the pose from\n"
+			"real stereo geometry. The network's monocular depth estimate\n"
+			"(the noisy, view-dependent part) stays out of the loop\n"
+			"entirely. Off = blend the per-camera monocular poses (the\n"
+			"previous behavior).");
+
+		ImGui::BeginDisabled(!fusion.triangulationEnabled);
+		bChanged|= ImGui::SliderFloat("Max tri residual", &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");
+		ImGui::SetItemTooltip(
+			"RMS reprojection residual above which a triangulated pairing\n"
+			"is rejected: two DIFFERENT physical hands wrongly merged\n"
+			"triangulate to garbage that projects nowhere near what either\n"
+			"camera saw, so this doubles as a correspondence check.");
+		ImGui::EndDisabled();
+
 		ImGui::SeparatorText("Observation Confidence");
 		bChanged|= ImGui::SliderFloat("Jitter reference", &fusion.jitterReferenceMm, 3.f, 60.f, "%.0f mm");
 		ImGui::SetItemTooltip(
@@ -171,6 +189,15 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			ImGui::Text("Camera %d  L: %s  R: %s", cameraIndex + 1,
 						cameraRest.present[0] ? "yes" : "no", cameraRest.present[1] ? "yes" : "no");
 		}
+		if (config->cameraCount() > 1)
+		{
+			ImGui::Text("Stereo    L: %s  R: %s",
+						config->fusedRestAngles.present[0] ? "yes" : "no",
+						config->fusedRestAngles.present[1] ? "yes" : "no");
+			ImGui::SetItemTooltip(
+				"Zero reference for the triangulated (two-camera) pose path.\n"
+				"Captured when both cameras saw the hand during the capture.");
+		}
 
 		const float deltaSeconds= ImGui::GetIO().DeltaTime;
 
@@ -230,6 +257,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 						cameraRest.present[0]= false;
 						cameraRest.present[1]= false;
 					}
+					config->fusedRestAngles.present[0]= false;
+					config->fusedRestAngles.present[1]= false;
 					bChanged= true;
 				}
 			}
@@ -237,7 +266,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 		// Poll for a completed capture (the vision thread does the work)
 		std::vector<VisionThread::RestPoseCapture> captures;
-		if (visionThread->fetchRestPoseCapture(captures))
+		VisionThread::RestPoseCapture fusedCapture;
+		if (visionThread->fetchRestPoseCapture(captures, fusedCapture))
 		{
 			// A side counts as captured only if EVERY camera got it - a
 			// partially calibrated side would make the cameras disagree
@@ -259,6 +289,17 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 					cameraRest.present[sideIndex]= true;
 					bChanged= true;
 				}
+			}
+
+			// Stereo zero reference (only fills when the fuse that serviced the
+			// capture actually triangulated that side)
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (!fusedCapture.bCaptured[sideIndex])
+					continue;
+				config->fusedRestAngles.angles[sideIndex]= fusedCapture.angles[sideIndex];
+				config->fusedRestAngles.present[sideIndex]= true;
+				bChanged= true;
 			}
 
 			panelState.bRestPoseResultCaptured[0]= bAllCameras[0];

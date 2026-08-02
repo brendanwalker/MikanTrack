@@ -32,6 +32,7 @@ struct DiagHandState
 	float visibility= 0.f;
 	float confidence= 0.f; // presence x measured stability (what OSC gates on)
 	float fkReprojectionPx= 0.f; // FK-vs-2D-landmark agreement (parameterization fidelity)
+	bool stereoTriangulated= false; // pose from cross-camera landmark triangulation
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f};
 	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};
