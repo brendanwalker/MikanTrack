@@ -248,8 +248,8 @@ void VisionThread::refreshConfigOnThread()
 				profile.intrinsics.intrinsics,
 				m_config->handScale.refLengthMeters,
 				false, // smoothing post-fusion
-				m_config->tracking.smoothingMinCutoff,
-				m_config->tracking.smoothingBeta);
+				m_config->tracking.palmMinCutoff,
+				m_config->tracking.palmBeta);
 			context.landmarkTo3D->setPnpConfig(m_config->tracking.usePnpDepth, m_config->tracking.pnpPalmOnly);
 
 			// Undistortion for the ML input + preview
@@ -301,8 +301,10 @@ void VisionThread::refreshConfigOnThread()
 	fusionConfig.minCameraConfidence= m_config->fusion.minCameraConfidence;
 	fusionConfig.jitterReferenceM= m_config->fusion.jitterReferenceMm * 0.001f;
 	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;
-	fusionConfig.smoothingMinCutoff= m_config->tracking.smoothingMinCutoff;
-	fusionConfig.smoothingBeta= m_config->tracking.smoothingBeta;
+	fusionConfig.palmMinCutoff= m_config->tracking.palmMinCutoff;
+	fusionConfig.palmBeta= m_config->tracking.palmBeta;
+	fusionConfig.angleMinCutoff= m_config->tracking.angleMinCutoff;
+	fusionConfig.angleBeta= m_config->tracking.angleBeta;
 	m_fusion.configure(fusionConfig);
 
 	// OSC

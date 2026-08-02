@@ -49,8 +49,12 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 	ImGui::SeparatorText("Smoothing");
 	bChanged|= ImGui::Checkbox("Enabled", &tracking.smoothingEnabled);
-	bChanged|= ImGui::SliderFloat("Min cutoff", &tracking.smoothingMinCutoff, 0.1f, 5.f, "%.2f Hz");
-	bChanged|= ImGui::SliderFloat("Beta", &tracking.smoothingBeta, 0.f, 0.5f, "%.3f");
+	ImGui::TextDisabled("Palm transform (latency is visible - keep responsive)");
+	bChanged|= ImGui::SliderFloat("Palm min cutoff", &tracking.palmMinCutoff, 0.1f, 10.f, "%.2f Hz");
+	bChanged|= ImGui::SliderFloat("Palm beta", &tracking.palmBeta, 0.f, 0.5f, "%.3f");
+	ImGui::TextDisabled("Finger angles (latency is invisible - keep steady)");
+	bChanged|= ImGui::SliderFloat("Angle min cutoff", &tracking.angleMinCutoff, 0.1f, 5.f, "%.2f Hz");
+	bChanged|= ImGui::SliderFloat("Angle beta", &tracking.angleBeta, 0.f, 0.5f, "%.3f");
 
 	if (config->cameraCount() > 1)
 	{

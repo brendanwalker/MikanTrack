@@ -45,9 +45,13 @@ struct HandFusionConfig
 	// RIGHT hand lives. 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y.
 	int spatialSidePriorAxis= 0;
 
+	// Split smoothing: palm transform (position + quaternion) vs finger
+	// angles. Palm latency is user-visible, angle latency isn't.
 	bool smoothingEnabled= true;
-	float smoothingMinCutoff= 1.f;
-	float smoothingBeta= 0.05f;
+	float palmMinCutoff= 3.f;
+	float palmBeta= 0.1f;
+	float angleMinCutoff= 0.75f;
+	float angleBeta= 0.02f;
 };
 
 // Introspection into the last fuse() call's clustering + side assignment,

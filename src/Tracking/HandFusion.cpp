@@ -41,16 +41,16 @@ void HandFusion::configure(const HandFusionConfig& config)
 
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		m_positionFilters[sideIndex].configure(config.smoothingMinCutoff, config.smoothingBeta, 1.f);
+		m_positionFilters[sideIndex].configure(config.palmMinCutoff, config.palmBeta, 1.f);
 		m_positionFilters[sideIndex].reset();
 		for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
 		{
-			filter.configure(config.smoothingMinCutoff, config.smoothingBeta, 1.f);
+			filter.configure(config.palmMinCutoff, config.palmBeta, 1.f);
 			filter.reset();
 		}
 		for (OneEuroFilter& filter : m_angleFilters[sideIndex])
 		{
-			filter.configure(config.smoothingMinCutoff, config.smoothingBeta, 1.f);
+			filter.configure(config.angleMinCutoff, config.angleBeta, 1.f);
 			filter.reset();
 		}
 		m_lastFilteredQuat[sideIndex]= glm::quat(1, 0, 0, 0);

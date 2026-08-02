@@ -64,8 +64,14 @@ struct TrackingConfig
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
 	bool crossCameraSeeding= true;
-	float smoothingMinCutoff= 1.0f;
-	float smoothingBeta= 0.05f;
+	// Post-fusion one-euro smoothing, split by signal: palm transform latency
+	// is visible (the hand drags through space) while finger articulation
+	// latency isn't - so the palm gets a high cutoff (responsive) and the
+	// angles a low one (steady). One-euro: cutoff= minCutoff + beta * |dx|.
+	float palmMinCutoff= 3.0f;
+	float palmBeta= 0.1f;
+	float angleMinCutoff= 0.75f;
+	float angleBeta= 0.02f;
 	bool smoothingEnabled= true;
 	std::string onnxEp= "directml"; // "directml" | "cpu"
 };
