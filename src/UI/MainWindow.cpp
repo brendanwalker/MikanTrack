@@ -162,12 +162,17 @@ void MainWindow::drawDockspaceAndMenuBar()
 				snprintf(label, sizeof(label), "Camera %d Intrinsics...", cameraIndex + 1);
 				if (ImGui::MenuItem(label, nullptr, false, !bWizardActive))
 					m_intrinsicsWizard->enter(cameraIndex);
-				snprintf(label, sizeof(label), "Camera %d Extrinsics + Hand Scale...", cameraIndex + 1);
-				if (ImGui::MenuItem(label, nullptr, false,
-									!bWizardActive && config->camera(cameraIndex).intrinsics.present))
-					m_extrinsicsWizard->enter(cameraIndex);
 				ImGui::PopID();
 			}
+
+			// One shared session: every camera calibrates against the same
+			// marker placement (separate sessions = disagreeing world frames)
+			bool bAllIntrinsics= true;
+			for (size_t i= 0; i < config->cameraCount(); ++i)
+				bAllIntrinsics&= config->camera(i).intrinsics.present;
+			if (ImGui::MenuItem("Extrinsics (all cameras)...", nullptr, false,
+								!bWizardActive && bAllIntrinsics))
+				m_extrinsicsWizard->enter();
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu("View"))
@@ -221,13 +226,12 @@ void MainWindow::update(float deltaSeconds)
 	if (calibrationAction.bLaunchIntrinsicsWizard)
 		m_intrinsicsWizard->enter(calibrationAction.cameraIndex);
 	if (calibrationAction.bLaunchExtrinsicsWizard)
-		m_extrinsicsWizard->enter(calibrationAction.cameraIndex);
+		m_extrinsicsWizard->enter();
 
 	// Pin the preview highlight to the wizard's camera while one is active
+	// (the extrinsics wizard uses ALL cameras, so no pinning there)
 	if (m_intrinsicsWizard->isActive())
 		m_videoPreviewPanel->setActiveCamera(m_intrinsicsWizard->getCameraIndex());
-	else if (m_extrinsicsWizard->isActive())
-		m_videoPreviewPanel->setActiveCamera(m_extrinsicsWizard->getCameraIndex());
 
 	// Central: side-by-side previews with per-camera overlays
 	{
@@ -280,15 +284,8 @@ void MainWindow::update(float deltaSeconds)
 	}
 	else if (m_extrinsicsWizard->isActive())
 	{
-		const int wizardCamera= m_extrinsicsWizard->getCameraIndex();
-		const VisionPreviewFrame& preview=
-			wizardCamera < cameraCount ? m_latestPreviews[wizardCamera] : s_emptyPreview;
-		if (!m_extrinsicsWizard->update(deltaSeconds, preview.bgr, preview.result,
-										m_videoPreviewPanel->getLastDrawList(),
-										m_videoPreviewPanel->getImageToScreenMapping(wizardCamera)))
-		{
+		if (!m_extrinsicsWizard->update(deltaSeconds, m_latestPreviews, m_videoPreviewPanel.get()))
 			m_extrinsicsWizard->exit();
-		}
 	}
 
 	if (m_bShowLogPanel)

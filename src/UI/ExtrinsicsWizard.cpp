@@ -12,6 +12,7 @@
 #include "Logger.h"
 #include "PatternExport.h"
 #include "PathUtils.h"
+#include "VideoPreviewPanel.h"
 #include "VisionThread.h"
 
 ExtrinsicsWizard::ExtrinsicsWizard(AppConfig* config, VisionThread* visionThread)
@@ -22,51 +23,74 @@ ExtrinsicsWizard::ExtrinsicsWizard(AppConfig* config, VisionThread* visionThread
 
 ExtrinsicsWizard::~ExtrinsicsWizard()= default;
 
-void ExtrinsicsWizard::enter(int cameraIndex)
+void ExtrinsicsWizard::enter()
 {
-	m_cameraIndex= cameraIndex;
 	m_bActive= true;
 	m_bWantsClose= false;
 	m_state= eState::VerifySetup;
 
-	m_markerId= m_config->camera(m_cameraIndex).extrinsics.markerId;
-	m_markerLengthMM= (float)m_config->camera(m_cameraIndex).extrinsics.markerLengthMM;
-	m_bHasCameraPose= false;
+	m_markerId= m_config->camera(0).extrinsics.markerId;
+	m_markerLengthMM= (float)m_config->camera(0).extrinsics.markerLengthMM;
 
-	// Marker detection wants undistorted frames; tracking only needed for
-	// hand scale. Only this camera is affected - the others keep tracking.
-	m_visionThread->setTrackingEnabled(m_cameraIndex, false);
-	m_visionThread->setUndistortEnabled(m_cameraIndex, true);
+	m_captures.clear();
+	m_captures.resize(m_config->cameraCount());
+
+	// Marker detection wants undistorted frames; tracking isn't needed while
+	// calibrating - every camera participates in the same session
+	for (int cameraIndex= 0; cameraIndex < (int)m_config->cameraCount(); ++cameraIndex)
+	{
+		m_visionThread->setTrackingEnabled(cameraIndex, false);
+		m_visionThread->setUndistortEnabled(cameraIndex, true);
+	}
 }
 
 void ExtrinsicsWizard::exit()
 {
-	m_poseSampler= nullptr;
+	m_captures.clear();
 	m_bActive= false;
 
-	m_visionThread->setTrackingEnabled(m_cameraIndex, true);
+	for (int cameraIndex= 0; cameraIndex < (int)m_config->cameraCount(); ++cameraIndex)
+		m_visionThread->setTrackingEnabled(cameraIndex, true);
 	m_visionThread->requestConfigRefresh();
 }
 
-void ExtrinsicsWizard::beginPoseCapture(int frameWidth, int frameHeight)
+bool ExtrinsicsWizard::allCamerasHaveIntrinsics() const
+{
+	for (size_t i= 0; i < m_config->cameraCount(); ++i)
+	{
+		if (!m_config->camera(i).intrinsics.present)
+			return false;
+	}
+	return true;
+}
+
+bool ExtrinsicsWizard::beginPoseCapture(const std::vector<VisionPreviewFrame>& previews)
 {
 	// Guard OpenCV parameter asserts (invalid marker size/id) - surface the
 	// error instead of crashing the app
 	try
 	{
-		m_poseSampler= std::make_unique<ArucoMarkerPoseSampler>(
-			m_config->camera(m_cameraIndex).intrinsics.intrinsics,
-			frameWidth, frameHeight,
-			m_markerLengthMM,
-			m_markerId,
-			eCharucoDictionaryType::DICT_6X6,
-			12);
+		for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
+		{
+			const cv::Mat& bgr= previews[cameraIndex].bgr;
+			m_captures[cameraIndex].bHasPose= false;
+			m_captures[cameraIndex].sampler= std::make_unique<ArucoMarkerPoseSampler>(
+				m_config->camera(cameraIndex).intrinsics.intrinsics,
+				bgr.cols, bgr.rows,
+				m_markerLengthMM,
+				m_markerId,
+				eCharucoDictionaryType::DICT_6X6,
+				12);
+		}
 		m_state= eState::CaptureCameraPose;
+		return true;
 	}
 	catch (const cv::Exception& e)
 	{
 		MIKAN_LOG_ERROR("ExtrinsicsWizard::beginPoseCapture") << "OpenCV error creating pose sampler: " << e.what();
-		m_poseSampler= nullptr;
+		for (CameraCapture& capture : m_captures)
+			capture.sampler= nullptr;
+		return false;
 	}
 }
 
@@ -139,88 +163,106 @@ bool ExtrinsicsWizard::raycastPixelOntoPlane(const MikanMonoIntrinsics& intrinsi
 	return true;
 }
 
-glm::dmat4 ExtrinsicsWizard::computeWorldFromCamera() const
-{
-	return computeWorldFromCameraPose(m_cameraFromMarker);
-}
-
-bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const
-{
-	return raycastPixelOntoPlane(m_config->camera(m_cameraIndex).intrinsics.intrinsics, m_cameraFromMarker, pixel, outPoint);
-}
-
-
-bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
-							  const TrackingFrameResult& trackingResult, ImDrawList* overlayDrawList,
-							  const ImageToScreenMapping& mapping)
+bool ExtrinsicsWizard::update(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
+							  VideoPreviewPanel* previewPanel)
 {
 	if (!m_bActive)
 		return false;
 
-
-	// Marker pose sampling
-	if ((m_state == eState::CaptureCameraPose || m_state == eState::VerifySetup) &&
-		m_poseSampler != nullptr && !bgrPreview.empty())
+	// Marker pose sampling: every camera samples the SAME marker placement
+	// simultaneously; the state advances only when ALL cameras have a pose
+	if (m_state == eState::CaptureCameraPose)
 	{
-		cv::cvtColor(bgrPreview, m_grayFrame, cv::COLOR_BGR2GRAY);
-		m_poseSampler->setGrayscaleFrame(&m_grayFrame);
-
-		if (m_state == eState::CaptureCameraPose && !m_poseSampler->hasFinishedSampling())
+		bool bAllHavePose= true;
+		for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 		{
-			if (m_poseSampler->computeApertureRelativeMarkerXform())
-				m_poseSampler->sampleLastApertureRelativeMarkerXform();
-
-			if (m_poseSampler->hasFinishedSampling() &&
-				m_poseSampler->computeCalibratedMarkerPose(m_cameraFromMarker))
+			CameraCapture& capture= m_captures[cameraIndex];
+			if (capture.sampler == nullptr)
 			{
-				m_bHasCameraPose= true;
-				m_state= eState::PoseTest;
+				bAllHavePose= false;
+				continue;
+			}
+			if (capture.bHasPose)
+				continue;
+
+			bAllHavePose= false;
+			if (cameraIndex >= previews.size() || previews[cameraIndex].bgr.empty())
+				continue;
+
+			cv::cvtColor(previews[cameraIndex].bgr, capture.grayFrame, cv::COLOR_BGR2GRAY);
+			capture.sampler->setGrayscaleFrame(&capture.grayFrame);
+
+			if (!capture.sampler->hasFinishedSampling())
+			{
+				if (capture.sampler->computeApertureRelativeMarkerXform())
+					capture.sampler->sampleLastApertureRelativeMarkerXform();
+			}
+			if (capture.sampler->hasFinishedSampling() &&
+				capture.sampler->computeCalibratedMarkerPose(capture.cameraFromMarker))
+			{
+				capture.bHasPose= true;
 			}
 		}
+
+		if (bAllHavePose && !m_captures.empty())
+			m_state= eState::Review;
+
+		if (previewPanel != nullptr)
+			drawMarkerOverlays(previewPanel);
 	}
 
-	if ((m_state == eState::CaptureCameraPose) && overlayDrawList != nullptr)
-		drawMarkerOverlay(overlayDrawList, mapping);
-
-	drawWizardWindow(bgrPreview, trackingResult);
-
+	drawWizardWindow(previews);
 
 	return !m_bWantsClose;
 }
 
-void ExtrinsicsWizard::drawMarkerOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping)
+void ExtrinsicsWizard::drawMarkerOverlays(VideoPreviewPanel* previewPanel)
 {
-	CalibrationPatternFinder_Aruco* finder= m_poseSampler != nullptr ? m_poseSampler->getPatternFinder() : nullptr;
-	if (finder == nullptr)
+	ImDrawList* drawList= previewPanel->getLastDrawList();
+	if (drawList == nullptr)
 		return;
 
-	// Side-effect-free read (fetchLastFoundCalibrationPattern commits capture state)
-	t_opencv_point2d_list imagePoints;
-	cv::Point2f boundingQuad[4];
-	if (!finder->getCurrentCalibrationPattern(imagePoints, boundingQuad))
-		return;
-
-	const ImU32 color= IM_COL32(80, 255, 120, 255);
-	for (int i= 0; i < 4; ++i)
+	for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 	{
-		const cv::Point2f& c0= boundingQuad[i];
-		const cv::Point2f& c1= boundingQuad[(i + 1) % 4];
-		drawList->AddLine(mapping.toScreen(c0.x, c0.y), mapping.toScreen(c1.x, c1.y), color, 2.f);
+		CalibrationPatternFinder_Aruco* finder=
+			m_captures[cameraIndex].sampler != nullptr ? m_captures[cameraIndex].sampler->getPatternFinder() : nullptr;
+		if (finder == nullptr)
+			continue;
+
+		// Side-effect-free read (fetchLastFoundCalibrationPattern commits capture state)
+		t_opencv_point2d_list imagePoints;
+		cv::Point2f boundingQuad[4];
+		if (!finder->getCurrentCalibrationPattern(imagePoints, boundingQuad))
+			continue;
+
+		const ImageToScreenMapping& mapping= previewPanel->getImageToScreenMapping((int)cameraIndex);
+		const ImU32 color= IM_COL32(80, 255, 120, 255);
+		for (int i= 0; i < 4; ++i)
+		{
+			const cv::Point2f& c0= boundingQuad[i];
+			const cv::Point2f& c1= boundingQuad[(i + 1) % 4];
+			drawList->AddLine(mapping.toScreen(c0.x, c0.y), mapping.toScreen(c1.x, c1.y), color, 2.f);
+		}
 	}
 }
 
-void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult)
+void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& previews)
 {
 	ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
-	if (!ImGui::Begin("Extrinsics + Hand Scale Calibration", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (!ImGui::Begin("Extrinsics Calibration (all cameras)", nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return;
 	}
 
-	if (!m_config->camera(m_cameraIndex).intrinsics.present)
+	if (!allCamerasHaveIntrinsics())
 	{
-		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Camera intrinsics must be calibrated first");
+		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+						   "Every camera needs calibrated intrinsics first");
+		ImGui::TextWrapped(
+			"Extrinsics are always calibrated for ALL cameras together, against the "
+			"same marker placement - otherwise the cameras end up in disagreeing "
+			"world frames.");
 		if (ImGui::Button("Close"))
 			m_bWantsClose= true;
 		ImGui::End();
@@ -234,7 +276,8 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			ImGui::TextWrapped(
 				"Place the printed origin aruco marker flat on the table where the world "
 				"origin should be. The marker stays there during hand tracking - it defines "
-				"the tracking space.");
+				"the tracking space. ALL cameras are calibrated in this one session so they "
+				"agree on the same marker placement; make sure every camera can see it.");
 
 			ImGui::InputInt("Marker ID", &m_markerId);
 			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.0f");
@@ -264,62 +307,72 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			ImGui::EndDisabled();
 
 			ImGui::Separator();
-			const bool bHasVideo= !bgrPreview.empty();
-			if (!bHasVideo)
-				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start a video stream first");
-			ImGui::BeginDisabled(!bHasVideo || !bParamsValid);
-			if (ImGui::Button("Capture Camera Pose", ImVec2(-1, 0)))
-				beginPoseCapture(bgrPreview.cols, bgrPreview.rows);
+			bool bAllHaveVideo= previews.size() >= m_captures.size() && !m_captures.empty();
+			for (size_t i= 0; i < m_captures.size() && bAllHaveVideo; ++i)
+				bAllHaveVideo= i < previews.size() && !previews[i].bgr.empty();
+			if (!bAllHaveVideo)
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start video streams on all cameras first");
+
+			ImGui::BeginDisabled(!bAllHaveVideo || !bParamsValid);
+			if (ImGui::Button("Capture Camera Poses", ImVec2(-1, 0)))
+				beginPoseCapture(previews);
 			ImGui::EndDisabled();
 			break;
 		}
 
 		case eState::CaptureCameraPose:
 		{
-			ImGui::Text("Sampling marker pose...");
-			ImGui::ProgressBar(m_poseSampler->getCalibrationProgress(), ImVec2(-1, 0));
-			if (!m_poseSampler->hasValidApertureRelativeMarkerXform())
-				ImGui::TextDisabled("Marker not visible - make sure it's in view");
-			if (ImGui::Button("Restart"))
-				m_poseSampler->resetCalibrationState();
-			break;
-		}
-
-		case eState::PoseTest:
-		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Camera pose captured");
-
-			const glm::dvec3 markerPos= glm::dvec3(m_cameraFromMarker[3]);
-			ImGui::Text("Marker distance: %.2f m", glm::length(markerPos));
-
-			// Camera height above the marker/table plane (world +Z is the
-			// marker plane normal)
-			const glm::dmat4 worldFromCamera= computeWorldFromCamera();
-			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
-			ImGui::TextWrapped("Sanity check these numbers against your physical setup.");
-
-			if (ImGui::Button("Looks Right", ImVec2(-1, 0)))
+			ImGui::Text("Sampling marker pose on every camera...");
+			for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 			{
-				m_visionThread->setTrackingEnabled(m_cameraIndex, true);
-				m_state= eState::Review;
+				const CameraCapture& capture= m_captures[cameraIndex];
+				char label[32];
+				snprintf(label, sizeof(label), "Camera %d", (int)cameraIndex + 1);
+				if (capture.bHasPose)
+				{
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s: captured", label);
+				}
+				else if (capture.sampler != nullptr)
+				{
+					ImGui::Text("%s:", label);
+					ImGui::SameLine();
+					ImGui::ProgressBar(capture.sampler->getCalibrationProgress(), ImVec2(-1, 0));
+					if (!capture.sampler->hasValidApertureRelativeMarkerXform())
+						ImGui::TextDisabled("  marker not visible to this camera");
+				}
 			}
-			if (ImGui::Button("Recapture Pose"))
-				m_state= eState::VerifySetup;
+			if (ImGui::Button("Restart"))
+			{
+				for (CameraCapture& capture : m_captures)
+				{
+					capture.bHasPose= false;
+					if (capture.sampler != nullptr)
+						capture.sampler->resetCalibrationState();
+				}
+			}
 			break;
 		}
 
 		case eState::Review:
 		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration ready");
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "All camera poses captured");
 
-			const glm::dmat4 worldFromCamera= computeWorldFromCamera();
-			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
+			for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
+			{
+				const CameraCapture& capture= m_captures[cameraIndex];
+				const glm::dmat4 worldFromCamera= computeWorldFromCameraPose(capture.cameraFromMarker);
+				ImGui::Text("Camera %d: marker distance %.2f m, height over table %.2f m",
+							(int)cameraIndex + 1,
+							glm::length(glm::dvec3(capture.cameraFromMarker[3])),
+							worldFromCamera[3].z);
+			}
 			ImGui::TextWrapped(
-				"Hand scale is measured automatically from stereo/depth while "
-				"tracking runs (current: %.1f cm).",
+				"Sanity check these numbers against your physical setup. Hand scale is "
+				"measured automatically from stereo/depth while tracking runs "
+				"(current: %.1f cm).",
 				m_config->handScale.refLengthMeters * 100.0);
 
-			if (ImGui::Button("Accept & Save", ImVec2(-1, 0)))
+			if (ImGui::Button("Accept & Save All", ImVec2(-1, 0)))
 			{
 				// worldFromCamera maps GL camera space to the Z-up world, but
 				// SpaceTransforms/LandmarkTo3D work in OpenCV camera convention
@@ -331,15 +384,21 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 					glm::dvec4(0, 0, -1, 0),
 					glm::dvec4(0, 0, 0, 1));
 
-				m_config->camera(m_cameraIndex).extrinsics.present= true;
-				m_config->camera(m_cameraIndex).extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
-				m_config->camera(m_cameraIndex).extrinsics.markerId= m_markerId;
-				m_config->camera(m_cameraIndex).extrinsics.markerLengthMM= m_markerLengthMM;
+				for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
+				{
+					const glm::dmat4 worldFromCamera=
+						computeWorldFromCameraPose(m_captures[cameraIndex].cameraFromMarker);
+					ExtrinsicsConfig& extrinsics= m_config->camera(cameraIndex).extrinsics;
+					extrinsics.present= true;
+					extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
+					extrinsics.markerId= m_markerId;
+					extrinsics.markerLengthMM= m_markerLengthMM;
+				}
 				m_config->markDirty();
 				m_config->save();
 				m_bWantsClose= true;
 			}
-			if (ImGui::Button("Recapture Pose"))
+			if (ImGui::Button("Recapture Poses"))
 				m_state= eState::VerifySetup;
 			break;
 		}

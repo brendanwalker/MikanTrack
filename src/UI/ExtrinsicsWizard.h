@@ -12,15 +12,20 @@
 
 class AppConfig;
 class ArucoMarkerPoseSampler;
+class VideoPreviewPanel;
 class VisionThread;
+struct VisionPreviewFrame;
 
-// Aruco-marker camera-extrinsics + hand-scale calibration wizard.
-// Requires intrinsics to be calibrated first (frames arrive undistorted).
+// Aruco-marker camera-extrinsics calibration wizard.
 //
-// - CaptureCameraPose: averages N solvePnP samples of the printed origin
-//   marker -> markerFromCamera (world anchor).
-//   ray-casts the wrist and middle-MCP landmarks onto the marker plane to
-//   measure the user's real wrist->knuckle length (depth scale reference).
+// Calibrates ALL cameras in one session, against the same physical marker
+// placement, and saves atomically. Per-camera sessions are deliberately not
+// offered: every camera's extrinsics are relative to the marker AS PLACED
+// when that camera was calibrated, so calibrating cameras separately (with
+// the marker nudged in between) bakes a silent world-frame disagreement into
+// fusion that then masquerades as tracking noise.
+//
+// Requires intrinsics on every camera (frames arrive undistorted).
 class ExtrinsicsWizard
 {
 public:
@@ -28,20 +33,18 @@ public:
 	{
 		VerifySetup,
 		CaptureCameraPose,
-		PoseTest,
 		Review,
 	};
 
 	ExtrinsicsWizard(AppConfig* config, VisionThread* visionThread);
 	~ExtrinsicsWizard();
 
-	void enter(int cameraIndex);
+	void enter();
 	void exit();
 	bool isActive() const { return m_bActive; }
-	int getCameraIndex() const { return m_cameraIndex; }
 
-	bool update(float deltaSeconds, const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult,
-				ImDrawList* overlayDrawList, const ImageToScreenMapping& mapping);
+	bool update(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
+				VideoPreviewPanel* previewPanel);
 
 	// -- Pure math helpers (static for the --test-extrinsics self test) -----
 
@@ -59,37 +62,32 @@ public:
 									  glm::dvec3& outPoint);
 
 private:
-	void drawWizardWindow(const cv::Mat& bgrPreview, const TrackingFrameResult& trackingResult);
-	void drawMarkerOverlay(ImDrawList* drawList, const ImageToScreenMapping& mapping);
-	void beginPoseCapture(int frameWidth, int frameHeight);
+	// One camera's calibration-in-progress
+	struct CameraCapture
+	{
+		std::unique_ptr<ArucoMarkerPoseSampler> sampler;
+		cv::Mat grayFrame;
+		glm::dmat4 cameraFromMarker{1.0};
+		bool bHasPose= false;
+	};
+
+	void drawWizardWindow(const std::vector<VisionPreviewFrame>& previews);
+	void drawMarkerOverlays(VideoPreviewPanel* previewPanel);
+	bool beginPoseCapture(const std::vector<VisionPreviewFrame>& previews);
 	bool areMarkerParamsValid(std::string& outError) const;
-
-	// Uses the wizard's captured pose; valid once m_bHasCameraPose
-	glm::dmat4 computeWorldFromCamera() const;
-
-	// Member wrappers over the static helpers using the wizard's current state
-	bool raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const;
+	// True when every configured camera has calibrated intrinsics
+	bool allCamerasHaveIntrinsics() const;
 
 	AppConfig* m_config;
 	VisionThread* m_visionThread;
 
 	eState m_state= eState::VerifySetup;
-	int m_cameraIndex= 0;
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
 
-	std::unique_ptr<ArucoMarkerPoseSampler> m_poseSampler;
-	cv::Mat m_grayFrame;
+	std::vector<CameraCapture> m_captures; // indexed by camera
 
 	// Marker params being edited
 	int m_markerId= 0;
 	float m_markerLengthMM= 100.f;
-
-	// Captured camera pose (camera-from-marker, GL convention)
-	glm::dmat4 m_cameraFromMarker{1.0};
-	bool m_bHasCameraPose= false;
-
-	// Hand-scale sampling
-	// Countdown before sampling starts, so the hand can settle into a flat
-	// pose after clicking the button
 };

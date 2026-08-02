@@ -65,35 +65,32 @@ CalibrationPanel::DrawResult CalibrationPanel::draw(bool bWizardActive)
 			{
 				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Not calibrated");
 			}
-			ImGui::BeginDisabled(bWizardActive || !profile.intrinsics.present);
-			if (ImGui::Button("Calibrate Extrinsics...", ImVec2(-1, 0)))
-			{
-				result.bLaunchExtrinsicsWizard= true;
-				result.cameraIndex= cameraIndex;
-			}
-			ImGui::EndDisabled();
-			if (!profile.intrinsics.present)
-				ImGui::TextDisabled("(requires intrinsics)");
 		}
 
 		ImGui::PopID();
 	}
 
-	ImGui::SeparatorText("Hand Scale (global)");
-	if (m_config->handScale.present)
-		ImGui::Text("Measured: %.1f cm", m_config->handScale.refLengthMeters * 100.0);
-	else
-		ImGui::TextDisabled("Default: %.1f cm", m_config->handScale.refLengthMeters * 100.0);
-	ImGui::TextDisabled("(measured in the extrinsics wizard)");
+	ImGui::SeparatorText("Extrinsics (all cameras)");
+	bool bAllIntrinsics= true;
+	for (size_t i= 0; i < m_config->cameraCount(); ++i)
+		bAllIntrinsics&= m_config->camera(i).intrinsics.present;
 
-	if ((int)m_config->cameraCount() > 1)
+	ImGui::TextWrapped(
+		"Extrinsics are calibrated for ALL cameras in one session against the "
+		"same marker placement - that shared marker defines the common world "
+		"space fusion happens in. If the marker ever moves, recalibrate here.");
+	ImGui::BeginDisabled(bWizardActive || !bAllIntrinsics);
+	if (ImGui::Button("Calibrate Extrinsics (all cameras)...", ImVec2(-1, 0)))
 	{
-		ImGui::Separator();
-		ImGui::TextWrapped(
-			"All cameras must calibrate extrinsics against the SAME printed "
-			"marker in the same spot - that shared marker defines the common "
-			"world space fusion happens in.");
+		result.bLaunchExtrinsicsWizard= true;
 	}
+	ImGui::EndDisabled();
+	if (!bAllIntrinsics)
+		ImGui::TextDisabled("(every camera needs intrinsics first)");
+
+	ImGui::SeparatorText("Hand Scale (global)");
+	ImGui::Text("Seed: %.1f cm (auto-measured live from stereo/depth)",
+				m_config->handScale.refLengthMeters * 100.0);
 
 	ImGui::End();
 	return result;
