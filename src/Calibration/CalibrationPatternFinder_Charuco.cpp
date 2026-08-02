@@ -167,16 +167,13 @@ bool CalibrationPatternFinder_Charuco::getCurrentCalibrationPattern(t_opencv_poi
 	if (!areCurrentImagePointsValid())
 		return false;
 
-	// The number of corners in a row is one less than the number of squares
-	const int cornerCols= m_markerData->cols - 1;
-	const int cornerCount= (int)m_currentImagePoints.size();
-
-	// Bounding quad of the detected corners
-	// (indices are clamped since partial board detections may have fewer corners)
-	outBoundingQuad[0]= m_currentImagePoints[0];
-	outBoundingQuad[1]= m_currentImagePoints[int_min(cornerCols - 1, cornerCount - 1)];
-	outBoundingQuad[2]= m_currentImagePoints[cornerCount - 1];
-	outBoundingQuad[3]= m_currentImagePoints[int_max(cornerCount - cornerCols, 0)];
+	// Bounding quad of the detected corners. Indexing by grid position is only
+	// valid for a FULL board detection - a partial detection compacts whatever
+	// corners were found into the list, so fixed indices land on arbitrary
+	// interior corners and draw a wild polygon. A rotated min-area rect over
+	// the actual detections is correct for any subset.
+	const cv::RotatedRect boundingRect= cv::minAreaRect(m_currentImagePoints);
+	boundingRect.points(outBoundingQuad);
 
 	outImagePoints.clear();
 	for (const auto& imagePoint : m_currentImagePoints)

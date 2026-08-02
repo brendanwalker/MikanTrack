@@ -1,4 +1,7 @@
 #include "CameraMath.h"
+
+#include <cmath>
+
 #include "Logger.h"
 #include "MikanMathTypes.h"
 #include "MikanVideoSourceTypes.h"
@@ -111,9 +114,13 @@ bool computeMonoLensCameraCalibration(const int frameWidth, const int frameHeigh
 				cv::CALIB_FIX_PRINCIPAL_POINT + // The principal point is not changed during the global optimization
 				cv::CALIB_ZERO_TANGENT_DIST
 				+                          // Tangential distortion coefficients (p1,p2) are set to zeros and stay zero
-				cv::CALIB_RATIONAL_MODEL + // Coefficients k4, k5, and k6 are enabled
-				cv::CALIB_FIX_K3 + cv::CALIB_FIX_K4 + cv::CALIB_FIX_K5, // radial distortion coefficients k3, k4, & k5
-																		// are not changed during the optimization
+				cv::CALIB_RATIONAL_MODEL + // 8-coefficient model (k1..k6 exist in the coefficient vector)
+				// Only k1/k2 are actually estimated. K6 MUST be fixed along with k3/k4/k5: under
+				// RATIONAL_MODEL a free k6 is a lone r^6 DENOMINATOR term - a rogue degree of freedom
+				// that fits the captured corners to sub-pixel error while going wild outside them,
+				// which then makes getOptimalNewCameraMatrix() emit a degenerate undistorted matrix
+				// (seen live: hfov of 180 and 8.6 degrees with sub-pixel reprojection error).
+				cv::CALIB_FIX_K3 + cv::CALIB_FIX_K4 + cv::CALIB_FIX_K5 + cv::CALIB_FIX_K6,
 			cv::TermCriteria(cv::TermCriteria::COUNT + cv::TermCriteria::EPS, 30, DBL_EPSILON));
 
 		bSuccess= is_valid_float(outReprojectionError);
@@ -139,6 +146,29 @@ bool computeMonoLensCameraCalibration(const int frameWidth, const int frameHeigh
 		cv::calibrationMatrixValues(cvUndistortedIntrinsicMatrix, cvImageSize, 0.0,
 									0.0, // Don't know (and don't need) the physical aperture size of the lens
 									hfov, vfov, unusedFocalLength, ununsedPrincipalPoint, aspectRatio);
+
+		// Sanity gate: a degenerate solve (captures without enough tilt/depth
+		// variation, or distortion gone wild at the periphery) can report
+		// sub-pixel reprojection error on the samples while the recovered
+		// focal length is nonsense. Better to fail the calibration loudly
+		// than to persist intrinsics that poison every downstream solve.
+		constexpr double kMinPlausibleHfovDegrees= 20.0;
+		constexpr double kMaxPlausibleHfovDegrees= 160.0;
+		const double distortedFx= cvDistortedIntrinsicMatrix(0, 0);
+		const double undistortedFx= cvUndistortedIntrinsicMatrix.at<double>(0, 0);
+		const double fxRatio= distortedFx > 1e-6 ? undistortedFx / distortedFx : 0.0;
+		if (!std::isfinite(hfov) || hfov < kMinPlausibleHfovDegrees || hfov > kMaxPlausibleHfovDegrees ||
+			fxRatio < 0.2 || fxRatio > 5.0)
+		{
+			MIKAN_MT_LOG_ERROR("computeCameraCalibration")
+				<< "Rejecting implausible calibration: hfov=" << hfov
+				<< " deg, undistorted/distorted fx ratio=" << fxRatio
+				<< " (reprojection error " << outReprojectionError
+				<< "px looked fine - the capture geometry is degenerate)."
+				<< " Recapture with the board TILTED toward/away from the camera"
+				<< " in several samples and held at varied distances.";
+			return false;
+		}
 
 		// cv::calibrateCamera() will return all 14 distortion parameters, but we only want the first 8
 		// Also convert from a row vector (OpenCV format) back to a column vector (Mikan format)

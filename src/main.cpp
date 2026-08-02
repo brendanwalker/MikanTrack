@@ -3,6 +3,7 @@
 #include "glm/gtc/constants.hpp"
 #include "glm/gtc/quaternion.hpp"
 
+#include "opencv2/calib3d.hpp"
 #include "opencv2/core.hpp"
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
@@ -144,6 +145,70 @@ static int runApp(int argc, char** argv)
 							MIKAN_LOG_INFO("test-charuco")
 								<< "Captured " << capturedSamples << " samples after fast move (expected 2)";
 						}
+					}
+				}
+
+				// 7: End-to-end intrinsics recovery through a KNOWN synthetic
+				// camera: project the board's corner geometry through ground-truth
+				// intrinsics at a spread of tilted poses and verify the solve
+				// recovers the true hfov. Regression guard for the free-k6
+				// rational-model bug (hfov of 180/8.6 deg with sub-pixel
+				// reprojection error) and the new plausibility gate.
+				MIKAN_LOG_INFO("test-charuco") << "7: synthetic intrinsics recovery";
+				{
+					const int width= 1280, height= 720;
+					const double fx= 800.0;
+					const double truthHfov= 2.0 * glm::degrees(atan((width * 0.5) / fx)); // 77.32 deg
+
+					// 10x7 corner grid, 16mm squares (matches an 11x8 board)
+					OpenCVCalibrationGeometry geometry;
+					for (int row= 0; row < 7; ++row)
+						for (int col= 0; col < 10; ++col)
+							geometry.points.push_back(cv::Point3f(col * 16.f, row * 16.f, 0.f));
+
+					const cv::Matx33d cameraMatrix(fx, 0, width * 0.5, 0, fx, height * 0.5, 0, 0, 1);
+					const cv::Mat noDistortion= cv::Mat::zeros(1, 8, CV_64F);
+
+					std::vector<t_opencv_point2d_list> imagePointsList;
+					std::vector<t_opencv_pointID_list> imagePointIDList;
+					// 12 poses: varied tilt about X and Y, varied depth + offset
+					for (int sample= 0; sample < 12; ++sample)
+					{
+						const double tiltX= glm::radians(-25.0 + 10.0 * (sample % 3));
+						const double tiltY= glm::radians(-20.0 + 8.0 * (sample % 5));
+						const cv::Vec3d rvecX(tiltX, 0, 0), rvecY(0, tiltY, 0);
+						cv::Matx33d rotX, rotY;
+						cv::Rodrigues(rvecX, rotX);
+						cv::Rodrigues(rvecY, rotY);
+						cv::Vec3d rvec;
+						cv::Rodrigues(rotY * rotX, rvec);
+						const cv::Vec3d tvec(-80.0 + 30.0 * (sample % 4), -60.0 + 25.0 * (sample % 3),
+											 350.0 + 40.0 * sample);
+
+						t_opencv_point2d_list imagePoints;
+						cv::projectPoints(geometry.points, rvec, tvec, cameraMatrix, noDistortion, imagePoints);
+
+						t_opencv_pointID_list pointIDs;
+						for (int id= 0; id < (int)geometry.points.size(); ++id)
+							pointIDs.push_back(id);
+
+						imagePointsList.push_back(imagePoints);
+						imagePointIDList.push_back(pointIDs);
+					}
+
+					MikanMonoIntrinsics recovered;
+					double reprojectionError= 0.0;
+					const bool bSolved= computeMonoLensCameraCalibration(
+						width, height, geometry, imagePointsList, imagePointIDList, recovered, reprojectionError);
+
+					MIKAN_LOG_INFO("test-charuco")
+						<< "recovered hfov=" << recovered.hfov << " (truth " << truthHfov
+						<< ") reprojection=" << reprojectionError << "px";
+					if (!bSolved || fabs(recovered.hfov - truthHfov) > 2.0 || reprojectionError > 0.5)
+					{
+						MIKAN_LOG_ERROR("test-charuco")
+							<< "REGRESSION: synthetic intrinsics recovery failed";
+						result= 1;
 					}
 				}
 
