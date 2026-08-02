@@ -1819,7 +1819,63 @@ static int runApp(int argc, char** argv)
 					}
 				}
 
-				float bestScore= 1e30f, identityScore= 0.f;
+				// Score over WINDOWS, not consecutive samples. Between two
+				// samples 5ms apart the gyro term is |w|*dt ~ 0.005, far below
+				// accelerometer noise, so every candidate scores the same and
+				// the winner is noise. Integrating across ~0.4s of real
+				// rotation makes the gyro term ~1 rad - orders of magnitude
+				// above the noise floor - so a wrong mapping cannot hide.
+				constexpr float kWindowSeconds= 0.4f;
+				constexpr float kMinWindowRotationRadians= 0.35f; // ~20 deg: below this a window says nothing
+
+				struct Window
+				{
+					size_t startIndex= 0;
+					size_t endIndex= 0;
+					glm::vec3 gravityStart{0.f};
+					glm::vec3 gravityEnd{0.f};
+				};
+				std::vector<Window> windows;
+				{
+					size_t startIndex= 0;
+					for (size_t k= 1; k < samples.size(); ++k)
+					{
+						const double elapsedMs= samples[k].timestampMs - samples[startIndex].timestampMs;
+						if (elapsedMs < kWindowSeconds * 1000.0)
+							continue;
+
+						// Both ends must be reading gravity alone, or the
+						// direction we are predicting isn't gravity
+						const float startMagnitude= glm::length(samples[startIndex].acceleration);
+						const float endMagnitude= glm::length(samples[k].acceleration);
+						const bool bEndsAreGravity= fabsf(startMagnitude - 9.80665f) < 0.6f &&
+							fabsf(endMagnitude - 9.80665f) < 0.6f;
+
+						if (bEndsAreGravity)
+						{
+							Window window;
+							window.startIndex= startIndex;
+							window.endIndex= k;
+							window.gravityStart= samples[startIndex].acceleration / startMagnitude;
+							window.gravityEnd= samples[k].acceleration / endMagnitude;
+							// Only keep windows containing real rotation
+							if (glm::length(window.gravityEnd - window.gravityStart) > 0.15f)
+								windows.push_back(window);
+						}
+						startIndex= k;
+					}
+				}
+
+				if (windows.size() < 5)
+				{
+					MIKAN_LOG_ERROR("test-imuaxes")
+						<< device->getFriendlyName() << ": only " << windows.size()
+						<< " usable rotation windows - rotate the controller more (and more slowly)";
+					result= 1;
+					continue;
+				}
+
+				float bestScore= 1e30f, identityScore= 0.f, runnerUpScore= 1e30f;
 				int bestPermutation= 0, bestSigns= 0;
 				for (int permutationIndex= 0; permutationIndex < 6; ++permutationIndex)
 				{
@@ -1829,51 +1885,61 @@ static int runApp(int argc, char** argv)
 											  (signMask & 4) ? -1.f : 1.f);
 
 						float score= 0.f;
-						int usedSamples= 0;
-						for (size_t k= 1; k < samples.size(); ++k)
+						int usedWindows= 0;
+						for (const Window& window : windows)
 						{
-							const ImuSample& previous= samples[k - 1];
-							const ImuSample& current= samples[k];
-							const float dt= (float)((current.timestampMs - previous.timestampMs) / 1000.0);
-							if (dt <= 0.f || dt > 0.05f)
+							// Accumulate the body-frame rotation across the window
+							glm::quat deltaRotation(1.f, 0.f, 0.f, 0.f);
+							float sweptRadians= 0.f;
+							for (size_t k= window.startIndex; k < window.endIndex; ++k)
+							{
+								const float dt=
+									(float)((samples[k + 1].timestampMs - samples[k].timestampMs) / 1000.0);
+								if (dt <= 0.f || dt > 0.05f)
+									continue;
+
+								const glm::vec3 rawRate= samples[k].angularVelocity - bias;
+								const glm::vec3 mappedRate(
+									signs.x * rawRate[kPermutations[permutationIndex][0]],
+									signs.y * rawRate[kPermutations[permutationIndex][1]],
+									signs.z * rawRate[kPermutations[permutationIndex][2]]);
+
+								const float rate= glm::length(mappedRate);
+								if (rate > 1e-9f)
+								{
+									deltaRotation= glm::normalize(
+										deltaRotation * glm::angleAxis(rate * dt, mappedRate / rate));
+									sweptRadians+= rate * dt;
+								}
+							}
+							if (sweptRadians < kMinWindowRotationRadians)
 								continue;
 
-							// Only trust samples where the accelerometer is
-							// reading gravity alone
-							const float magnitude= glm::length(previous.acceleration);
-							if (fabsf(magnitude - 9.80665f) > 1.0f)
-								continue;
-
-							const glm::vec3 gravityBefore= previous.acceleration / magnitude;
-							const float magnitudeAfter= glm::length(current.acceleration);
-							if (magnitudeAfter < 1e-3f)
-								continue;
-							const glm::vec3 gravityAfter= current.acceleration / magnitudeAfter;
-
-							const glm::vec3 rawRate= previous.angularVelocity - bias;
-							const glm::vec3 mappedRate(signs.x * rawRate[kPermutations[permutationIndex][0]],
-													   signs.y * rawRate[kPermutations[permutationIndex][1]],
-													   signs.z * rawRate[kPermutations[permutationIndex][2]]);
-
-							// A world-fixed direction seen from the rotating
-							// body: dg/dt = -omega x g
-							const glm::vec3 predicted= gravityBefore - glm::cross(mappedRate, gravityBefore) * dt;
-							score+= glm::length(predicted - gravityAfter);
-							usedSamples++;
+							// A world-fixed direction in body coordinates
+							// transforms by the INVERSE of the body rotation
+							const glm::vec3 predictedGravityEnd=
+								glm::inverse(deltaRotation) * window.gravityStart;
+							score+= glm::length(predictedGravityEnd - window.gravityEnd);
+							usedWindows++;
 						}
 
-						if (usedSamples < 100)
+						if (usedWindows < 5)
 							continue;
-						score/= (float)usedSamples;
+						score/= (float)usedWindows;
 
 						const bool bIsIdentity= permutationIndex == 0 && signMask == 0;
 						if (bIsIdentity)
 							identityScore= score;
 						if (score < bestScore)
 						{
+							runnerUpScore= bestScore;
 							bestScore= score;
 							bestPermutation= permutationIndex;
 							bestSigns= signMask;
+						}
+						else if (score < runnerUpScore)
+						{
+							runnerUpScore= score;
 						}
 					}
 				}
@@ -1885,20 +1951,38 @@ static int runApp(int argc, char** argv)
 						 (bestSigns & 4) ? "-" : "+", kAxisNames[kPermutations[bestPermutation][2]]);
 				const bool bIsIdentity= bestPermutation == 0 && bestSigns == 0;
 
+				// A candidate only means something if it beats the
+				// alternatives DECISIVELY. A near-tie means the measurement
+				// carried no information about the mapping (too little
+				// rotation, or too much accelerometer noise), and reporting a
+				// winner then would be reporting noise.
+				constexpr float kDecisiveRatio= 2.f;
+				const float identityRatio= bestScore > 1e-9f ? identityScore / bestScore : 1.f;
+				const float runnerUpRatio= bestScore > 1e-9f ? runnerUpScore / bestScore : 1.f;
+
 				MIKAN_LOG_INFO("test-imuaxes")
-					<< device->getFriendlyName() << ": best gyro axis mapping " << mapping
-					<< " (residual " << bestScore << "), identity residual " << identityScore
-					<< ", ratio " << (bestScore > 1e-12f ? identityScore / bestScore : 0.f);
-				if (bIsIdentity)
+					<< device->getFriendlyName() << ": " << windows.size() << " windows | best " << mapping
+					<< " residual " << bestScore << " | identity residual " << identityScore << " (x"
+					<< identityRatio << ") | runner-up (x" << runnerUpRatio << ")";
+
+				if (identityRatio < kDecisiveRatio && runnerUpRatio < kDecisiveRatio)
+				{
+					MIKAN_LOG_WARNING("test-imuaxes")
+						<< "  -> INCONCLUSIVE: no mapping wins decisively (need >" << kDecisiveRatio
+						<< "x). Rotate through larger, slower sweeps on all three axes and rerun.";
+					result= 1;
+				}
+				else if (bIsIdentity)
 				{
 					MIKAN_LOG_INFO("test-imuaxes")
-						<< "  -> gyro axes already agree with the accelerometer";
+						<< "  -> gyro axes agree with the accelerometer (identity wins by x"
+						<< runnerUpRatio << ")";
 				}
 				else
 				{
 					MIKAN_LOG_ERROR("test-imuaxes")
-						<< "  -> MISMATCH: the gyro needs remapping to " << mapping
-						<< " to agree with the accelerometer";
+						<< "  -> MISMATCH: remap the gyro to " << mapping << " (beats identity by x"
+						<< identityRatio << ")";
 					result= 1;
 				}
 			}
