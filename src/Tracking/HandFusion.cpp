@@ -40,6 +40,12 @@ static constexpr float kSoloSideStickiness= 0.75f;
 // many consecutive fuses before the orientation/angle source switches
 static constexpr float kArticulationSwitchMargin= 1.2f;
 static constexpr int kArticulationSwitchFrames= 5;
+// Triangulated-angle hold across brief mono fallbacks (see m_lastTriAngles)
+static constexpr double kTriAngleHoldMs= 300.0;
+// Rescue-pool floor: a low-presence hand may still contribute usable 2D
+// landmarks as the second triangulation view (the residual is the judge),
+// but below this even the image points are guesses
+static constexpr float kTriRescueMinPresence= 0.15f;
 
 void HandFusion::configure(const HandFusionConfig& config)
 {
@@ -65,6 +71,7 @@ void HandFusion::configure(const HandFusionConfig& config)
 		m_articulationSource[sideIndex]= -1;
 		m_articulationChallenger[sideIndex]= -1;
 		m_articulationChallengerFrames[sideIndex]= 0;
+		m_lastTriTimestampMs[sideIndex]= -1e12;
 	}
 	m_lastTimestampMs= -1.0;
 	m_lastSoloSide= -1;
@@ -439,31 +446,10 @@ void HandFusion::updateStereoScale(const HandCluster& cluster)
 // The reprojection residual doubles as a correspondence test: two DIFFERENT
 // physical hands wrongly merged into one cluster triangulate to points that
 // project nowhere near the observed pixels, so a large RMS vetoes the pair.
-bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand,
-									HandPose& outPose)
+bool HandFusion::triangulatePairPoints(const HandCandidate& obsA, const HandCandidate& obsB,
+									   std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints,
+									   float& outResidualRmsPx, float& outResidualMaxPx)
 {
-	// Best two candidates from distinct cameras with usable image geometry
-	const HandCandidate* obsA= nullptr;
-	const HandCandidate* obsB= nullptr;
-	for (const HandCandidate& candidate : cluster.candidates)
-	{
-		if (!candidate.camera->hasIntrinsics || !candidate.hand->tracked)
-			continue;
-		if (obsA == nullptr || candidate.weight > obsA->weight)
-		{
-			if (obsA != nullptr && obsA->camera->cameraIndex != candidate.camera->cameraIndex)
-				obsB= obsA;
-			obsA= &candidate;
-		}
-		else if (candidate.camera->cameraIndex != obsA->camera->cameraIndex &&
-				 (obsB == nullptr || candidate.weight > obsB->weight))
-		{
-			obsB= &candidate;
-		}
-	}
-	if (obsA == nullptr || obsB == nullptr)
-		return false;
-
 	struct View
 	{
 		const HandCandidate* obs;
@@ -474,14 +460,13 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	std::array<View, 2> views;
 	for (int v= 0; v < 2; ++v)
 	{
-		const HandCandidate* obs= v == 0 ? obsA : obsB;
+		const HandCandidate* obs= v == 0 ? &obsA : &obsB;
 		views[v].obs= obs;
 		views[v].cameraPos= glm::vec3(obs->camera->markerFromCamera[3]);
 		views[v].rotation= glm::mat3(glm::mat4(obs->camera->markerFromCamera));
 		views[v].cameraFromWorld= glm::inverse(obs->camera->markerFromCamera);
 	}
 
-	std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 	{
 		glm::vec3 rayDir[2];
@@ -507,7 +492,7 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 		if (tA <= 0.f || tB <= 0.f)
 			return false; // intersection behind a camera: bogus correspondence
 
-		triPoints[i]= 0.5f * (views[0].cameraPos + rayDir[0] * tA + views[1].cameraPos + rayDir[1] * tB);
+		outPoints[i]= 0.5f * (views[0].cameraPos + rayDir[0] * tA + views[1].cameraPos + rayDir[1] * tB);
 	}
 
 	// Reprojection residual across both views - the correspondence test
@@ -517,7 +502,7 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	{
 		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 		{
-			const glm::dvec4 camPoint= view.cameraFromWorld * glm::dvec4(glm::dvec3(triPoints[i]), 1.0);
+			const glm::dvec4 camPoint= view.cameraFromWorld * glm::dvec4(glm::dvec3(outPoints[i]), 1.0);
 			if (camPoint.z < 1e-3)
 				return false;
 
@@ -530,7 +515,121 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 			residualMax= std::max(residualMax, residual);
 		}
 	}
-	const float residualRms= sqrtf(residualSquaredSum / (2.f * HAND_LANDMARK_COUNT));
+	outResidualRmsPx= sqrtf(residualSquaredSum / (2.f * HAND_LANDMARK_COUNT));
+	outResidualMaxPx= residualMax;
+	return true;
+}
+
+void HandFusion::rescueSoloClusters(std::vector<HandCandidate>& rescuePool,
+									std::vector<HandCluster>& clusters) const
+{
+	if (!m_config.triangulationEnabled)
+		return;
+
+	for (size_t clusterIndex= 0; clusterIndex < clusters.size(); ++clusterIndex)
+	{
+		HandCluster& cluster= clusters[clusterIndex];
+		if (cluster.candidates.size() != 1)
+			continue;
+		const HandCandidate& anchor= cluster.candidates[0];
+		if (!anchor.camera->hasIntrinsics || !anchor.hand->tracked)
+			continue;
+
+		// Candidate partners: observations stranded in OTHER solo clusters
+		// (mono position too far off to merge) plus the below-presence pool.
+		// Decisively-opposed handedness votes are never paired; the
+		// reprojection residual makes the final call either way.
+		auto voteCompatible= [&](const HandCandidate& partner) {
+			return !(partner.signedVote * anchor.signedVote < 0.f &&
+					 fabsf(partner.signedVote) > kVoteVetoDecisiveness &&
+					 fabsf(anchor.signedVote) > kVoteVetoDecisiveness);
+		};
+		auto usable= [&](const HandCandidate& partner) {
+			return partner.camera->cameraIndex != anchor.camera->cameraIndex &&
+				partner.camera->hasIntrinsics && partner.hand->tracked && voteCompatible(partner);
+		};
+
+		float bestRms= m_config.triangulationMaxResidualPx;
+		size_t bestCluster= SIZE_MAX;
+		int bestPool= -1;
+
+		std::array<glm::vec3, HAND_LANDMARK_COUNT> probePoints;
+		float rms= 0.f, maxPx= 0.f;
+		for (size_t otherIndex= 0; otherIndex < clusters.size(); ++otherIndex)
+		{
+			if (otherIndex == clusterIndex || clusters[otherIndex].candidates.size() != 1)
+				continue;
+			const HandCandidate& partner= clusters[otherIndex].candidates[0];
+			if (!usable(partner))
+				continue;
+			if (triangulatePairPoints(anchor, partner, probePoints, rms, maxPx) && rms < bestRms)
+			{
+				bestRms= rms;
+				bestCluster= otherIndex;
+				bestPool= -1;
+			}
+		}
+		for (int poolIndex= 0; poolIndex < (int)rescuePool.size(); ++poolIndex)
+		{
+			const HandCandidate& partner= rescuePool[poolIndex];
+			if (!usable(partner))
+				continue;
+			if (triangulatePairPoints(anchor, partner, probePoints, rms, maxPx) && rms < bestRms)
+			{
+				bestRms= rms;
+				bestCluster= SIZE_MAX;
+				bestPool= poolIndex;
+			}
+		}
+
+		if (bestCluster != SIZE_MAX)
+		{
+			HandCluster& donor= clusters[bestCluster];
+			cluster.candidates.push_back(donor.candidates[0]);
+			clusters.erase(clusters.begin() + bestCluster);
+			if (bestCluster < clusterIndex)
+				--clusterIndex; // erased before us: our index shifted down
+		}
+		else if (bestPool >= 0)
+		{
+			cluster.candidates.push_back(rescuePool[bestPool]);
+			rescuePool.erase(rescuePool.begin() + bestPool);
+		}
+		// anchor/bestWeight stay with the original observation - the rescued
+		// partner's mono pose is exactly the data we don't trust
+	}
+}
+
+bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand,
+									HandPose& outPose)
+{
+	// Best two candidates from distinct cameras with usable image geometry
+	const HandCandidate* obsA= nullptr;
+	const HandCandidate* obsB= nullptr;
+	for (const HandCandidate& candidate : cluster.candidates)
+	{
+		if (!candidate.camera->hasIntrinsics || !candidate.hand->tracked)
+			continue;
+		if (obsA == nullptr || candidate.weight > obsA->weight)
+		{
+			if (obsA != nullptr && obsA->camera->cameraIndex != candidate.camera->cameraIndex)
+				obsB= obsA;
+			obsA= &candidate;
+		}
+		else if (candidate.camera->cameraIndex != obsA->camera->cameraIndex &&
+				 (obsB == nullptr || candidate.weight > obsB->weight))
+		{
+			obsB= &candidate;
+		}
+	}
+	if (obsA == nullptr || obsB == nullptr)
+		return false;
+
+	std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
+	float residualRms= 0.f;
+	float residualMax= 0.f;
+	if (!triangulatePairPoints(*obsA, *obsB, triPoints, residualRms, residualMax))
+		return false;
 	cluster.triResidualRmsPx= residualRms;
 	cluster.triResidualMaxPx= residualMax;
 
@@ -576,12 +675,20 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	outPose.presence= maxPresence;
 	outPose.stereoTriangulated= true;
 
-	// Fold the residual into the confidence: unlike presence (and unlike the
-	// jitter tracker, which needs history), this measures THIS frame's pose
-	// quality directly - an edge-on or half-occluded hand triangulates with a
-	// visibly worse residual while its presence stays ~0.9
-	outPose.confidence=
-		std::clamp(outPose.confidence * residualFactor(residualRms, m_config.residualReferencePx), 0.f, 1.f);
+	// Triangulated confidence = presence x TRI-palm stability x residual
+	// factor. The per-camera stability (mono-depth jitter) is deliberately
+	// NOT in here: triangulation eliminated exactly that noise, and the
+	// 19-41-32 dump showed it dragging confidence to 0.33 on solid stereo
+	// frames because one camera's mono depth was wild. The residual measures
+	// this frame's quality; the tri-palm jitter tracker measures the actual
+	// output noise over time.
+	const double pairTimestampMs=
+		std::max(obsA->camera->timestampMs, obsB->camera->timestampMs);
+	const float triJitterM=
+		updateJitter(-1, (int)side, outPose.palmPositionWorld, pairTimestampMs);
+	const float triStability= stabilityFactor(triJitterM, m_config.jitterReferenceM);
+	outPose.confidence= std::clamp(
+		maxPresence * triStability * residualFactor(residualRms, m_config.residualReferencePx), 0.f, 1.f);
 
 	// Overlays/debug see the triangulated geometry
 	outHand.worldPoints= triPoints;
@@ -611,6 +718,12 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 		}
 	}
 
+	// Arm the angle hold for brief tri->mono fallbacks (streamed convention:
+	// post rest-offset)
+	m_lastTriAngles[(int)side]= outPose.fingers;
+	m_lastTriSkeleton[(int)side]= outPose.skeleton;
+	m_lastTriTimestampMs[(int)side]= m_fuseTimestampMs;
+
 	cluster.triangulated= true;
 	return true;
 }
@@ -620,6 +733,7 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 {
 	outFused= TrackingFrameResult();
 	outFused.timestampMs= nowTimestampMs;
+	m_fuseTimestampMs= nowTimestampMs;
 	m_bStereoScaleFresh= false;
 	m_bRawTriAnglesValid[0]= false;
 	m_bRawTriAnglesValid[1]= false;
@@ -629,7 +743,11 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 
 	// Gather ALL parametric hand observations from fresh, world-tracked
 	// camera results. The per-camera side label is only a VOTE here.
+	// Observations too weak to cluster/vote (low presence or low confidence)
+	// go into the rescue pool instead: their 2D landmarks may still serve as
+	// the second triangulation view for a solo cluster.
 	std::vector<HandCandidate> observations;
+	std::vector<HandCandidate> rescuePool;
 	for (const CameraFrameResult* camera : candidates)
 	{
 		if (camera == nullptr || !camera->valid)
@@ -644,13 +762,25 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		{
 			const TrackedHand& hand= camera->result.hands[sideIndex];
 			const HandPose& pose= camera->result.poses[sideIndex];
-			if (!pose.tracked || !pose.hasWorldPose || pose.presence < m_config.presenceThreshold)
+			if (!pose.tracked || !pose.hasWorldPose || pose.presence < kTriRescueMinPresence)
 				continue;
 
 			HandCandidate candidate;
 			candidate.camera= camera;
 			candidate.hand= &hand;
 			candidate.pose= &pose;
+
+			// Vote DIRECTION comes from the flip-adjusted classifier score,
+			// never from the per-camera side label (labels get displaced by
+			// slot bookkeeping and then vote decisively for the wrong side)
+			candidate.signedVote= (hand.rightProb - 0.5f) * 2.f;
+			candidate.sideVoteWeight= hand.presence * std::max(fabsf(candidate.signedVote), 0.2f);
+
+			if (pose.presence < m_config.presenceThreshold)
+			{
+				rescuePool.push_back(candidate);
+				continue;
+			}
 
 			// Confidence = presence x measured stability. Presence alone is
 			// NOT a usable quality signal: an edge-on hand scores 0.87 while
@@ -662,7 +792,10 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			candidate.confidence= pose.presence * candidate.stability;
 
 			if (candidate.confidence < m_config.minCameraConfidence)
+			{
+				rescuePool.push_back(candidate);
 				continue;
+			}
 
 			// Blend weight additionally folds in geometric conditioning (how
 			// face-on the palm is), which ranks cameras but isn't meaningful
@@ -670,12 +803,6 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			const glm::vec3 cameraPos= glm::vec3(camera->markerFromCamera[3]);
 			candidate.weight= candidate.confidence *
 				visibilityFactor(pose.palmOrientationWorld, pose.palmPositionWorld, cameraPos);
-
-			// Vote DIRECTION comes from the flip-adjusted classifier score,
-			// never from the per-camera side label (labels get displaced by
-			// slot bookkeeping and then vote decisively for the wrong side)
-			candidate.signedVote= (hand.rightProb - 0.5f) * 2.f;
-			candidate.sideVoteWeight= hand.presence * std::max(fabsf(candidate.signedVote), 0.2f);
 
 			observations.push_back(candidate);
 		}
@@ -693,6 +820,11 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	// clusterObservations for why greedy nearest-position fails here)
 	std::vector<HandCluster> clusters;
 	clusterObservations(observations, clusters);
+
+	// Solo clusters get a chance to pair up via image geometry (mono depth
+	// error breaks the position-based gates exactly when a hand is hard to
+	// see; the reprojection residual is the reliable correspondence signal)
+	rescueSoloClusters(rescuePool, clusters);
 
 	// Keep the two best clusters (there are only two physical hands)
 	std::sort(clusters.begin(), clusters.end(),
@@ -844,6 +976,7 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 	// between them. Keep the best single observation instead.
 	if (cluster.triVetoed)
 	{
+		applyTriAngleHold(side, outPose);
 		outPose.tracked= true;
 		outPose.hasWorldPose= true;
 		return;
@@ -973,8 +1106,22 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 		m_articulationChallenger[(int)side]= -1;
 	}
 
+	// Any non-triangulated outcome: bridge brief tri dropouts with the last
+	// triangulated angles instead of snapping to the mono articulation
+	applyTriAngleHold(side, outPose);
+
 	outPose.tracked= true;
 	outPose.hasWorldPose= true;
+}
+
+void HandFusion::applyTriAngleHold(eHandSide side, HandPose& outPose) const
+{
+	const double sinceTriMs= m_fuseTimestampMs - m_lastTriTimestampMs[(int)side];
+	if (sinceTriMs < 0.0 || sinceTriMs > kTriAngleHoldMs)
+		return;
+
+	outPose.fingers= m_lastTriAngles[(int)side];
+	outPose.skeleton= m_lastTriSkeleton[(int)side];
 }
 
 void HandFusion::applySmoothing(TrackingFrameResult& ioFused)

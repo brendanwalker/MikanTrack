@@ -993,6 +993,78 @@ static int runApp(int argc, char** argv)
 						<< "(m) FAILED: a mismatched pairing must be vetoed by the reprojection residual";
 					result= 1;
 				}
+
+				// (o) Solo-cluster rescue: camera B's MONO palm is 30cm off
+				// laterally (as measured live during a pointing gesture), so
+				// position clustering strands it - but its image points are
+				// good, and the probe triangulation must pair it anyway
+				{
+					auto camBFar= makeStereoResult(1, camBPos, worldHand, worldHand, palmTruth);
+					camBFar.result.poses[(int)eHandSide::Right].palmPositionWorld=
+						palmTruth + glm::vec3(0.3f, 0.f, 0.f);
+
+					HandFusion rescueFusion;
+					rescueFusion.configure(fusionConfig);
+					TrackingFrameResult rescueFused;
+					rescueFusion.fuse({&camA, &camBFar}, now, rescueFused);
+					const bool bClusterRescued= rescueFused.poses[(int)eHandSide::Right].stereoTriangulated;
+
+					// ...and the same via the low-presence pool: camera B's
+					// pose is too weak to be a clustering candidate at all
+					auto camBWeak= makeStereoResult(1, camBPos, worldHand, worldHand, palmTruth);
+					camBWeak.result.poses[(int)eHandSide::Right].presence= 0.3f;
+					camBWeak.result.hands[(int)eHandSide::Right].presence= 0.3f;
+
+					HandFusion poolFusion;
+					poolFusion.configure(fusionConfig);
+					TrackingFrameResult poolFused;
+					poolFusion.fuse({&camA, &camBWeak}, now, poolFused);
+					const bool bPoolRescued= poolFused.poses[(int)eHandSide::Right].stereoTriangulated;
+
+					MIKAN_LOG_INFO("test-fusion") << "(o) rescue: displaced-mono=" << bClusterRescued
+						<< " low-presence-pool=" << bPoolRescued;
+					if (!bClusterRescued || !bPoolRescued)
+					{
+						MIKAN_LOG_ERROR("test-fusion")
+							<< "(o) FAILED: solo clusters must pair via probe triangulation";
+						result= 1;
+					}
+				}
+
+				// (p) Triangulated-angle hold: after a stereo fuse, a brief
+				// single-camera fallback must keep the triangulated angles
+				// (the mono articulation carries pose-dependent bias, +0.2 rad
+				// here); a sustained fallback adopts the mono angles
+				{
+					HandFusion holdFusion;
+					holdFusion.configure(fusionConfig);
+
+					TrackingFrameResult holdFused;
+					holdFusion.fuse({&camA, &camB}, now, holdFused);
+					const float triProx= holdFused.poses[(int)eHandSide::Right].fingers[1].proximal;
+
+					auto camASolo= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
+					camASolo.timestampMs= now + 100.0;
+					holdFusion.fuse({&camASolo}, now + 100.0, holdFused);
+					const HandPose& heldPose= holdFused.poses[(int)eHandSide::Right];
+					const float heldProx= heldPose.fingers[1].proximal;
+
+					auto camALate= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
+					camALate.timestampMs= now + 500.0;
+					holdFusion.fuse({&camALate}, now + 500.0, holdFused);
+					const float lateProx= holdFused.poses[(int)eHandSide::Right].fingers[1].proximal;
+
+					const float monoProx= anglesTruth[1].proximal + 0.2f;
+					MIKAN_LOG_INFO("test-fusion") << "(p) angle hold: tri=" << triProx << " held=" << heldProx
+						<< " late=" << lateProx << " (mono=" << monoProx << ")";
+					if (heldPose.stereoTriangulated || fabsf(heldProx - triProx) > 1e-4f ||
+						fabsf(lateProx - monoProx) > 1e-4f)
+					{
+						MIKAN_LOG_ERROR("test-fusion")
+							<< "(p) FAILED: brief fallback must hold tri angles; sustained fallback goes mono";
+						result= 1;
+					}
+				}
 			}
 
 			// (n) Articulation-source hysteresis (non-triangulated path): the

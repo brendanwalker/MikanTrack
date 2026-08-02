@@ -254,11 +254,27 @@ private:
 	// + optional spatial prior
 	AffinityBreakdown sideAffinity(const HandCluster& cluster, eHandSide side) const;
 	void updateStereoScale(const HandCluster& cluster);
+	// Geometric core: triangulate all 21 landmarks from two observations'
+	// image points (two-ray midpoint) and measure the reprojection residual
+	// against both views. Returns false on degenerate geometry.
+	static bool triangulatePairPoints(const HandCandidate& obsA, const HandCandidate& obsB,
+									  std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints,
+									  float& outResidualRmsPx, float& outResidualMaxPx);
+	// Rescue pass: mono depth error routinely exceeds the clustering gates
+	// (measured 0.28m during a pointing gesture), stranding one camera's
+	// observation outside the other's cluster and killing triangulation. A
+	// solo cluster probes unpaired observations from the other camera - the
+	// reprojection residual, not the mono positions, decides the pairing.
+	void rescueSoloClusters(std::vector<HandCandidate>& rescuePool, std::vector<HandCluster>& clusters) const;
 	// Stereo landmark triangulation for a >=2-camera cluster. On success fills
 	// outHand.worldPoints + the pose (palm frame, angles) from the
 	// triangulated geometry and returns true; records the residual (and any
 	// veto) on the cluster either way.
 	bool triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// Keep the last triangulated angles through a brief mono fallback (the
+	// mono articulation carries pose-dependent per-camera bias; switching to
+	// it and back snaps the fingers)
+	void applyTriAngleHold(eHandSide side, HandPose& outPose) const;
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
 	void applySmoothing(TrackingFrameResult& ioFused);
 
@@ -282,6 +298,16 @@ private:
 	int m_articulationSource[2]= {-1, -1};
 	int m_articulationChallenger[2]= {-1, -1};
 	int m_articulationChallengerFrames[2]= {0, 0};
+
+	// Triangulated-angle hold: per-camera model bias is POSE-DEPENDENT
+	// (verified in the 2026-08-01_19-41-32 dump: ~0.2 rad shift on the index
+	// between rest and pointing), so a tri->mono fallback snaps the angles by
+	// the bias delta. Brief fallbacks keep the last triangulated angles
+	// instead; only a sustained mono stretch adopts the mono articulation.
+	std::array<FingerAngles, FINGER_COUNT> m_lastTriAngles[2]{};
+	HandSkeleton m_lastTriSkeleton[2];
+	double m_lastTriTimestampMs[2]= {-1e12, -1e12};
+	double m_fuseTimestampMs= 0.0;
 
 	// Temporal side-assignment prior: last fused palm position per side
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};
