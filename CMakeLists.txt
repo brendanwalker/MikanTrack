@@ -65,6 +65,8 @@ file(GLOB VIDEO_IFACE_SRC  ${ROOT_DIR}/src/Video/Interfaces/*.h)
 file(GLOB VIDEO_SRC        ${ROOT_DIR}/src/Video/*.h        ${ROOT_DIR}/src/Video/*.cpp)
 file(GLOB VIDEO_WMF_SRC    ${ROOT_DIR}/src/Video/WMF/*.h    ${ROOT_DIR}/src/Video/WMF/*.cpp)
 file(GLOB VIDEO_RS_SRC     ${ROOT_DIR}/src/Video/RealSense/*.h ${ROOT_DIR}/src/Video/RealSense/*.cpp)
+file(GLOB IMU_SRC          ${ROOT_DIR}/src/Imu/*.h          ${ROOT_DIR}/src/Imu/*.cpp)
+file(GLOB IMU_JOYCON_SRC   ${ROOT_DIR}/src/Imu/Joycon/*.h   ${ROOT_DIR}/src/Imu/Joycon/*.cpp)
 file(GLOB CALIBRATION_SRC  ${ROOT_DIR}/src/Calibration/*.h  ${ROOT_DIR}/src/Calibration/*.cpp)
 file(GLOB VISION_SRC       ${ROOT_DIR}/src/Vision/*.h       ${ROOT_DIR}/src/Vision/*.cpp)
 file(GLOB TRACKING_SRC     ${ROOT_DIR}/src/Tracking/*.h     ${ROOT_DIR}/src/Tracking/*.cpp)
@@ -81,6 +83,8 @@ add_executable(MikanMediaPipe WIN32
     ${VIDEO_SRC}
     ${VIDEO_WMF_SRC}
     ${VIDEO_RS_SRC}
+    ${IMU_SRC}
+    ${IMU_JOYCON_SRC}
     ${CALIBRATION_SRC}
     ${VISION_SRC}
     ${TRACKING_SRC}
@@ -92,7 +96,8 @@ add_executable(MikanMediaPipe WIN32
 
 source_group(TREE ${ROOT_DIR}/src PREFIX "src" FILES
     ${APP_SRC} ${UTILITY_SRC} ${MATH_SRC} ${VIDEO_IFACE_SRC} ${VIDEO_SRC}
-    ${VIDEO_WMF_SRC} ${VIDEO_RS_SRC} ${CALIBRATION_SRC} ${VISION_SRC} ${TRACKING_SRC}
+    ${VIDEO_WMF_SRC} ${VIDEO_RS_SRC} ${IMU_SRC} ${IMU_JOYCON_SRC}
+    ${CALIBRATION_SRC} ${VISION_SRC} ${TRACKING_SRC}
     ${OSC_SRC} ${RENDER_SRC} ${UI_SRC} ${ROOT_DIR}/src/main.cpp)
 source_group("thirdparty\\imgui" FILES ${IMGUI_SOURCES})
 
@@ -106,6 +111,8 @@ target_include_directories(MikanMediaPipe PRIVATE
     ${ROOT_DIR}/src/Video/WMF
     ${ROOT_DIR}/src/Video/RealSense
     ${ROOT_DIR}/deps/librealsense/include
+    ${ROOT_DIR}/src/Imu
+    ${ROOT_DIR}/src/Imu/Joycon
     ${ROOT_DIR}/src/Calibration
     ${ROOT_DIR}/src/Vision
     ${ROOT_DIR}/src/Tracking
@@ -131,6 +138,8 @@ target_link_libraries(MikanMediaPipe PRIVATE
     opengl32
     # Media Foundation (webcam capture)
     mfplat mf mfuuid mfreadwrite wmcodecdspuuid
+    # HID (Joy-Con / IMU devices over Bluetooth)
+    hid setupapi
     # misc win32
     winmm shlwapi ws2_32
 )
