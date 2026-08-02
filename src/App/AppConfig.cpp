@@ -256,7 +256,6 @@ bool AppConfig::load()
 		fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
 		fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
 		fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
-		fusion.blendArticulation= fu.value("blendArticulation", false);
 
 		restAnglesFromJson(j.value("fusedRestAngles", json::object()), fusedRestAngles);
 
@@ -275,29 +274,12 @@ bool AppConfig::load()
 		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 		tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
 		tracking.autoHandScaleFromStereo= tr.value("autoHandScaleFromStereo", true);
-		tracking.usePnpDepth= tr.value("usePnpDepth", true);
-		tracking.pnpPalmOnly= tr.value("pnpPalmOnly", false);
 		tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
 		tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
-		// Legacy single-group smoothing keys (pre palm/angle split) migrate
-		// into both groups, but only when they were deliberately tuned away
-		// from the old defaults (1.0/0.05) - otherwise the new split
-		// defaults apply
-		{
-			const float legacyMinCutoff= tr.value("smoothingMinCutoff", 1.0f);
-			const float legacyBeta= tr.value("smoothingBeta", 0.05f);
-			const bool bLegacyTuned=
-				tr.contains("smoothingMinCutoff") &&
-				(fabsf(legacyMinCutoff - 1.0f) > 1e-4f || fabsf(legacyBeta - 0.05f) > 1e-4f);
-			const float defaultMinCutoff= bLegacyTuned ? legacyMinCutoff : 3.0f;
-			const float defaultBeta= bLegacyTuned ? legacyBeta : 0.1f;
-			const float defaultAngleMinCutoff= bLegacyTuned ? legacyMinCutoff : 0.75f;
-			const float defaultAngleBeta= bLegacyTuned ? legacyBeta : 0.02f;
-			tracking.palmMinCutoff= tr.value("palmMinCutoff", defaultMinCutoff);
-			tracking.palmBeta= tr.value("palmBeta", defaultBeta);
-			tracking.angleMinCutoff= tr.value("angleMinCutoff", defaultAngleMinCutoff);
-			tracking.angleBeta= tr.value("angleBeta", defaultAngleBeta);
-		}
+		tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
+		tracking.palmBeta= tr.value("palmBeta", 0.1f);
+		tracking.angleMinCutoff= tr.value("angleMinCutoff", 0.75f);
+		tracking.angleBeta= tr.value("angleBeta", 0.02f);
 		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
 		tracking.onnxEp= tr.value("onnxEp", "directml");
 
@@ -340,7 +322,6 @@ std::string AppConfig::toJsonString() const
 		{"triangulationEnabled", fusion.triangulationEnabled},
 		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
 		{"residualReferencePx", fusion.residualReferencePx},
-		{"blendArticulation", fusion.blendArticulation},
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
@@ -362,8 +343,6 @@ std::string AppConfig::toJsonString() const
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
 		{"autoHandScaleFromStereo", tracking.autoHandScaleFromStereo},
-		{"usePnpDepth", tracking.usePnpDepth},
-		{"pnpPalmOnly", tracking.pnpPalmOnly},
 		{"crossCameraSeeding", tracking.crossCameraSeeding},
 		{"useRealSenseDepth", tracking.useRealSenseDepth},
 		{"palmMinCutoff", tracking.palmMinCutoff},

@@ -72,14 +72,6 @@ struct HandFusionConfig
 	// into the fused confidence, same shape as the jitter stability factor)
 	float residualReferencePx= 8.f;
 
-	// Legacy A/B switch for the NON-triangulated multi-camera path: true =
-	// weighted blend of orientation + finger angles across cameras (the old
-	// behavior). False (default) = select one source camera with hysteresis.
-	// Blending estimators that disagree by tens of degrees with time-varying
-	// weights manufactures low-frequency wander the smoothing can't remove;
-	// picking the best single view does not. (Palm POSITION still blends -
-	// positions compose, and the disagreement there is cm-scale.)
-	bool blendArticulation= false;
 
 	// Rest-pose zero for the TRIANGULATED path: raw stereo angles minus these
 	// read zero in the user's captured rest pose. Separate from the

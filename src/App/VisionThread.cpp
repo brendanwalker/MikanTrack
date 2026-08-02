@@ -263,11 +263,7 @@ void VisionThread::refreshConfigOnThread()
 				context.landmarkTo3D= std::make_unique<LandmarkTo3D>();
 			context.landmarkTo3D->configure(
 				profile.intrinsics.intrinsics,
-				m_config->handScale.refLengthMeters,
-				false, // smoothing post-fusion
-				m_config->tracking.palmMinCutoff,
-				m_config->tracking.palmBeta);
-			context.landmarkTo3D->setPnpConfig(m_config->tracking.usePnpDepth, m_config->tracking.pnpPalmOnly);
+				m_config->handScale.refLengthMeters);
 
 			// Undistortion for the ML input + preview. ALWAYS rebuilt on a
 			// config change: gating on frame dimensions alone kept the OLD
@@ -324,7 +320,6 @@ void VisionThread::refreshConfigOnThread()
 	fusionConfig.triangulationEnabled= m_config->fusion.triangulationEnabled;
 	fusionConfig.triangulationMaxResidualPx= m_config->fusion.triangulationMaxResidualPx;
 	fusionConfig.residualReferencePx= m_config->fusion.residualReferencePx;
-	fusionConfig.blendArticulation= m_config->fusion.blendArticulation;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		fusionConfig.bHasFusedRestAngles[sideIndex]= m_config->fusedRestAngles.present[sideIndex];

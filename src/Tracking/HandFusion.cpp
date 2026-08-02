@@ -1002,98 +1002,54 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 			outPose.presence= maxPresence;
 		}
 
-		if (m_config.blendArticulation)
+		// Select one camera as the orientation/angle source, with
+		// hysteresis: the incumbent keeps the job until a challenger beats
+		// its weight by a decisive margin for several consecutive fuses.
+		// (Without it, weight noise would flip the source frame to frame -
+		// reintroducing the switching wander that selection exists to kill.)
+		const int sideIndex= (int)side;
+		const HandCandidate* incumbent= nullptr;
+		for (const HandCandidate& candidate : candidates)
 		{
-			// Legacy A/B path: weighted blend of orientation + finger angles.
-			// Poses/angles compose - but blending two estimators that disagree
-			// by tens of degrees with time-varying weights manufactures
-			// low-frequency wander inside the smoothing passband.
-			glm::quat blendedQuat(0.f, 0.f, 0.f, 0.f);
-			std::array<FingerAngles, FINGER_COUNT> blendedAngles{};
+			if (candidate.camera->cameraIndex == m_articulationSource[sideIndex])
+				incumbent= &candidate;
+		}
 
-			const glm::quat referenceQuat= best.pose->palmOrientationWorld;
-			for (const HandCandidate& candidate : candidates)
+		const HandCandidate* source= &best;
+		if (incumbent == nullptr)
+		{
+			// No incumbent in this cluster: adopt the best immediately
+			m_articulationChallengerFrames[sideIndex]= 0;
+			m_articulationChallenger[sideIndex]= -1;
+		}
+		else if (best.camera->cameraIndex != incumbent->camera->cameraIndex &&
+				 best.weight > incumbent->weight * kArticulationSwitchMargin)
+		{
+			if (m_articulationChallenger[sideIndex] == best.camera->cameraIndex)
+				++m_articulationChallengerFrames[sideIndex];
+			else
 			{
-				const float weight= candidate.weight;
-
-				// Hemisphere-align before component-wise blending
-				glm::quat quat= candidate.pose->palmOrientationWorld;
-				if (glm::dot(quat, referenceQuat) < 0.f)
-					quat= -quat;
-				blendedQuat+= quat * weight;
-
-				for (int finger= 0; finger < FINGER_COUNT; ++finger)
-				{
-					blendedAngles[finger].lateral+= candidate.pose->fingers[finger].lateral * weight;
-					blendedAngles[finger].proximal+= candidate.pose->fingers[finger].proximal * weight;
-					blendedAngles[finger].intermediate+= candidate.pose->fingers[finger].intermediate * weight;
-					blendedAngles[finger].distal+= candidate.pose->fingers[finger].distal * weight;
-				}
+				m_articulationChallenger[sideIndex]= best.camera->cameraIndex;
+				m_articulationChallengerFrames[sideIndex]= 1;
 			}
 
-			if (weightSum > 1e-6f)
-			{
-				outPose.palmOrientationWorld= glm::normalize(blendedQuat);
-				for (int finger= 0; finger < FINGER_COUNT; ++finger)
-				{
-					outPose.fingers[finger].lateral= blendedAngles[finger].lateral / weightSum;
-					outPose.fingers[finger].proximal= blendedAngles[finger].proximal / weightSum;
-					outPose.fingers[finger].intermediate= blendedAngles[finger].intermediate / weightSum;
-					outPose.fingers[finger].distal= blendedAngles[finger].distal / weightSum;
-				}
-			}
+			if (m_articulationChallengerFrames[sideIndex] < kArticulationSwitchFrames)
+				source= incumbent;
 		}
 		else
 		{
-			// Select one camera as the orientation/angle source, with
-			// hysteresis: the incumbent keeps the job until a challenger beats
-			// its weight by a decisive margin for several consecutive fuses.
-			// (Without it, weight noise would flip the source frame to frame -
-			// reintroducing the switching wander that selection exists to kill.)
-			const int sideIndex= (int)side;
-			const HandCandidate* incumbent= nullptr;
-			for (const HandCandidate& candidate : candidates)
-			{
-				if (candidate.camera->cameraIndex == m_articulationSource[sideIndex])
-					incumbent= &candidate;
-			}
-
-			const HandCandidate* source= &best;
-			if (incumbent == nullptr)
-			{
-				// No incumbent in this cluster: adopt the best immediately
-				m_articulationChallengerFrames[sideIndex]= 0;
-				m_articulationChallenger[sideIndex]= -1;
-			}
-			else if (best.camera->cameraIndex != incumbent->camera->cameraIndex &&
-					 best.weight > incumbent->weight * kArticulationSwitchMargin)
-			{
-				if (m_articulationChallenger[sideIndex] == best.camera->cameraIndex)
-					++m_articulationChallengerFrames[sideIndex];
-				else
-				{
-					m_articulationChallenger[sideIndex]= best.camera->cameraIndex;
-					m_articulationChallengerFrames[sideIndex]= 1;
-				}
-
-				if (m_articulationChallengerFrames[sideIndex] < kArticulationSwitchFrames)
-					source= incumbent;
-			}
-			else
-			{
-				m_articulationChallengerFrames[sideIndex]= 0;
-				m_articulationChallenger[sideIndex]= -1;
-				source= incumbent;
-			}
-			m_articulationSource[sideIndex]= source->camera->cameraIndex;
-			m_dominantCamera[sideIndex]= source->camera->cameraIndex;
-
-			outPose.palmOrientationWorld= source->pose->palmOrientationWorld;
-			outPose.fingers= source->pose->fingers;
-			outPose.skeleton= source->pose->skeleton;
-			outHand= *source->hand;
-			outHand.side= side;
+			m_articulationChallengerFrames[sideIndex]= 0;
+			m_articulationChallenger[sideIndex]= -1;
+			source= incumbent;
 		}
+		m_articulationSource[sideIndex]= source->camera->cameraIndex;
+		m_dominantCamera[sideIndex]= source->camera->cameraIndex;
+
+		outPose.palmOrientationWorld= source->pose->palmOrientationWorld;
+		outPose.fingers= source->pose->fingers;
+		outPose.skeleton= source->pose->skeleton;
+		outHand= *source->hand;
+		outHand.side= side;
 
 		// A two-camera observation of one physical hand also triangulates the
 		// true hand scale

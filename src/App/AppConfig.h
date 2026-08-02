@@ -61,11 +61,6 @@ struct TrackingConfig
 	// With two calibrated cameras, continuously refine the hand scale from
 	// stereo wrist triangulation (overrides the wizard-measured scale live)
 	bool autoHandScaleFromStereo= true;
-	// Depth estimator: solvePnP over the per-frame metric hand model (default)
-	// vs the legacy two-point wrist-bone estimate (kept for A/B comparison)
-	bool usePnpDepth= true;
-	// Restrict the PnP solve to the 6 quasi-rigid palm points
-	bool pnpPalmOnly= false;
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
 	bool crossCameraSeeding= true;
@@ -146,9 +141,6 @@ struct FusionConfig
 	// trustworthy - a TRUE pose-quality signal (unlike presence, which stays
 	// high on ill-conditioned views), folded into the fused confidence
 	float residualReferencePx= 8.f;
-	// Legacy A/B: weighted-blend orientation/angles across cameras on the
-	// non-triangulated path instead of selecting one source with hysteresis
-	bool blendArticulation= false;
 };
 
 class AppConfig

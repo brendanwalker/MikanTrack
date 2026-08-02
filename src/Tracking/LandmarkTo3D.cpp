@@ -18,10 +18,7 @@ static constexpr float kDefaultDtSeconds= 1.f / 60.f;
 
 void LandmarkTo3D::configure(
 	const MikanMonoIntrinsics& intrinsics,
-	double refLengthMeters,
-	bool smoothingEnabled,
-	float smoothingMinCutoff,
-	float smoothingBeta)
+	double refLengthMeters)
 {
 	// MikanMatrix3d is column-major: fx= x0, fy= y1, cx= z0, cy= z1.
 	// Landmarks arrive in undistorted image space, so use the undistorted matrix.
@@ -32,10 +29,6 @@ void LandmarkTo3D::configure(
 	m_cy= (float)cameraMatrix.z1;
 	m_refLengthMeters= (float)refLengthMeters;
 
-	m_bSmoothingEnabled= smoothingEnabled;
-	m_filterBank.configure(smoothingMinCutoff, smoothingBeta, 1.f);
-	m_filterBank.resetAll();
-	m_lastTimestampMs= -1.0;
 	m_bSideWasTracked[0]= false;
 	m_bSideWasTracked[1]= false;
 	m_bPnpPoseValid[0]= false;
@@ -65,25 +58,15 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult,
 	if (!m_bConfigured)
 		return;
 
-	// frame delta for the one-euro filters (clamped against timestamp glitches)
-	float dtSeconds= kDefaultDtSeconds;
-	if (m_lastTimestampMs >= 0.0 && ioResult.timestampMs > m_lastTimestampMs)
-		dtSeconds= std::clamp((float)((ioResult.timestampMs - m_lastTimestampMs) / 1000.0), 1.f / 240.f, 0.25f);
-	m_lastTimestampMs= ioResult.timestampMs;
-	m_lastDtSeconds= dtSeconds;
-
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		TrackedHand& hand= ioResult.hands[sideIndex];
 
 		if (hand.tracked)
 		{
-			// fresh acquisition: drop stale filter state
+			// fresh acquisition: drop the stale PnP warm start
 			if (!m_bSideWasTracked[sideIndex])
-			{
-				m_filterBank.resetSide((eHandSide)sideIndex);
 				m_bPnpPoseValid[sideIndex]= false;
-			}
 
 			// Hardware depth (RealSense) beats any monocular estimate when the
 			// palm is sufficiently resolved; otherwise the PnP/legacy path runs
@@ -91,7 +74,7 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult,
 				depthMeasurements != nullptr &&
 				processHandDepth(hand, (*depthMeasurements)[sideIndex]);
 			if (!bDepthResolved)
-				processHand(hand, dtSeconds);
+				processHand(hand);
 
 			if (hand.hasCameraSpace)
 				fillHandPose(hand, ioResult.poses[sideIndex]);
@@ -248,15 +231,16 @@ float LandmarkTo3D::computeFkReprojectionError(const TrackedHand& hand, const Ha
 	return count > 0 ? errorSum / (float)count : 0.f;
 }
 
-void LandmarkTo3D::processHand(TrackedHand& hand, float dtSeconds)
+void LandmarkTo3D::processHand(TrackedHand& hand)
 {
-	if (m_bUsePnpDepth && processHandPnp(hand, dtSeconds))
-		return;
-
-	processHandLegacy(hand, dtSeconds);
+	// solvePnP over the per-frame metric hand model is the sole monocular
+	// depth estimator (a rare solve failure just skips camera space for the
+	// frame - fusion's staleness window absorbs it). The old two-point
+	// wrist-bone estimator lost every A/B and was removed.
+	processHandPnp(hand);
 }
 
-bool LandmarkTo3D::processHandPnp(TrackedHand& hand, float dtSeconds)
+bool LandmarkTo3D::processHandPnp(TrackedHand& hand)
 {
 	const int wristIndex= (int)eHandLandmark::WRIST;
 	const int middleMcpIndex= (int)eHandLandmark::MIDDLE_MCP;
@@ -271,22 +255,16 @@ bool LandmarkTo3D::processHandPnp(TrackedHand& hand, float dtSeconds)
 		return false;
 	const float modelScale= m_refLengthMeters / modelBoneLength;
 
-	// The 6 quasi-rigid palm points, or all 21
-	static const int kPalmIndices[6]= {
-		(int)eHandLandmark::WRIST,     (int)eHandLandmark::THUMB_CMC, (int)eHandLandmark::INDEX_MCP,
-		(int)eHandLandmark::MIDDLE_MCP, (int)eHandLandmark::RING_MCP,  (int)eHandLandmark::PINKY_MCP};
-	const int pointCount= m_bPnpPalmOnly ? 6 : HAND_LANDMARK_COUNT;
-
+	// All 21 correspondences: landmark jitter averages across the hand
 	std::vector<cv::Point3f> objectPoints;
 	std::vector<cv::Point2f> imagePoints;
-	objectPoints.reserve(pointCount);
-	imagePoints.reserve(pointCount);
-	for (int i= 0; i < pointCount; ++i)
+	objectPoints.reserve(HAND_LANDMARK_COUNT);
+	imagePoints.reserve(HAND_LANDMARK_COUNT);
+	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 	{
-		const int landmarkIndex= m_bPnpPalmOnly ? kPalmIndices[i] : i;
-		const glm::vec3 objectPoint= (hand.modelPoints[landmarkIndex] - modelWrist) * modelScale;
+		const glm::vec3 objectPoint= (hand.modelPoints[i] - modelWrist) * modelScale;
 		objectPoints.emplace_back(objectPoint.x, objectPoint.y, objectPoint.z);
-		imagePoints.emplace_back(hand.imagePoints[landmarkIndex].x, hand.imagePoints[landmarkIndex].y);
+		imagePoints.emplace_back(hand.imagePoints[i].x, hand.imagePoints[i].y);
 	}
 
 	// Undistorted pinhole camera; image points arrive pre-undistorted
@@ -328,62 +306,18 @@ bool LandmarkTo3D::processHandPnp(TrackedHand& hand, float dtSeconds)
 	}
 	m_bPnpPoseValid[sideIndex]= true;
 
-	// cameraPoints= R * obj + t for ALL 21 landmarks (articulation comes from
-	// the per-frame object model; palm-only mode only restricts the SOLVE)
+	// cameraPoints= R * obj + t for all 21 landmarks (articulation comes from
+	// the per-frame object model)
 	cv::Matx33d rotation;
 	cv::Rodrigues(rvec, rotation);
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 	{
 		const glm::vec3 objectPoint= (hand.modelPoints[i] - modelWrist) * modelScale;
 		const cv::Vec3d rotated= rotation * cv::Vec3d(objectPoint.x, objectPoint.y, objectPoint.z) + tvec;
-
-		glm::vec3 cameraPoint((float)rotated(0), (float)rotated(1), (float)rotated(2));
-		if (m_bSmoothingEnabled)
-			cameraPoint= m_filterBank.landmarkFilter(hand.side, i).filter(cameraPoint, dtSeconds);
-
-		hand.cameraPoints[i]= cameraPoint;
+		hand.cameraPoints[i]= glm::vec3((float)rotated(0), (float)rotated(1), (float)rotated(2));
 	}
 
 	hand.hasCameraSpace= true;
 	return true;
 }
 
-void LandmarkTo3D::processHandLegacy(TrackedHand& hand, float dtSeconds)
-{
-	const int wristIndex= (int)eHandLandmark::WRIST;
-	const int middleMcpIndex= (int)eHandLandmark::MIDDLE_MCP;
-
-	// -- scale + foreshortening from the model (metric) landmarks --
-	const glm::vec3 modelSegment= hand.modelPoints[wristIndex] - hand.modelPoints[middleMcpIndex];
-	const float l3d= glm::length(modelSegment);
-	const float l2dModel= glm::length(glm::vec2(modelSegment));
-	if (l3d < 1e-4f)
-		return;
-	const float foreshortening= l3d / std::max(l2dModel, 1e-6f);
-
-	// -- wrist depth from the calibrated reference length --
-	const glm::vec2 wristPixel= glm::vec2(hand.imagePoints[wristIndex]);
-	const glm::vec2 middleMcpPixel= glm::vec2(hand.imagePoints[middleMcpIndex]);
-	const float pixelDist= std::max(glm::length(wristPixel - middleMcpPixel), 1e-3f);
-	const float zWrist= m_fx * m_refLengthMeters / (pixelDist * foreshortening);
-	if (!std::isfinite(zWrist) || zWrist <= 0.f)
-		return;
-
-	// -- per-landmark depth from the model z profile, rescaled to real size --
-	const float metersPerModelUnit= m_refLengthMeters / l3d;
-	const float modelWristZ= hand.modelPoints[wristIndex].z;
-
-	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
-	{
-		const float zOffset= (hand.modelPoints[i].z - modelWristZ) * metersPerModelUnit;
-		const float z= std::max(zWrist + zOffset, kMinDepthMeters);
-
-		glm::vec3 cameraPoint= backProject(hand.imagePoints[i].x, hand.imagePoints[i].y, z);
-		if (m_bSmoothingEnabled)
-			cameraPoint= m_filterBank.landmarkFilter(hand.side, i).filter(cameraPoint, dtSeconds);
-
-		hand.cameraPoints[i]= cameraPoint;
-	}
-
-	hand.hasCameraSpace= true;
-}

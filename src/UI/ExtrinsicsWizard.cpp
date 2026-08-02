@@ -32,8 +32,6 @@ void ExtrinsicsWizard::enter(int cameraIndex)
 	m_markerId= m_config->camera(m_cameraIndex).extrinsics.markerId;
 	m_markerLengthMM= (float)m_config->camera(m_cameraIndex).extrinsics.markerLengthMM;
 	m_bHasCameraPose= false;
-	m_handScaleSamples.clear();
-	m_measuredHandScale= 0.0;
 
 	// Marker detection wants undistorted frames; tracking only needed for
 	// hand scale. Only this camera is affected - the others keep tracking.
@@ -151,42 +149,6 @@ bool ExtrinsicsWizard::raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::
 	return raycastPixelOntoPlane(m_config->camera(m_cameraIndex).intrinsics.intrinsics, m_cameraFromMarker, pixel, outPoint);
 }
 
-void ExtrinsicsWizard::updateHandScaleCapture(const TrackingFrameResult& trackingResult)
-{
-	// Use whichever hand is tracked with good presence
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const TrackedHand& hand= trackingResult.hands[sideIndex];
-		if (!hand.tracked || hand.presence < 0.7f)
-			continue;
-
-		const glm::vec3& wristPx= hand.imagePoints[(int)eHandLandmark::WRIST];
-		const glm::vec3& mcpPx= hand.imagePoints[(int)eHandLandmark::MIDDLE_MCP];
-
-		glm::dvec3 wristOnPlane, mcpOnPlane;
-		if (raycastPixelOntoMarkerPlane(glm::vec2(wristPx.x, wristPx.y), wristOnPlane) &&
-			raycastPixelOntoMarkerPlane(glm::vec2(mcpPx.x, mcpPx.y), mcpOnPlane))
-		{
-			const double length= glm::length(mcpOnPlane - wristOnPlane);
-
-			// Sanity range: 5-12cm covers human hands
-			if (length >= 0.05 && length <= 0.12)
-			{
-				m_handScaleSamples.push_back(length);
-
-				if ((int)m_handScaleSamples.size() >= k_handScaleSampleCount)
-				{
-					std::vector<double> sorted= m_handScaleSamples;
-					std::sort(sorted.begin(), sorted.end());
-					m_measuredHandScale= sorted[sorted.size() / 2]; // median
-					m_state= eState::Review;
-				}
-			}
-		}
-
-		break; // only sample one hand per frame
-	}
-}
 
 bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 							  const TrackingFrameResult& trackingResult, ImDrawList* overlayDrawList,
@@ -195,8 +157,6 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 	if (!m_bActive)
 		return false;
 
-	if (m_state == eState::CaptureHandScale && m_handScaleCountdown > 0.f)
-		m_handScaleCountdown-= deltaSeconds;
 
 	// Marker pose sampling
 	if ((m_state == eState::CaptureCameraPose || m_state == eState::VerifySetup) &&
@@ -224,8 +184,6 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview,
 
 	drawWizardWindow(bgrPreview, trackingResult);
 
-	if (m_state == eState::CaptureHandScale && m_handScaleCountdown <= 0.f)
-		updateHandScaleCapture(trackingResult);
 
 	return !m_bWantsClose;
 }
@@ -340,54 +298,13 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
 			ImGui::TextWrapped("Sanity check these numbers against your physical setup.");
 
-			if (ImGui::Button("Looks Right - Measure Hand Scale", ImVec2(-1, 0)))
+			if (ImGui::Button("Looks Right", ImVec2(-1, 0)))
 			{
-				m_handScaleSamples.clear();
-				m_handScaleCountdown= k_handScaleCountdownSeconds;
-				m_visionThread->setTrackingEnabled(m_cameraIndex, true); // hand landmarks needed now
-				m_state= eState::CaptureHandScale;
+				m_visionThread->setTrackingEnabled(m_cameraIndex, true);
+				m_state= eState::Review;
 			}
 			if (ImGui::Button("Recapture Pose"))
 				m_state= eState::VerifySetup;
-			break;
-		}
-
-		case eState::CaptureHandScale:
-		{
-			ImGui::TextWrapped(
-				"Lay your hand FLAT on the table next to the marker, fingers relaxed. "
-				"Hold still while samples are collected.");
-
-			if (m_handScaleCountdown > 0.f)
-			{
-				// Big countdown so the hand can settle before sampling begins
-				char countdownText[16];
-				snprintf(countdownText, sizeof(countdownText), "%d", (int)ceilf(m_handScaleCountdown));
-				ImGui::SetWindowFontScale(3.f);
-				const float textWidth= ImGui::CalcTextSize(countdownText).x;
-				ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
-				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
-				ImGui::SetWindowFontScale(1.f);
-				ImGui::ProgressBar(
-					1.f - m_handScaleCountdown / k_handScaleCountdownSeconds, ImVec2(-1, 4), "");
-			}
-			else
-			{
-				ImGui::ProgressBar(
-					(float)m_handScaleSamples.size() / (float)k_handScaleSampleCount, ImVec2(-1, 0));
-			}
-
-			bool bHandVisible= false;
-			for (const TrackedHand& hand : trackingResult.hands)
-				bHandVisible|= hand.tracked;
-			if (!bHandVisible)
-				ImGui::TextDisabled("No hand detected yet");
-
-			if (ImGui::Button("Skip (keep default 8 cm)"))
-			{
-				m_measuredHandScale= 0.0;
-				m_state= eState::Review;
-			}
 			break;
 		}
 
@@ -397,10 +314,10 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 
 			const glm::dmat4 worldFromCamera= computeWorldFromCamera();
 			ImGui::Text("Camera height over table: %.2f m", worldFromCamera[3].z);
-			if (m_measuredHandScale > 0.0)
-				ImGui::Text("Hand scale (wrist->knuckle): %.1f cm", m_measuredHandScale * 100.0);
-			else
-				ImGui::Text("Hand scale: default %.1f cm", m_config->handScale.refLengthMeters * 100.0);
+			ImGui::TextWrapped(
+				"Hand scale is measured automatically from stereo/depth while "
+				"tracking runs (current: %.1f cm).",
+				m_config->handScale.refLengthMeters * 100.0);
 
 			if (ImGui::Button("Accept & Save", ImVec2(-1, 0)))
 			{
@@ -418,21 +335,12 @@ void ExtrinsicsWizard::drawWizardWindow(const cv::Mat& bgrPreview, const Trackin
 				m_config->camera(m_cameraIndex).extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
 				m_config->camera(m_cameraIndex).extrinsics.markerId= m_markerId;
 				m_config->camera(m_cameraIndex).extrinsics.markerLengthMM= m_markerLengthMM;
-				if (m_measuredHandScale > 0.0)
-				{
-					m_config->handScale.present= true;
-					m_config->handScale.refLengthMeters= m_measuredHandScale;
-				}
 				m_config->markDirty();
 				m_config->save();
 				m_bWantsClose= true;
 			}
-			if (ImGui::Button("Redo Hand Scale"))
-			{
-				m_handScaleSamples.clear();
-				m_handScaleCountdown= k_handScaleCountdownSeconds;
-				m_state= eState::CaptureHandScale;
-			}
+			if (ImGui::Button("Recapture Pose"))
+				m_state= eState::VerifySetup;
 			break;
 		}
 	}

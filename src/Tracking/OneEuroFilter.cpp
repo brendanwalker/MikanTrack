@@ -59,37 +59,3 @@ void OneEuroFilterVec3::reset()
 	for (OneEuroFilter& axisFilter : m_axisFilters)
 		axisFilter.reset();
 }
-
-void HandOneEuroBank::configure(float minCutoff, float beta, float dCutoff)
-{
-	for (auto& sideFilters : m_landmarkFilters)
-	{
-		for (OneEuroFilterVec3& landmarkFilter : sideFilters)
-			landmarkFilter.configure(minCutoff, beta, dCutoff);
-	}
-	for (OneEuroFilterVec3& elbowFilter : m_elbowFilters)
-		elbowFilter.configure(minCutoff, beta, dCutoff);
-}
-
-OneEuroFilterVec3& HandOneEuroBank::landmarkFilter(eHandSide side, int landmarkIndex)
-{
-	return m_landmarkFilters[(int)side][landmarkIndex];
-}
-
-OneEuroFilterVec3& HandOneEuroBank::elbowFilter(eHandSide side)
-{
-	return m_elbowFilters[(int)side];
-}
-
-void HandOneEuroBank::resetSide(eHandSide side)
-{
-	for (OneEuroFilterVec3& landmarkFilter : m_landmarkFilters[(int)side])
-		landmarkFilter.reset();
-	m_elbowFilters[(int)side].reset();
-}
-
-void HandOneEuroBank::resetAll()
-{
-	resetSide(eHandSide::Left);
-	resetSide(eHandSide::Right);
-}

@@ -48,20 +48,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		"depth instead of the monocular PnP estimate. Fingertip depth holes\n"
 		"fall back to parent-joint depth. No effect on plain webcams.");
 
-	bChanged|= ImGui::Checkbox("solvePnP depth", &tracking.usePnpDepth);
-	ImGui::SetItemTooltip(
-		"Solves the hand's rigid 6-DoF pose from all 21 landmark\n"
-		"correspondences instead of estimating depth from the single\n"
-		"wrist->knuckle bone - substantially less z noise. Off = legacy\n"
-		"two-point estimator (for A/B comparison).");
-	ImGui::BeginDisabled(!tracking.usePnpDepth);
-	bChanged|= ImGui::Checkbox("PnP: palm points only", &tracking.pnpPalmOnly);
-	ImGui::SetItemTooltip(
-		"Restrict the solve to the 6 quasi-rigid palm points (wrist,\n"
-		"thumb CMC, finger MCPs). Try if occluded fingertips appear to\n"
-		"drag the full solve.");
-	ImGui::EndDisabled();
-
 	ImGui::SeparatorText("Smoothing");
 	bChanged|= ImGui::Checkbox("Enabled", &tracking.smoothingEnabled);
 	ImGui::TextDisabled("Palm transform (latency is visible - keep responsive)");
@@ -109,14 +95,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"(the noisy, view-dependent part) stays out of the loop\n"
 			"entirely. Off = blend the per-camera monocular poses (the\n"
 			"previous behavior).");
-
-		bChanged|= ImGui::Checkbox("Blend articulation (legacy)", &fusion.blendArticulation);
-		ImGui::SetItemTooltip(
-			"When triangulation is off or unavailable and two cameras see a\n"
-			"hand: ON = weighted blend of orientation + finger angles (the\n"
-			"old behavior; time-varying weights over disagreeing estimates\n"
-			"produce slow wander). OFF = pick the best single camera with\n"
-			"switching hysteresis. Palm position blends either way.");
 
 		ImGui::BeginDisabled(!fusion.triangulationEnabled);
 		bChanged|= ImGui::SliderFloat("Max tri residual", &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");

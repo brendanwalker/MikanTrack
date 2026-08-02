@@ -1859,10 +1859,9 @@ static int runApp(int argc, char** argv)
 				return hand;
 			};
 
-			auto runEstimator= [&](bool bUsePnp, bool bPalmOnly, const char* label) {
+			auto runEstimator= [&](const char* label) {
 				LandmarkTo3D landmarkTo3D;
-				landmarkTo3D.configure(intrinsics, boneLength, false, 1.f, 0.05f);
-				landmarkTo3D.setPnpConfig(bUsePnp, bPalmOnly);
+				landmarkTo3D.configure(intrinsics, boneLength);
 
 				std::array<glm::vec3, HAND_LANDMARK_COUNT> truthCamera;
 				TrackingFrameResult frame;
@@ -1881,20 +1880,12 @@ static int runApp(int argc, char** argv)
 				return hand.hasCameraSpace ? rms : 1e9f;
 			};
 
-			// PnP paths must recover the exact synthetic pose (sub-mm)
-			const float rmsPnpAll= runEstimator(true, false, "PnP all-21");
-			const float rmsPnpPalm= runEstimator(true, true, "PnP palm-only");
-			// Legacy is informative only (expected worse on a rotated hand)
-			const float rmsLegacy= runEstimator(false, false, "Legacy two-point");
-
-			if (rmsPnpAll > 0.001f || rmsPnpPalm > 0.001f)
+			// PnP must recover the exact synthetic pose (sub-mm)
+			const float rmsPnp= runEstimator("PnP all-21");
+			if (rmsPnp > 0.001f)
 			{
 				MIKAN_LOG_ERROR("test-pnp") << "FAILED: PnP must recover the exact synthetic pose";
 				result= 1;
-			}
-			if (rmsLegacy < rmsPnpAll)
-			{
-				MIKAN_LOG_INFO("test-pnp") << "note: legacy beat PnP on this synthetic (unexpected but not fatal)";
 			}
 
 			if (result == 0)

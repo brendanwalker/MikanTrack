@@ -39,21 +39,3 @@ private:
 	std::array<OneEuroFilter, 3> m_axisFilters;
 };
 
-// Per-hand filter bank: one vec3 filter per hand landmark plus one for the
-// elbow, per side. Reset a side when its hand loses tracking so stale filter
-// state doesn't bleed into a re-acquired hand.
-class HandOneEuroBank
-{
-public:
-	void configure(float minCutoff, float beta, float dCutoff);
-
-	OneEuroFilterVec3& landmarkFilter(eHandSide side, int landmarkIndex);
-	OneEuroFilterVec3& elbowFilter(eHandSide side);
-
-	void resetSide(eHandSide side);
-	void resetAll();
-
-private:
-	std::array<std::array<OneEuroFilterVec3, HAND_LANDMARK_COUNT>, 2> m_landmarkFilters;
-	std::array<OneEuroFilterVec3, 2> m_elbowFilters;
-};

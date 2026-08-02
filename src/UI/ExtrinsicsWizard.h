@@ -19,7 +19,6 @@ class VisionThread;
 //
 // - CaptureCameraPose: averages N solvePnP samples of the printed origin
 //   marker -> markerFromCamera (world anchor).
-// - CaptureHandScale: with the hand flat on the table next to the marker,
 //   ray-casts the wrist and middle-MCP landmarks onto the marker plane to
 //   measure the user's real wrist->knuckle length (depth scale reference).
 class ExtrinsicsWizard
@@ -30,7 +29,6 @@ public:
 		VerifySetup,
 		CaptureCameraPose,
 		PoseTest,
-		CaptureHandScale,
 		Review,
 	};
 
@@ -68,7 +66,6 @@ private:
 
 	// Uses the wizard's captured pose; valid once m_bHasCameraPose
 	glm::dmat4 computeWorldFromCamera() const;
-	void updateHandScaleCapture(const TrackingFrameResult& trackingResult);
 
 	// Member wrappers over the static helpers using the wizard's current state
 	bool raycastPixelOntoMarkerPlane(const glm::vec2& pixel, glm::dvec3& outPoint) const;
@@ -93,11 +90,6 @@ private:
 	bool m_bHasCameraPose= false;
 
 	// Hand-scale sampling
-	std::vector<double> m_handScaleSamples;
-	double m_measuredHandScale= 0.0;
 	// Countdown before sampling starts, so the hand can settle into a flat
 	// pose after clicking the button
-	float m_handScaleCountdown= 0.f;
-	static constexpr int k_handScaleSampleCount= 12;
-	static constexpr float k_handScaleCountdownSeconds= 3.f;
 };
