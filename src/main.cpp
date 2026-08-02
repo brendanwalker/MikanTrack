@@ -43,6 +43,7 @@ static int runApp(int argc, char** argv)
 		{
 			LoggerSettings loggerSettings= {};
 			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-osc.log";
 			loggerSettings.enable_console= true;
 			log_init(loggerSettings);
 

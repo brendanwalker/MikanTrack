@@ -67,6 +67,8 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"hasWorldPose", hand.hasWorldPose},
 		{"palmPositionWorld", vec3ToJson(hand.palmPositionWorld)},
 		{"palmOrientationWorld", quatToJson(hand.palmOrientationWorld)},
+		{"hasForearmPose", hand.hasForearmPose},
+		{"forearmOrientationWorld", quatToJson(hand.forearmOrientationWorld)},
 		{"wristPx", vec2ToJson(hand.wristPx)},
 		{"fingers", fingersToJson(hand.fingers)},
 	};
@@ -144,6 +146,8 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.hasWorldPose= pose.hasWorldPose;
 	outHand.palmPositionWorld= pose.hasWorldPose ? pose.palmPositionWorld : pose.palmPositionCamera;
 	outHand.palmOrientationWorld= pose.hasWorldPose ? pose.palmOrientationWorld : pose.palmOrientationCamera;
+	outHand.hasForearmPose= pose.hasForearmPose;
+	outHand.forearmOrientationWorld= pose.forearmOrientationWorld;
 	outHand.wristPx= hand.tracked ? glm::vec2(hand.imagePoints[0]) : glm::vec2(0.f);
 	outHand.fingers= pose.fingers;
 }

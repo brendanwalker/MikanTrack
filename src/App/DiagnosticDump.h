@@ -36,6 +36,8 @@ struct DiagHandState
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f};
 	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};
+	bool hasForearmPose= false; // wrist IMU calibrated + streaming
+	glm::quat forearmOrientationWorld{1.f, 0.f, 0.f, 0.f};
 	glm::vec2 wristPx{0.f};
 	std::array<FingerAngles, FINGER_COUNT> fingers{};
 };

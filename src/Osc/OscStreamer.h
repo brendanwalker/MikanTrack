@@ -44,6 +44,12 @@ struct OscStreamerConfig
 ///     if tracked (confidence below minConfidence reports tracked=0 and
 ///     withholds everything below):
 ///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
+///       /mikan/hand/{s}/wrist ,iffffffff valid(0|1) +
+///         forearm orientation xyzw (world) + wrist joint rotation xyzw
+///         (the palm expressed in the forearm frame, i.e. the LOCAL
+///         rotation for a hand bone parented to a forearm bone).
+///         Sourced from a wrist-strapped IMU; valid=0 (and identity
+///         quaternions) when no IMU is calibrated for that hand.
 ///       /mikan/hand/{s}/fingers ,f x20 per finger (thumb..pinky):
 ///         lateral, proximalBend, intermediateBend, distalBend (radians)
 ///       /mikan/hand/{s}/skeleton ,f x45 (1 Hz) per finger: base position in

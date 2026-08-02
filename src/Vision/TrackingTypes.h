@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <vector>
 
+#include "glm/ext/quaternion_common.hpp"
 #include "glm/ext/quaternion_float.hpp"
 #include "glm/ext/vector_float2.hpp"
 #include "glm/ext/vector_float3.hpp"
@@ -203,6 +204,24 @@ struct HandPose
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f}; // marker-anchored Z-up world, meters
 	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};
+
+	// FOREARM orientation from a wrist-strapped IMU (world space). A wrist
+	// strap sits PROXIMAL to the wrist joint, so the sensor rotates with the
+	// forearm, not the hand - treating it as palm orientation would be wrong
+	// exactly when the wrist is flexed. Keeping it as its own frame is what
+	// makes the wrist joint angle measurable (see getWristRotation) and
+	// restores the forearm direction that arm IK wants.
+	bool hasForearmPose= false;
+	glm::quat forearmOrientationWorld{1.f, 0.f, 0.f, 0.f};
+
+	// Wrist joint rotation: the palm expressed IN the forearm frame, i.e.
+	// the local rotation a skeleton hierarchy applies to the hand bone.
+	// Identity when the palm points straight along the forearm. Only
+	// meaningful when hasForearmPose && hasWorldPose.
+	glm::quat getWristRotation() const
+	{
+		return glm::inverse(forearmOrientationWorld) * palmOrientationWorld;
+	}
 
 	std::array<FingerAngles, FINGER_COUNT> fingers{};
 	HandSkeleton skeleton;

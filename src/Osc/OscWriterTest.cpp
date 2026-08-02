@@ -4,6 +4,11 @@
 #include "OscStreamer.h"
 #include "OscWriter.h"
 
+#include "glm/gtc/quaternion.hpp"
+#include "glm/trigonometric.hpp"
+
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -244,6 +249,46 @@ bool runOscWriterSelfTest()
 		else
 			MIKAN_LOG_ERROR("runOscWriterSelfTest") << "dropout hold-and-decay FAILED";
 		allPassed&= holdPassed;
+	}
+
+	// -- Wrist joint rotation (HandPose::getWristRotation) -------------------
+	{
+		bool wristPassed= true;
+
+		// Forearm yawed 30 deg; palm additionally flexed 25 deg about the
+		// forearm's local X. The wrist rotation must recover exactly that
+		// local flex - independent of where the forearm is pointing, which is
+		// the whole point of expressing it in the forearm frame.
+		const glm::quat forearm= glm::angleAxis(glm::radians(30.f), glm::vec3(0.f, 0.f, 1.f));
+		const glm::quat trueWristLocal= glm::angleAxis(glm::radians(25.f), glm::vec3(1.f, 0.f, 0.f));
+
+		HandPose pose;
+		pose.hasWorldPose= true;
+		pose.hasForearmPose= true;
+		pose.forearmOrientationWorld= forearm;
+		pose.palmOrientationWorld= forearm * trueWristLocal; // child = parent * local
+
+		const glm::quat recovered= pose.getWristRotation();
+		const glm::quat error= glm::inverse(trueWristLocal) * recovered;
+		const float errorDegrees=
+			glm::degrees(2.f * asinf(std::min(glm::length(glm::vec3(error.x, error.y, error.z)), 1.f)));
+		wristPassed&= errorDegrees < 0.01f;
+
+		// A palm aligned with the forearm must read identity (no wrist bend)
+		HandPose straight;
+		straight.hasWorldPose= true;
+		straight.hasForearmPose= true;
+		straight.forearmOrientationWorld= forearm;
+		straight.palmOrientationWorld= forearm;
+		const glm::quat straightRotation= straight.getWristRotation();
+		wristPassed&= fabsf(fabsf(straightRotation.w) - 1.f) < 1e-5f;
+
+		if (wristPassed)
+			MIKAN_LOG_INFO("runOscWriterSelfTest") << "wrist joint rotation passed";
+		else
+			MIKAN_LOG_ERROR("runOscWriterSelfTest")
+				<< "wrist joint rotation FAILED (err " << errorDegrees << " deg)";
+		allPassed&= wristPassed;
 	}
 
 	if (allPassed)
