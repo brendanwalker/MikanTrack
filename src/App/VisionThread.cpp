@@ -255,16 +255,15 @@ void VisionThread::refreshConfigOnThread()
 				m_config->tracking.palmBeta);
 			context.landmarkTo3D->setPnpConfig(m_config->tracking.usePnpDepth, m_config->tracking.pnpPalmOnly);
 
-			// Undistortion for the ML input + preview
-			if (context.undistorter == nullptr ||
-				context.undistorter->getFrameWidth() != (int)profile.intrinsics.intrinsics.pixel_width ||
-				context.undistorter->getFrameHeight() != (int)profile.intrinsics.intrinsics.pixel_height)
-			{
-				context.undistorter= std::make_unique<CVVideoFrameProcessor>(
-					profile.intrinsics.intrinsics,
-					(int)profile.intrinsics.intrinsics.pixel_width,
-					(int)profile.intrinsics.intrinsics.pixel_height);
-			}
+			// Undistortion for the ML input + preview. ALWAYS rebuilt on a
+			// config change: gating on frame dimensions alone kept the OLD
+			// undistortion maps alive after a recalibration at the same
+			// resolution (live symptom: wildly zoomed preview from the
+			// previous bad intrinsics until an app restart).
+			context.undistorter= std::make_unique<CVVideoFrameProcessor>(
+				profile.intrinsics.intrinsics,
+				(int)profile.intrinsics.intrinsics.pixel_width,
+				(int)profile.intrinsics.intrinsics.pixel_height);
 		}
 		else
 		{

@@ -28,6 +28,8 @@ struct MonoLensDistortionCalibrationState
 
 	// Capture State
 	int capturedPatternCount;
+	int tiltedPatternCount;
+	bool bWantsTiltedSample;
 	t_opencv_point2d_list quadList;
 	std::vector<t_opencv_point2d_list> imagePointsList;
 	std::vector<t_opencv_pointID_list> imagePointIDList;
@@ -60,6 +62,8 @@ struct MonoLensDistortionCalibrationState
 	{
 		// Reset the capture state
 		capturedPatternCount= 0;
+		tiltedPatternCount= 0;
+		bWantsTiltedSample= false;
 		quadList.clear();
 		imagePointsList.clear();
 		imagePointIDList.clear();
@@ -91,6 +95,8 @@ MonoLensDistortionCalibrator::MonoLensDistortionCalibrator(int frameWidth, int f
 
 	this->frameWidth= (float)frameWidth;
 	this->frameHeight= (float)frameHeight;
+	m_cornerCols= charucoCols - 1;
+	m_cornerRows= charucoRows - 1;
 
 	m_calibrationState->init(m_patternFinder, frameWidth, frameHeight, desiredSampleCount);
 }
@@ -132,9 +138,27 @@ void MonoLensDistortionCalibrator::update(float deltaSeconds, const cv::Mat* gra
 		m_calibrationState->imagePointsStabilityTimer+= deltaSeconds;
 		if (m_calibrationState->imagePointsStabilityTimer >= k_imagePointStabilityDuration)
 		{
-			// Capturing updates the finder's last-valid points, so the pattern has to
-			// move at least minSeperationDist away before the next capture can start
-			captureLastFoundCalibrationPattern();
+			// Tilt quota: focal length is only observable from perspective, so
+			// once the flat-board quota is full, only tilted boards are
+			// accepted. A rejected flat board does NOT touch the finder's
+			// last-valid points, so tilting the board in place re-arms the
+			// hold cycle and captures immediately.
+			const bool bTilted= computeCurrentPatternKeystone() >= k_tiltKeystoneThreshold;
+			const int flatQuota=
+				int_max(m_calibrationState->desiredPatternCount - k_minTiltedSampleCount, 0);
+			const int flatCount=
+				m_calibrationState->capturedPatternCount - m_calibrationState->tiltedPatternCount;
+
+			if (!bTilted && flatCount >= flatQuota)
+			{
+				m_calibrationState->bWantsTiltedSample= true;
+			}
+			else if (captureLastFoundCalibrationPattern())
+			{
+				if (bTilted)
+					++m_calibrationState->tiltedPatternCount;
+				m_calibrationState->bWantsTiltedSample= false;
+			}
 			m_calibrationState->imagePointsStabilityTimer= 0.f;
 		}
 	}
@@ -142,6 +166,48 @@ void MonoLensDistortionCalibrator::update(float deltaSeconds, const cv::Mat* gra
 	{
 		m_calibrationState->imagePointsStabilityTimer= 0.f;
 	}
+}
+
+float MonoLensDistortionCalibrator::computeCurrentPatternKeystone() const
+{
+	t_opencv_point2d_list imagePoints;
+	cv::Point2f unusedQuad[4];
+	if (!m_patternFinder->getCurrentCalibrationPattern(imagePoints, unusedQuad))
+		return 1.f;
+
+	// Full-board detection is enforced by the finder, so the corner list is
+	// the complete grid in charuco-id (row-major) order
+	const int cornerCount= m_cornerCols * m_cornerRows;
+	if ((int)imagePoints.size() != cornerCount || m_cornerCols < 2 || m_cornerRows < 2)
+		return 1.f;
+
+	const cv::Point2f& topLeft= imagePoints[0];
+	const cv::Point2f& topRight= imagePoints[m_cornerCols - 1];
+	const cv::Point2f& bottomLeft= imagePoints[cornerCount - m_cornerCols];
+	const cv::Point2f& bottomRight= imagePoints[cornerCount - 1];
+
+	// Keystone = perspective foreshortening: the ratio of opposite outer edge
+	// lengths. Fronto-parallel ~1 in both axes; tilt shows up in one of them.
+	const float top= (float)cv::norm(topRight - topLeft);
+	const float bottom= (float)cv::norm(bottomRight - bottomLeft);
+	const float left= (float)cv::norm(bottomLeft - topLeft);
+	const float right= (float)cv::norm(bottomRight - topRight);
+	if (top < 1.f || bottom < 1.f || left < 1.f || right < 1.f)
+		return 1.f;
+
+	const float verticalKeystone= top > bottom ? top / bottom : bottom / top;
+	const float horizontalKeystone= left > right ? left / right : right / left;
+	return fmaxf(verticalKeystone, horizontalKeystone);
+}
+
+bool MonoLensDistortionCalibrator::wantsTiltedSample() const
+{
+	return m_calibrationState->bWantsTiltedSample && !hasSampledAllCalibrationPatterns();
+}
+
+int MonoLensDistortionCalibrator::getTiltedSampleCount() const
+{
+	return m_calibrationState->tiltedPatternCount;
 }
 
 void MonoLensDistortionCalibrator::findNewCalibrationPattern(const float minSeperationDist)

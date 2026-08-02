@@ -16,6 +16,16 @@ public:
 	// captured sample to be considered a new board location
 	static constexpr float k_defaultMinSeperationDist= 10.f; // pixels
 
+	// Focal length is only observable from PERSPECTIVE (tilted boards). A
+	// capture set of fronto-parallel boards fits distortion to sub-pixel
+	// error while fx sits wherever the initializer left it (seen live: a
+	// solved hfov of exactly 90 deg). At least this many samples must show
+	// real keystone before the set is complete; flat captures stop being
+	// accepted once their quota (desired - tilted) is full.
+	static constexpr int k_minTiltedSampleCount= 4;
+	// A board tilted ~20 deg at arm's length shows ~1.12; fronto-parallel ~1.0
+	static constexpr float k_tiltKeystoneThreshold= 1.10f;
+
 	MonoLensDistortionCalibrator(int frameWidth, int frameHeight, int charucoCols, int charucoRows,
 								 float charucoSquareLengthMM, float charucoMarkerLengthMM,
 								 eCharucoDictionaryType charucoDictionaryType, int desiredSampleCount);
@@ -34,6 +44,9 @@ public:
 
 	bool hasSampledAllCalibrationPatterns() const;
 	bool areCurrentImagePointsValid() const;
+	// UI hint: the flat-board quota is full - only tilted boards are accepted now
+	bool wantsTiltedSample() const;
+	int getTiltedSampleCount() const;
 	// 0..1 progress of the current "hold steady" window; capture fires at 1
 	// and the fraction restarts for the next sample
 	float getStabilityFraction() const;
@@ -47,8 +60,15 @@ public:
 	float getReprojectionError() const;
 
 protected:
+	// Keystone factor (>= 1) of the current detection: max length ratio
+	// between opposite outer edges of the board. Requires a FULL board
+	// detection (corner index == charuco id), which the finder enforces.
+	float computeCurrentPatternKeystone() const;
+
 	float frameWidth;
 	float frameHeight;
+	int m_cornerCols= 0;
+	int m_cornerRows= 0;
 
 	// Internal Calibration State
 	struct MonoLensDistortionCalibrationState* m_calibrationState;

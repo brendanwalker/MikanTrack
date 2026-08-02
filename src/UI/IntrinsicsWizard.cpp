@@ -201,7 +201,11 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 			ImGui::TextWrapped(
 				"Calibrate the camera lens using a printed charuco board. "
 				"Print the board at 100%% scale, measure a square to confirm its size, "
-				"then capture it from 12 different angles/positions.");
+				"then capture it from 12 different angles/positions. "
+				"TILT MATTERS: focal length can only be measured from perspective, "
+				"so several captures must have the board clearly angled toward/away "
+				"from the camera - flat-on captures alone cannot calibrate. "
+				"Also cover the frame edges for distortion.");
 
 			ImGui::InputInt("Columns", &m_boardCols);
 			ImGui::InputInt("Rows", &m_boardRows);
@@ -248,8 +252,19 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		{
 			const float progress= m_calibrator->computeCalibrationProgress();
 			const int captured= (int)(progress * (float)m_calibrator->getDesiredPatternCount() + 0.5f);
-			ImGui::Text("Captured %d / %d boards", captured, m_calibrator->getDesiredPatternCount());
+			ImGui::Text("Captured %d / %d boards (%d tilted / %d needed)", captured,
+						m_calibrator->getDesiredPatternCount(), m_calibrator->getTiltedSampleCount(),
+						MonoLensDistortionCalibrator::k_minTiltedSampleCount);
 			ImGui::ProgressBar(progress, ImVec2(-1, 0));
+
+			if (m_calibrator->wantsTiltedSample())
+			{
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f),
+								   "TILT the board toward/away from the camera");
+				ImGui::TextWrapped(
+					"Enough flat captures - the remaining samples must show real "
+					"perspective, or the focal length can't be solved.");
+			}
 
 			if (m_calibrator->areCurrentImagePointsValid())
 			{
