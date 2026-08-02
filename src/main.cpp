@@ -929,6 +929,39 @@ static int runApp(int argc, char** argv)
 					result= 1;
 				}
 
+				// Residual gating: deterministic ~10px 2D noise on camera B makes
+				// the triangulation survive (well under the veto) but the
+				// residual factor must visibly reduce the fused confidence.
+				// (The midpoint solve splits one view's error across both views'
+				// residuals, so the RMS lands well below the injected amplitude.)
+				{
+					auto camBNoisy= camB;
+					TrackedHand& noisyHand= camBNoisy.result.hands[(int)eHandSide::Right];
+					for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+					{
+						noisyHand.imagePoints[i].x+= (i % 2 == 0) ? 10.f : -10.f;
+						noisyHand.imagePoints[i].y+= (float)((i % 3) - 1) * 10.f;
+					}
+
+					HandFusion noisyFusion;
+					noisyFusion.configure(fusionConfig);
+					TrackingFrameResult noisyFused;
+					noisyFusion.fuse({&camA, &camBNoisy}, now, noisyFused);
+
+					const HandPose& noisyPose= noisyFused.poses[(int)eHandSide::Right];
+					const float cleanConfidence= pose.confidence;
+					MIKAN_LOG_INFO("test-fusion") << "(m) residual gate: clean confidence=" << cleanConfidence
+						<< " noisy confidence=" << noisyPose.confidence << " residual px="
+						<< noisyFusion.getLastDiagnostics().clusters[0].triResidualRmsPx;
+					if (!noisyPose.stereoTriangulated || cleanConfidence < 0.85f ||
+						noisyPose.confidence > cleanConfidence - 0.05f || noisyPose.confidence < 0.1f)
+					{
+						MIKAN_LOG_ERROR("test-fusion")
+							<< "(m) FAILED: 2D noise must reduce confidence via the residual factor";
+						result= 1;
+					}
+				}
+
 				// Mismatched pairing: camera B's pixels come from a DIFFERENT hand
 				// 15cm away, while both monocular poses still cluster together.
 				// The reprojection residual must veto, and the output falls back

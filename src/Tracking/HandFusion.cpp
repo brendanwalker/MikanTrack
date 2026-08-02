@@ -568,6 +568,13 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	outPose.presence= maxPresence;
 	outPose.stereoTriangulated= true;
 
+	// Fold the residual into the confidence: unlike presence (and unlike the
+	// jitter tracker, which needs history), this measures THIS frame's pose
+	// quality directly - an edge-on or half-occluded hand triangulates with a
+	// visibly worse residual while its presence stays ~0.9
+	outPose.confidence=
+		std::clamp(outPose.confidence * residualFactor(residualRms, m_config.residualReferencePx), 0.f, 1.f);
+
 	// Overlays/debug see the triangulated geometry
 	outHand.worldPoints= triPoints;
 	outHand.hasWorldSpace= true;

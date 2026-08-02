@@ -308,6 +308,7 @@ void VisionThread::refreshConfigOnThread()
 	fusionConfig.angleBeta= m_config->tracking.angleBeta;
 	fusionConfig.triangulationEnabled= m_config->fusion.triangulationEnabled;
 	fusionConfig.triangulationMaxResidualPx= m_config->fusion.triangulationMaxResidualPx;
+	fusionConfig.residualReferencePx= m_config->fusion.residualReferencePx;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		fusionConfig.bHasFusedRestAngles[sideIndex]= m_config->fusedRestAngles.present[sideIndex];

@@ -68,6 +68,9 @@ struct HandFusionConfig
 	// A triangulated hand whose RMS reprojection residual exceeds this is a
 	// wrong cross-camera pairing (two different physical hands) - reject it
 	float triangulationMaxResidualPx= 25.f;
+	// Residual at which a triangulated pose is half as trustworthy (folds
+	// into the fused confidence, same shape as the jitter stability factor)
+	float residualReferencePx= 8.f;
 
 	// Rest-pose zero for the TRIANGULATED path: raw stereo angles minus these
 	// read zero in the user's captured rest pose. Separate from the
@@ -183,6 +186,14 @@ public:
 	// Stability factor in (0,1]: ref^2 / (ref^2 + jitter^2), a soft
 	// inverse-variance weight over the measured palm jitter
 	static float stabilityFactor(float jitterM, float jitterReferenceM);
+
+	// Residual factor in (0,1]: same soft inverse-variance shape over the
+	// triangulation reprojection residual - a direct measurement of how well
+	// the stereo pose explains what both cameras actually saw
+	static float residualFactor(float residualRmsPx, float residualReferencePx)
+	{
+		return stabilityFactor(residualRmsPx, residualReferencePx);
+	}
 
 private:
 	struct HandCandidate

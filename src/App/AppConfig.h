@@ -130,6 +130,10 @@ struct FusionConfig
 	// RMS reprojection residual above which a triangulated pairing is
 	// rejected as two different physical hands
 	float triangulationMaxResidualPx= 25.f;
+	// Residual (px) at which a triangulated pose counts as half as
+	// trustworthy - a TRUE pose-quality signal (unlike presence, which stays
+	// high on ill-conditioned views), folded into the fused confidence
+	float residualReferencePx= 8.f;
 };
 
 class AppConfig

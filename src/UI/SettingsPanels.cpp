@@ -114,6 +114,15 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"LOWER = stricter. Raise it if fast hand motion is being\n"
 			"treated as noise.");
 
+		ImGui::BeginDisabled(!fusion.triangulationEnabled);
+		bChanged|= ImGui::SliderFloat("Residual reference", &fusion.residualReferencePx, 2.f, 30.f, "%.0f px");
+		ImGui::SetItemTooltip(
+			"Triangulation reprojection residual at which a stereo pose\n"
+			"counts as half as trustworthy. Unlike presence, the residual\n"
+			"directly measures how well the pose explains what BOTH\n"
+			"cameras saw this frame. LOWER = stricter.");
+		ImGui::EndDisabled();
+
 		bChanged|= ImGui::SliderFloat("Min camera confidence", &fusion.minCameraConfidence, 0.f, 1.f, "%.2f");
 		ImGui::SetItemTooltip(
 			"Drop a camera's observation entirely below this confidence.\n"

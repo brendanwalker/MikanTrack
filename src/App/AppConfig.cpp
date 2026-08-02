@@ -255,6 +255,7 @@ bool AppConfig::load()
 		fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
 		fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
 		fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
+		fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
 
 		restAnglesFromJson(j.value("fusedRestAngles", json::object()), fusedRestAngles);
 
@@ -334,6 +335,7 @@ std::string AppConfig::toJsonString() const
 		{"jitterReferenceMm", fusion.jitterReferenceMm},
 		{"triangulationEnabled", fusion.triangulationEnabled},
 		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
+		{"residualReferencePx", fusion.residualReferencePx},
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
