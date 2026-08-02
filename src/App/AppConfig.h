@@ -125,6 +125,10 @@ struct ImuConfig
 	float visionYawSigma= 0.35f;
 	// Swap which controller drives which wrist
 	bool swapSides= false;
+	// Forearm length, used only to place the elbow estimate back along the
+	// measured forearm direction from the wrist (visualization + IK hint).
+	// The direction is measured; only this length is assumed.
+	float forearmLengthMeters= 0.25f;
 	// Captured mounting rotation (forearm -> sensor), indexed by eHandSide
 	bool mountingPresent[2]= {false, false};
 	std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f), glm::quat(1.f, 0.f, 0.f, 0.f)};

@@ -237,13 +237,49 @@ void MainWindow::update(float deltaSeconds)
 	{
 		std::vector<const TrackingFrameResult*> previewResults;
 		std::vector<const char*> executionProviders;
+		std::vector<ForearmOverlay> forearmOverlays;
 		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
 		{
 			previewResults.push_back(
 				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
 			executionProviders.push_back(visionThread->getActiveExecutionProvider(cameraIndex));
+
+			// Project the fused (world-space) forearm back into this camera.
+			// Done here rather than on the vision thread because the UI is
+			// what already holds both the fused result and every camera's
+			// calibration.
+			ForearmOverlay overlay;
+			const CameraProfile& profile= config->camera(cameraIndex);
+			if (profile.intrinsics.present && profile.extrinsics.present)
+			{
+				const glm::dmat4 cameraFromWorld= glm::inverse(profile.extrinsics.markerFromCamera);
+				const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
+
+				auto projectToImage= [&](const glm::vec3& worldPoint, ImVec2& outPixel) {
+					const glm::dvec4 cameraPoint= cameraFromWorld * glm::dvec4(glm::dvec3(worldPoint), 1.0);
+					if (cameraPoint.z < 1e-3)
+						return false;
+					outPixel= ImVec2((float)(cameraMatrix.x0 * cameraPoint.x / cameraPoint.z + cameraMatrix.z0),
+									 (float)(cameraMatrix.y1 * cameraPoint.y / cameraPoint.z + cameraMatrix.z1));
+					return true;
+				};
+
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					const HandPose& pose= m_latestFused.poses[sideIndex];
+					if (!pose.tracked || !pose.hasWorldPose || !pose.hasForearmPose)
+						continue;
+
+					const glm::vec3 wristWorld= pose.getWristPositionWorld();
+					const glm::vec3 elbowWorld=
+						pose.getElbowPositionWorld(config->imu.forearmLengthMeters);
+					overlay.valid[sideIndex]= projectToImage(wristWorld, overlay.wristPx[sideIndex]) &&
+						projectToImage(elbowWorld, overlay.elbowPx[sideIndex]);
+				}
+			}
+			forearmOverlays.push_back(overlay);
 		}
-		m_videoPreviewPanel->draw(previewResults, executionProviders);
+		m_videoPreviewPanel->draw(previewResults, executionProviders, &forearmOverlays);
 	}
 
 	// 3D scene: fused skeleton + all calibrated camera frustums
@@ -264,6 +300,7 @@ void MainWindow::update(float deltaSeconds)
 			perCameraResults.push_back(
 				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
 		}
+		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
 		m_scene3dPanel->draw(m_latestFused, sceneCameras, perCameraResults);
 	}
 

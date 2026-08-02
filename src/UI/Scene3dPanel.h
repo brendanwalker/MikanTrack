@@ -40,6 +40,10 @@ public:
 			  const std::vector<SceneCameraView>& cameras,
 			  const std::vector<const TrackingFrameResult*>& perCameraResults);
 
+	// Forearm length used to place the elbow estimate (meters); the
+	// direction is measured by the wrist IMU, only the length is assumed
+	void setForearmLength(float meters) { m_forearmLengthMeters= meters; }
+
 	bool getShowPerCameraSkeletons() const { return m_bShowPerCameraSkeletons; }
 	void setShowPerCameraSkeletons(bool bShow) { m_bShowPerCameraSkeletons= bShow; }
 
@@ -53,4 +57,5 @@ private:
 	std::unique_ptr<OrbitCamera> m_camera;
 	bool m_bRenderInitialized= false;
 	bool m_bShowPerCameraSkeletons= false;
+	float m_forearmLengthMeters= 0.25f;
 };

@@ -223,6 +223,26 @@ struct HandPose
 		return glm::inverse(forearmOrientationWorld) * palmOrientationWorld;
 	}
 
+	// Wrist JOINT position in world space. The palm origin is the palm
+	// CENTER (midway between the wrist and the middle MCP), so the wrist sits
+	// half a palm back along the palm's -X axis.
+	glm::vec3 getWristPositionWorld() const
+	{
+		const float halfPalm= skeleton.baseInPalm[(int)eFinger::Middle].x;
+		return palmPositionWorld + palmOrientationWorld * glm::vec3(-halfPalm, 0.f, 0.f);
+	}
+
+	// Elbow estimate: straight back along the forearm from the wrist. The
+	// forearm frame's +X points toward the hand (it equals the palm frame at
+	// a neutral wrist), so the elbow lies along -X. Only meaningful when
+	// hasForearmPose - this is a rigid extrapolation from a MEASURED forearm
+	// direction, not an inference, so its error is just the length guess.
+	glm::vec3 getElbowPositionWorld(float forearmLengthMeters) const
+	{
+		return getWristPositionWorld() -
+			forearmOrientationWorld * glm::vec3(1.f, 0.f, 0.f) * forearmLengthMeters;
+	}
+
 	std::array<FingerAngles, FINGER_COUNT> fingers{};
 	HandSkeleton skeleton;
 };

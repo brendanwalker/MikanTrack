@@ -143,6 +143,22 @@ void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightn
 			for (int joint= 0; joint < 4; ++joint)
 				drawPoint(*m_lineRenderer, k_displayFromWorld, joints[finger][joint], Colors::White * brightness, 4.f);
 		}
+
+		// Forearm from the wrist IMU: wrist -> elbow. The DIRECTION is
+		// measured, so this is a rigid extrapolation rather than the guess
+		// the old geometric elbow estimate was; only the length is assumed.
+		if (pose.hasForearmPose)
+		{
+			const glm::vec3 elbowWorld= pose.getElbowPositionWorld(m_forearmLengthMeters);
+			drawSegment(*m_lineRenderer, k_displayFromWorld, wristWorld, elbowWorld, color);
+			drawPoint(*m_lineRenderer, k_displayFromWorld, elbowWorld, Colors::Yellow * brightness, 7.f);
+
+			// Forearm frame axes at the elbow, so a twisted forearm
+			// (pronation/supination, which the IMU does observe) is visible
+			glm::mat4 forearmTransform= glm::mat4_cast(pose.forearmOrientationWorld);
+			forearmTransform[3]= glm::vec4(elbowWorld, 1.f);
+			drawTransformedAxes(*m_lineRenderer, k_displayFromWorld * forearmTransform, 0.04f);
+		}
 	}
 }
 

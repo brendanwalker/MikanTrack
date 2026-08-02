@@ -249,6 +249,14 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		bChanged|= ImGui::Checkbox("Swap wrists", &imu.swapSides);
 		ImGui::SetItemTooltip("If the Joy-Con L is strapped to your RIGHT wrist");
 
+		bChanged|= ImGui::SliderFloat("Forearm length", &imu.forearmLengthMeters, 0.15f, 0.40f, "%.2f m");
+		ImGui::SetItemTooltip(
+			"Wrist-to-elbow distance, used to place the elbow back along the\n"
+			"MEASURED forearm direction. Only the length is assumed - the\n"
+			"direction comes from the IMU - so an error here slides the elbow\n"
+			"along the forearm axis without rotating it. Tune it by watching\n"
+			"the elbow marker against your actual elbow in the camera view.");
+
 		bChanged|= ImGui::SliderFloat("Vision yaw anchor", &imu.visionYawSigma, 0.05f, 1.f, "%.2f rad");
 		ImGui::SetItemTooltip(
 			"How strongly the vision-measured palm pins the IMU's yaw.\n"
@@ -623,6 +631,42 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		const glm::vec3& palmPos= bWorld ? pose.palmPositionWorld : pose.palmPositionCamera;
 		ImGui::Text("Palm: (%.3f, %.3f, %.3f) m %s", palmPos.x, palmPos.y, palmPos.z,
 					bWorld ? "" : "(camera space)");
+
+		// Wrist/forearm (what /mikan/hand/{s}/wrist carries). The wrist angle
+		// is shown in DEGREES because it is the number that tells you whether
+		// the mounting calibration is good: the wrist rotation is measured
+		// relative to the pose you captured, so a straight wrist should read
+		// near zero. A large angle with your wrist actually straight means
+		// recalibrate (or yaw has drifted).
+		if (pose.hasForearmPose && bWorld)
+		{
+			const glm::quat wristRotation= pose.getWristRotation();
+			const float wristDegrees= glm::degrees(2.f * asinf(std::min(
+				glm::length(glm::vec3(wristRotation.x, wristRotation.y, wristRotation.z)), 1.f)));
+
+			const ImVec4 wristColor= wristDegrees < 25.f  ? ImVec4(0.4f, 1.f, 0.5f, 1.f)
+									 : wristDegrees < 60.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
+														   : ImVec4(1.f, 0.5f, 0.4f, 1.f);
+			ImGui::TextColored(wristColor, "Wrist bend: %.0f deg", wristDegrees);
+			ImGui::SetItemTooltip(
+				"Rotation of the palm relative to the forearm, measured from\n"
+				"your mounting-calibration pose. Hold your wrist STRAIGHT: if\n"
+				"this doesn't drop near zero, recalibrate the mounting (or the\n"
+				"IMU yaw has drifted since you did).");
+
+			const glm::quat& forearm= pose.forearmOrientationWorld;
+			ImGui::Text("  forearm quat: (%.3f, %.3f, %.3f, %.3f)", forearm.x, forearm.y, forearm.z,
+						forearm.w);
+			ImGui::Text("  wrist quat:   (%.3f, %.3f, %.3f, %.3f)", wristRotation.x, wristRotation.y,
+						wristRotation.z, wristRotation.w);
+
+			const glm::vec3 elbow= pose.getElbowPositionWorld(config->imu.forearmLengthMeters);
+			ImGui::Text("  elbow: (%.3f, %.3f, %.3f) m", elbow.x, elbow.y, elbow.z);
+		}
+		else
+		{
+			ImGui::TextDisabled("Wrist: no IMU (streams valid=0)");
+		}
 
 		ImGui::PushID(sideIndex);
 		if (ImGui::BeginTable("angles", 5,

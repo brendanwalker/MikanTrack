@@ -57,3 +57,23 @@ void HandOverlay::drawTrackingResult(ImDrawList* drawList, const TrackingFrameRe
 	}
 
 }
+
+void HandOverlay::drawForearmOverlay(ImDrawList* drawList, const ForearmOverlay& forearm,
+									 const ImageToScreenMapping& mapping)
+{
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		if (!forearm.valid[sideIndex])
+			continue;
+
+		const ImU32 color= sideIndex == (int)eHandSide::Left ? k_leftHandColor : k_rightHandColor;
+		const ImVec2 wrist= mapping.toScreen(forearm.wristPx[sideIndex].x, forearm.wristPx[sideIndex].y);
+		const ImVec2 elbow= mapping.toScreen(forearm.elbowPx[sideIndex].x, forearm.elbowPx[sideIndex].y);
+
+		// Dashed-looking forearm: thin line plus a hollow elbow ring, so it
+		// reads as an ESTIMATE rather than a measured landmark chain
+		drawList->AddLine(wrist, elbow, color, 2.f);
+		drawList->AddCircle(elbow, 7.f, color, 12, 2.f);
+		drawList->AddCircleFilled(elbow, 2.5f, color);
+	}
+}

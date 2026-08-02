@@ -263,6 +263,7 @@ bool AppConfig::load()
 		imu.enabled= im.value("enabled", true);
 		imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
 		imu.swapSides= im.value("swapSides", false);
+		imu.forearmLengthMeters= im.value("forearmLengthMeters", 0.25f);
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{
 			const char* key= sideIndex == 0 ? "mountingLeft" : "mountingRight";
@@ -345,6 +346,7 @@ std::string AppConfig::toJsonString() const
 			{"enabled", imu.enabled},
 			{"visionYawSigma", imu.visionYawSigma},
 			{"swapSides", imu.swapSides},
+			{"forearmLengthMeters", imu.forearmLengthMeters},
 		};
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{

@@ -45,7 +45,8 @@ const ImageToScreenMapping& VideoPreviewPanel::getImageToScreenMapping(int camer
 }
 
 void VideoPreviewPanel::draw(const std::vector<const TrackingFrameResult*>& results,
-							 const std::vector<const char*>& executionProviders)
+							 const std::vector<const char*>& executionProviders,
+							 const std::vector<ForearmOverlay>* forearms)
 {
 	m_lastDrawList= nullptr;
 
@@ -115,8 +116,13 @@ void VideoPreviewPanel::draw(const std::vector<const TrackingFrameResult*>& resu
 		const TrackingFrameResult* result=
 			cameraIndex < (int)results.size() ? results[cameraIndex] : nullptr;
 
-		if (m_bShowOverlay && result != nullptr)
-			HandOverlay::drawTrackingResult(m_lastDrawList, *result, pane.mapping, m_bShowDetectionBoxes);
+		if (m_bShowOverlay)
+		{
+			if (result != nullptr)
+				HandOverlay::drawTrackingResult(m_lastDrawList, *result, pane.mapping, m_bShowDetectionBoxes);
+			if (forearms != nullptr && cameraIndex < (int)forearms->size())
+				HandOverlay::drawForearmOverlay(m_lastDrawList, (*forearms)[cameraIndex], pane.mapping);
+		}
 
 		// HUD: camera label + fps / inference / EP badge
 		{

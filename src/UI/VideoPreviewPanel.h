@@ -29,8 +29,11 @@ public:
 	// Draws the panel. results/executionProviders/dominantSides are indexed
 	// by camera; dominantSides marks which sides this camera won in the last
 	// fusion (for the "FUSED L/R" badge), pass nullptr to skip.
+	// forearms (optional, indexed by camera) draws the wrist-IMU forearm
+	// projected into each camera's image; pass nullptr to skip
 	void draw(const std::vector<const TrackingFrameResult*>& results,
-			  const std::vector<const char*>& executionProviders);
+			  const std::vector<const char*>& executionProviders,
+			  const std::vector<ForearmOverlay>* forearms= nullptr);
 
 	// Per-camera mapping from full-frame image pixels to screen pixels for the
 	// most recently drawn frame (valid after draw)

@@ -20,8 +20,26 @@ struct ImageToScreenMapping
 	}
 };
 
+// One camera's view of the wrist-IMU forearm: the world-space wrist->elbow
+// segment projected back into THIS camera's image. Computed by the UI layer
+// (which owns the fused result plus every camera's calibration) so the
+// vision thread doesn't need to know about per-camera overlays.
+struct ForearmOverlay
+{
+	bool valid[2]= {false, false}; // indexed by eHandSide
+	ImVec2 wristPx[2]{};
+	ImVec2 elbowPx[2]{};
+};
+
 namespace HandOverlay
 {
 void drawTrackingResult(ImDrawList* drawList, const TrackingFrameResult& result, const ImageToScreenMapping& mapping,
 						bool bShowDetectionBoxes);
+
+// Draws the projected forearm (wrist->elbow) with an elbow marker. Lets you
+// check the IMU forearm direction against the real arm in the video: if the
+// line lies along your forearm the mounting calibration is good, and if the
+// marker sits at your elbow the forearm length is right.
+void drawForearmOverlay(ImDrawList* drawList, const ForearmOverlay& forearm,
+						const ImageToScreenMapping& mapping);
 }
