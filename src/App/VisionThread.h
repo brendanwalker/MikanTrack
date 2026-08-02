@@ -158,6 +158,12 @@ private:
 	// Processes one newly popped frame for a context; returns true if a new
 	// result was produced
 	bool processCameraFrame(CameraContext& context);
+	// RealSense depth: samples metric depth at each tracked hand's 2D
+	// landmarks (mapping undistorted pipeline pixels back to raw sensor
+	// pixels first). Returns false when the camera has no depth stream.
+	bool sampleHandDepth(CameraContext& context, const struct CameraProfile& profile,
+						 const TrackingFrameResult& result,
+						 std::array<struct HandDepthMeasurement, 2>& outMeasurements);
 	// Cross-camera search seeding: hands the fused result tracks but this
 	// camera lost get projected into its image as pipeline search hints
 	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);

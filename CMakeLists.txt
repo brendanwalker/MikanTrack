@@ -64,6 +64,7 @@ file(GLOB MATH_SRC         ${ROOT_DIR}/src/Math/*.h         ${ROOT_DIR}/src/Math
 file(GLOB VIDEO_IFACE_SRC  ${ROOT_DIR}/src/Video/Interfaces/*.h)
 file(GLOB VIDEO_SRC        ${ROOT_DIR}/src/Video/*.h        ${ROOT_DIR}/src/Video/*.cpp)
 file(GLOB VIDEO_WMF_SRC    ${ROOT_DIR}/src/Video/WMF/*.h    ${ROOT_DIR}/src/Video/WMF/*.cpp)
+file(GLOB VIDEO_RS_SRC     ${ROOT_DIR}/src/Video/RealSense/*.h ${ROOT_DIR}/src/Video/RealSense/*.cpp)
 file(GLOB CALIBRATION_SRC  ${ROOT_DIR}/src/Calibration/*.h  ${ROOT_DIR}/src/Calibration/*.cpp)
 file(GLOB VISION_SRC       ${ROOT_DIR}/src/Vision/*.h       ${ROOT_DIR}/src/Vision/*.cpp)
 file(GLOB TRACKING_SRC     ${ROOT_DIR}/src/Tracking/*.h     ${ROOT_DIR}/src/Tracking/*.cpp)
@@ -79,6 +80,7 @@ add_executable(MikanMediaPipe WIN32
     ${VIDEO_IFACE_SRC}
     ${VIDEO_SRC}
     ${VIDEO_WMF_SRC}
+    ${VIDEO_RS_SRC}
     ${CALIBRATION_SRC}
     ${VISION_SRC}
     ${TRACKING_SRC}
@@ -90,7 +92,7 @@ add_executable(MikanMediaPipe WIN32
 
 source_group(TREE ${ROOT_DIR}/src PREFIX "src" FILES
     ${APP_SRC} ${UTILITY_SRC} ${MATH_SRC} ${VIDEO_IFACE_SRC} ${VIDEO_SRC}
-    ${VIDEO_WMF_SRC} ${CALIBRATION_SRC} ${VISION_SRC} ${TRACKING_SRC}
+    ${VIDEO_WMF_SRC} ${VIDEO_RS_SRC} ${CALIBRATION_SRC} ${VISION_SRC} ${TRACKING_SRC}
     ${OSC_SRC} ${RENDER_SRC} ${UI_SRC} ${ROOT_DIR}/src/main.cpp)
 source_group("thirdparty\\imgui" FILES ${IMGUI_SOURCES})
 
@@ -102,6 +104,8 @@ target_include_directories(MikanMediaPipe PRIVATE
     ${ROOT_DIR}/src/Video
     ${ROOT_DIR}/src/Video/Interfaces
     ${ROOT_DIR}/src/Video/WMF
+    ${ROOT_DIR}/src/Video/RealSense
+    ${ROOT_DIR}/deps/librealsense/include
     ${ROOT_DIR}/src/Calibration
     ${ROOT_DIR}/src/Vision
     ${ROOT_DIR}/src/Tracking

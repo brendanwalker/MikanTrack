@@ -36,6 +36,17 @@
 //
 // Also fills the parametric HandPose (palm transform + finger angles +
 // skeleton) - see HandPoseModel.
+// Per-hand hardware depth measurements (RealSense): metric camera-space
+// points for whichever landmarks the depth sensor resolved. Sampled by the
+// vision thread (which owns the distortion mapping); consumed here as a
+// replacement for the PnP palm transform.
+struct HandDepthMeasurement
+{
+	bool bValid[HAND_LANDMARK_COUNT]= {};
+	std::array<glm::vec3, HAND_LANDMARK_COUNT> cameraPoints{};
+	int validCount= 0;
+};
+
 class LandmarkTo3D
 {
 public:
@@ -56,8 +67,12 @@ public:
 		m_bPnpPalmOnly= bPalmOnly;
 	}
 
-	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms
-	void process(TrackingFrameResult& ioResult);
+	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms.
+	// depthMeasurements (optional, indexed by eHandSide) supplies hardware
+	// depth: when a hand's palm is sufficiently depth-resolved, the metric
+	// measurements replace the monocular PnP/legacy estimate entirely.
+	void process(TrackingFrameResult& ioResult,
+				 const std::array<HandDepthMeasurement, 2>* depthMeasurements= nullptr);
 
 	// Live hand-scale override (stereo auto-scale); does not touch filter state
 	void setRefLengthMeters(float refLengthMeters)
@@ -84,6 +99,11 @@ public:
 private:
 	glm::vec3 backProject(float u, float v, float z) const;
 	void processHand(TrackedHand& hand, float dtSeconds);
+	// Hardware-depth path: builds cameraPoints from measured metric points
+	// (surface-to-joint offset applied), back-projecting unresolved landmarks
+	// at their parent joint's depth. Returns false when the palm isn't
+	// sufficiently resolved (caller falls back to PnP/legacy).
+	bool processHandDepth(TrackedHand& hand, const HandDepthMeasurement& measurement);
 	// PnP path; returns false when the solve fails (caller falls back to the
 	// legacy estimator for that frame)
 	bool processHandPnp(TrackedHand& hand, float dtSeconds);

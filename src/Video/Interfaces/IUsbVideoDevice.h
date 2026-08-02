@@ -21,7 +21,11 @@ enum class eUSBVideoFrameBufferFormat : int
 
 	USBVideo_RGB24, // 24BPP, RGB, 8:8:8
 	USBVideo_NV12,  // 12BPP, YCbCr, 4:2:0
-	USBVideo_YUY2   // 16BPP, YCbCr, 4:2:2
+	USBVideo_YUY2,  // 16BPP, YCbCr, 4:2:2
+
+	// RealSense composite frame: section[0] = RGB24 color plane,
+	// section[1] = Z16 depth plane (own dimensions, unaligned)
+	USBVideo_RGB24_DEPTH16
 };
 
 struct UsbVideoFrameSection

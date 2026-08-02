@@ -89,6 +89,11 @@ public:
 	// before any queueing/drops)
 	float getDeviceFrameRate(int cameraIndex) const;
 
+	// RealSense depth: true when the camera's open device is a RealSense and
+	// a depth frame + calibration are available. Copies the newest depth
+	// frame into the view's backing store (inference-thread safe).
+	bool getDepthView(int cameraIndex, struct RealSenseDepthView& outView);
+
 	// -- Inference thread API -----
 	// Returns the newest available frame for the camera, recycling any stale
 	// frames back to the freelist (latest-wins). Returns nullptr if no frame
@@ -145,7 +150,13 @@ private:
 	CameraSlot* getSlot(int cameraIndex);
 	const CameraSlot* getSlot(int cameraIndex) const;
 
+	// Finds an open-able device across BOTH backends (WMF paths + rs:// paths)
+	IUsbVideoDevice* findDeviceByPath(const std::string& devicePath) const;
+	IUsbVideoDevice* getMergedDeviceByIndex(size_t index) const;
+
 	class CaptureUsbVideoDeviceManager* m_deviceManager= nullptr;
+	// RealSense backend (contributes zero devices when realsense2.dll absent)
+	class RealSenseVideoDeviceManager* m_realSenseManager= nullptr;
 	bool m_bMediaFoundationInitialized= false;
 
 	std::vector<std::unique_ptr<CameraSlot>> m_slots;

@@ -9,6 +9,7 @@
 #include "LandmarkTo3D.h"
 #include "Logger.h"
 #include "OscStreamer.h"
+#include "RealSenseDepthView.h"
 #include "SpaceTransforms.h"
 #include "ThreadUtils.h"
 #include "VideoCaptureSystem.h"
@@ -418,6 +419,75 @@ void VisionThread::seedSearchHints(CameraContext& context, const TrackingFrameRe
 	}
 }
 
+bool VisionThread::sampleHandDepth(CameraContext& context, const CameraProfile& profile,
+								   const TrackingFrameResult& result,
+								   std::array<HandDepthMeasurement, 2>& outMeasurements)
+{
+	RealSenseDepthView depthView;
+	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
+		return false;
+
+	// Plausible hand range for a desk-mounted camera (bounds also reject the
+	// desk surface bleeding through around finger silhouettes)
+	constexpr float kMinHandDepthM= 0.15f;
+	constexpr float kMaxHandDepthM= 1.5f;
+
+	// The pipeline ran on the UNDISTORTED image; factory depth calibration
+	// expects RAW sensor pixels, so map back through the charuco distortion
+	// model when undistortion is active
+	const bool bUndistorted= context.bUndistortEnabled && context.undistorter != nullptr;
+	const MikanMonoIntrinsics& intrinsics= profile.intrinsics.intrinsics;
+	const MikanMatrix3d& undistortedK= intrinsics.undistorted_camera_matrix;
+	const MikanMatrix3d& distortedK= intrinsics.distorted_camera_matrix;
+	const MikanDistortionCoefficients& d= intrinsics.distortion_coefficients;
+	auto toRawPixel= [&](float u, float v, float& outU, float& outV) {
+		if (!bUndistorted)
+		{
+			outU= u;
+			outV= v;
+			return;
+		}
+		const double x= (u - undistortedK.z0) / undistortedK.x0;
+		const double y= (v - undistortedK.z1) / undistortedK.y1;
+		const double r2= x * x + y * y;
+		const double radial= (1.0 + d.k1 * r2 + d.k2 * r2 * r2 + d.k3 * r2 * r2 * r2) /
+			(1.0 + d.k4 * r2 + d.k5 * r2 * r2 + d.k6 * r2 * r2 * r2);
+		const double xd= x * radial + 2.0 * d.p1 * x * y + d.p2 * (r2 + 2.0 * x * x);
+		const double yd= y * radial + d.p1 * (r2 + 2.0 * y * y) + 2.0 * d.p2 * x * y;
+		outU= (float)(distortedK.x0 * xd + distortedK.z0);
+		outV= (float)(distortedK.y1 * yd + distortedK.z1);
+	};
+
+	bool bAnyResolved= false;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		HandDepthMeasurement& measurement= outMeasurements[sideIndex];
+		measurement= HandDepthMeasurement();
+
+		const TrackedHand& hand= result.hands[sideIndex];
+		if (!hand.tracked)
+			continue;
+
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+		{
+			float rawU= 0.f, rawV= 0.f;
+			toRawPixel(hand.imagePoints[i].x, hand.imagePoints[i].y, rawU, rawV);
+
+			glm::vec3 cameraPoint(0.f);
+			if (depthView.sampleCameraPointAtColorPixel(rawU, rawV, kMinHandDepthM, kMaxHandDepthM,
+														cameraPoint))
+			{
+				measurement.bValid[i]= true;
+				measurement.cameraPoints[i]= cameraPoint;
+				measurement.validCount++;
+			}
+		}
+		bAnyResolved|= measurement.validCount > 0;
+	}
+
+	return bAnyResolved;
+}
+
 bool VisionThread::processCameraFrame(CameraContext& context)
 {
 	VideoFrameBlock* block= m_videoCapture->tryPopFrame(context.cameraIndex);
@@ -470,7 +540,14 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 		// Image space -> camera space (needs intrinsics + hand scale)
 		if (context.landmarkTo3D != nullptr)
 		{
-			context.landmarkTo3D->process(result);
+			// Hardware depth (RealSense): sample metric depth at each 2D
+			// landmark so the palm transform comes from measurement, not from
+			// a monocular estimate
+			std::array<HandDepthMeasurement, 2> depthMeasurements;
+			const bool bHaveDepth= m_config->tracking.useRealSenseDepth &&
+				sampleHandDepth(context, profile, result, depthMeasurements);
+
+			context.landmarkTo3D->process(result, bHaveDepth ? &depthMeasurements : nullptr);
 
 			// Camera space -> marker/world space (needs extrinsics)
 			if (profile.extrinsics.present)

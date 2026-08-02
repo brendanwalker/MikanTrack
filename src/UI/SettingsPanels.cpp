@@ -41,6 +41,13 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		"fusion gates (clustering, residual veto, priors) filter those.");
 
 	ImGui::SeparatorText("Depth Estimation");
+	bChanged|= ImGui::Checkbox("RealSense hardware depth", &tracking.useRealSenseDepth);
+	ImGui::SetItemTooltip(
+		"For RealSense cameras (rs:// devices): sample the depth stream at\n"
+		"each 2D landmark and build the palm transform from MEASURED metric\n"
+		"depth instead of the monocular PnP estimate. Fingertip depth holes\n"
+		"fall back to parent-joint depth. No effect on plain webcams.");
+
 	bChanged|= ImGui::Checkbox("solvePnP depth", &tracking.usePnpDepth);
 	ImGui::SetItemTooltip(
 		"Solves the hand's rigid 6-DoF pose from all 21 landmark\n"

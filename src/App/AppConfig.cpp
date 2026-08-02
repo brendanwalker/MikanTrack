@@ -278,6 +278,7 @@ bool AppConfig::load()
 		tracking.usePnpDepth= tr.value("usePnpDepth", true);
 		tracking.pnpPalmOnly= tr.value("pnpPalmOnly", false);
 		tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
+		tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
 		// Legacy single-group smoothing keys (pre palm/angle split) migrate
 		// into both groups, but only when they were deliberately tuned away
 		// from the old defaults (1.0/0.05) - otherwise the new split
@@ -364,6 +365,7 @@ std::string AppConfig::toJsonString() const
 		{"usePnpDepth", tracking.usePnpDepth},
 		{"pnpPalmOnly", tracking.pnpPalmOnly},
 		{"crossCameraSeeding", tracking.crossCameraSeeding},
+		{"useRealSenseDepth", tracking.useRealSenseDepth},
 		{"palmMinCutoff", tracking.palmMinCutoff},
 		{"palmBeta", tracking.palmBeta},
 		{"angleMinCutoff", tracking.angleMinCutoff},

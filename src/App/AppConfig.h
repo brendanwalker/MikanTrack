@@ -69,6 +69,9 @@ struct TrackingConfig
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
 	bool crossCameraSeeding= true;
+	// RealSense cameras: use the hardware depth stream for the palm transform
+	// (metric measurement replaces the monocular PnP estimate)
+	bool useRealSenseDepth= true;
 	// Post-fusion one-euro smoothing, split by signal: palm transform latency
 	// is visible (the hand drags through space) while finger articulation
 	// latency isn't - so the palm gets a high cutoff (responsive) and the

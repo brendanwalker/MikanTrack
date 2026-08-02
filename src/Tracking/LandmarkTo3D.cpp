@@ -59,7 +59,8 @@ glm::vec3 LandmarkTo3D::backProject(float u, float v, float z) const
 		z);
 }
 
-void LandmarkTo3D::process(TrackingFrameResult& ioResult)
+void LandmarkTo3D::process(TrackingFrameResult& ioResult,
+						   const std::array<HandDepthMeasurement, 2>* depthMeasurements)
 {
 	if (!m_bConfigured)
 		return;
@@ -84,13 +85,85 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult)
 				m_bPnpPoseValid[sideIndex]= false;
 			}
 
-			processHand(hand, dtSeconds);
+			// Hardware depth (RealSense) beats any monocular estimate when the
+			// palm is sufficiently resolved; otherwise the PnP/legacy path runs
+			const bool bDepthResolved=
+				depthMeasurements != nullptr &&
+				processHandDepth(hand, (*depthMeasurements)[sideIndex]);
+			if (!bDepthResolved)
+				processHand(hand, dtSeconds);
 
 			if (hand.hasCameraSpace)
 				fillHandPose(hand, ioResult.poses[sideIndex]);
 		}
 		m_bSideWasTracked[sideIndex]= hand.tracked && hand.hasCameraSpace;
 	}
+}
+
+bool LandmarkTo3D::processHandDepth(TrackedHand& hand, const HandDepthMeasurement& measurement)
+{
+	// Depth measures the SKIN SURFACE; the joint center sits roughly this far
+	// deeper along the view ray (back-of-hand to knuckle center, palm-down)
+	constexpr float kSurfaceToJointOffsetM= 0.009f;
+	// The 6 quasi-rigid palm landmarks anchor the palm transform
+	constexpr int kPalmLandmarks[6]= {
+		(int)eHandLandmark::WRIST,      (int)eHandLandmark::THUMB_CMC,
+		(int)eHandLandmark::INDEX_MCP,  (int)eHandLandmark::MIDDLE_MCP,
+		(int)eHandLandmark::RING_MCP,   (int)eHandLandmark::PINKY_MCP};
+
+	int resolvedPalmCount= 0;
+	float palmDepths[6];
+	for (const int landmark : kPalmLandmarks)
+	{
+		if (measurement.bValid[landmark])
+			palmDepths[resolvedPalmCount++]= measurement.cameraPoints[landmark].z;
+	}
+	// The palm transform needs a well-conditioned rigid anchor; with fewer
+	// than 4 of 6 palm points the monocular estimate is more trustworthy
+	if (resolvedPalmCount < 4)
+		return false;
+
+	std::nth_element(palmDepths, palmDepths + resolvedPalmCount / 2, palmDepths + resolvedPalmCount);
+	const float palmMedianDepth= palmDepths[resolvedPalmCount / 2] + kSurfaceToJointOffsetM;
+
+	// Resolved landmarks: measured metric point, pushed from skin surface to
+	// joint center along the view ray
+	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+	{
+		if (measurement.bValid[i])
+		{
+			const glm::vec3& surfacePoint= measurement.cameraPoints[i];
+			const float range= glm::length(surfacePoint);
+			hand.cameraPoints[i]= range > 1e-4f
+				? surfacePoint * ((range + kSurfaceToJointOffsetM) / range)
+				: surfacePoint;
+		}
+	}
+
+	// Unresolved landmarks (depth holes - typically fingertips): back-project
+	// the 2D landmark at the parent joint's depth (finger segments are short,
+	// so parent depth bounds the error by ~a phalanx length); unresolved palm
+	// points use the palm median depth
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		float chainDepth= palmMedianDepth;
+		for (int joint= 0; joint < 4; ++joint)
+		{
+			const int landmark= FINGER_JOINTS[finger][joint];
+			if (measurement.bValid[landmark])
+				chainDepth= hand.cameraPoints[landmark].z;
+			else
+				hand.cameraPoints[landmark]=
+					backProject(hand.imagePoints[landmark].x, hand.imagePoints[landmark].y, chainDepth);
+		}
+	}
+	if (!measurement.bValid[(int)eHandLandmark::WRIST])
+		hand.cameraPoints[(int)eHandLandmark::WRIST]= backProject(
+			hand.imagePoints[(int)eHandLandmark::WRIST].x, hand.imagePoints[(int)eHandLandmark::WRIST].y,
+			palmMedianDepth);
+
+	hand.hasCameraSpace= true;
+	return true;
 }
 
 void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
