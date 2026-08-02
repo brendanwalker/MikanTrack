@@ -1732,6 +1732,182 @@ static int runApp(int argc, char** argv)
 			return result;
 		}
 
+		if (std::string(argv[i]) == "--test-imuaxes")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-imuaxes.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			// Are the gyro axes consistent with the accelerometer axes?
+			//
+			// A mounting calibration can absorb any fixed ROTATION between the
+			// sensor and the body it rides, but it cannot absorb an axis
+			// PERMUTATION or sign flip between the two sensors inside the
+			// chip - that isn't a rotation, and it makes integrated motion go
+			// the wrong way while static tilt still looks fine.
+			//
+			// The check needs no integration and no ground truth. "Up" is
+			// fixed in the world, so its direction in the SENSOR frame must
+			// obey dg/dt = -omega x g. Score every signed permutation of the
+			// gyro axes against the gravity motion the accelerometer actually
+			// measured, and the right one wins outright.
+			JoyconDeviceManager manager;
+			manager.startup();
+			const size_t deviceCount= manager.getDeviceCount();
+			if (deviceCount == 0)
+			{
+				MIKAN_LOG_ERROR("test-imuaxes") << "No Joy-Cons paired";
+				log_dispose();
+				return 1;
+			}
+			for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
+				manager.getDeviceByIndex(deviceIndex)->open();
+
+			MIKAN_LOG_INFO("test-imuaxes")
+				<< "Collecting 12 seconds - SLOWLY rotate each controller through all "
+				   "three axes (roll, pitch, yaw), avoiding sharp shakes.";
+
+			std::vector<std::vector<ImuSample>> collected(deviceCount);
+			for (int second= 0; second < 12; ++second)
+			{
+				std::this_thread::sleep_for(std::chrono::seconds(1));
+				for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
+					manager.getDeviceByIndex(deviceIndex)->fetchSamples(collected[deviceIndex]);
+				MIKAN_LOG_INFO("test-imuaxes") << "  " << (second + 1) << "/12";
+			}
+
+			// All 48 signed permutations: which axis of the raw gyro feeds
+			// each output axis, and with what sign
+			static const int kPermutations[6][3]= {{0, 1, 2}, {0, 2, 1}, {1, 0, 2},
+												   {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+			const char* kAxisNames[3]= {"X", "Y", "Z"};
+
+			int result= 0;
+			for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
+			{
+				IImuDevice* device= manager.getDeviceByIndex(deviceIndex);
+				const std::vector<ImuSample>& samples= collected[deviceIndex];
+				if (samples.size() < 200)
+				{
+					MIKAN_LOG_ERROR("test-imuaxes")
+						<< device->getFriendlyName() << ": only " << samples.size() << " samples";
+					result= 1;
+					continue;
+				}
+
+				// Gyro bias from the quietest second (so a resting stretch
+				// anywhere in the capture serves as the zero reference)
+				glm::vec3 bias(0.f);
+				{
+					float quietest= 1e9f;
+					for (size_t start= 0; start + 200 < samples.size(); start+= 200)
+					{
+						glm::vec3 sum(0.f);
+						float motion= 0.f;
+						for (size_t k= start; k < start + 200; ++k)
+						{
+							sum+= samples[k].angularVelocity;
+							motion+= glm::length(samples[k].angularVelocity);
+						}
+						if (motion < quietest)
+						{
+							quietest= motion;
+							bias= sum / 200.f;
+						}
+					}
+				}
+
+				float bestScore= 1e30f, identityScore= 0.f;
+				int bestPermutation= 0, bestSigns= 0;
+				for (int permutationIndex= 0; permutationIndex < 6; ++permutationIndex)
+				{
+					for (int signMask= 0; signMask < 8; ++signMask)
+					{
+						const glm::vec3 signs((signMask & 1) ? -1.f : 1.f, (signMask & 2) ? -1.f : 1.f,
+											  (signMask & 4) ? -1.f : 1.f);
+
+						float score= 0.f;
+						int usedSamples= 0;
+						for (size_t k= 1; k < samples.size(); ++k)
+						{
+							const ImuSample& previous= samples[k - 1];
+							const ImuSample& current= samples[k];
+							const float dt= (float)((current.timestampMs - previous.timestampMs) / 1000.0);
+							if (dt <= 0.f || dt > 0.05f)
+								continue;
+
+							// Only trust samples where the accelerometer is
+							// reading gravity alone
+							const float magnitude= glm::length(previous.acceleration);
+							if (fabsf(magnitude - 9.80665f) > 1.0f)
+								continue;
+
+							const glm::vec3 gravityBefore= previous.acceleration / magnitude;
+							const float magnitudeAfter= glm::length(current.acceleration);
+							if (magnitudeAfter < 1e-3f)
+								continue;
+							const glm::vec3 gravityAfter= current.acceleration / magnitudeAfter;
+
+							const glm::vec3 rawRate= previous.angularVelocity - bias;
+							const glm::vec3 mappedRate(signs.x * rawRate[kPermutations[permutationIndex][0]],
+													   signs.y * rawRate[kPermutations[permutationIndex][1]],
+													   signs.z * rawRate[kPermutations[permutationIndex][2]]);
+
+							// A world-fixed direction seen from the rotating
+							// body: dg/dt = -omega x g
+							const glm::vec3 predicted= gravityBefore - glm::cross(mappedRate, gravityBefore) * dt;
+							score+= glm::length(predicted - gravityAfter);
+							usedSamples++;
+						}
+
+						if (usedSamples < 100)
+							continue;
+						score/= (float)usedSamples;
+
+						const bool bIsIdentity= permutationIndex == 0 && signMask == 0;
+						if (bIsIdentity)
+							identityScore= score;
+						if (score < bestScore)
+						{
+							bestScore= score;
+							bestPermutation= permutationIndex;
+							bestSigns= signMask;
+						}
+					}
+				}
+
+				char mapping[64];
+				snprintf(mapping, sizeof(mapping), "(%s%s, %s%s, %s%s)",
+						 (bestSigns & 1) ? "-" : "+", kAxisNames[kPermutations[bestPermutation][0]],
+						 (bestSigns & 2) ? "-" : "+", kAxisNames[kPermutations[bestPermutation][1]],
+						 (bestSigns & 4) ? "-" : "+", kAxisNames[kPermutations[bestPermutation][2]]);
+				const bool bIsIdentity= bestPermutation == 0 && bestSigns == 0;
+
+				MIKAN_LOG_INFO("test-imuaxes")
+					<< device->getFriendlyName() << ": best gyro axis mapping " << mapping
+					<< " (residual " << bestScore << "), identity residual " << identityScore
+					<< ", ratio " << (bestScore > 1e-12f ? identityScore / bestScore : 0.f);
+				if (bIsIdentity)
+				{
+					MIKAN_LOG_INFO("test-imuaxes")
+						<< "  -> gyro axes already agree with the accelerometer";
+				}
+				else
+				{
+					MIKAN_LOG_ERROR("test-imuaxes")
+						<< "  -> MISMATCH: the gyro needs remapping to " << mapping
+						<< " to agree with the accelerometer";
+					result= 1;
+				}
+			}
+
+			manager.shutdown();
+			log_dispose();
+			return result;
+		}
+
 		if (std::string(argv[i]) == "--test-imufilter")
 		{
 			LoggerSettings loggerSettings= {};
