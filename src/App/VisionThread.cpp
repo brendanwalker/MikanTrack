@@ -3,6 +3,8 @@
 #include "glm/ext/matrix_double4x4.hpp"
 #include "glm/matrix.hpp"
 
+#include "opencv2/imgproc.hpp"
+
 #include "AppConfig.h"
 #include "CVVideoFrameProcessor.h"
 #include "HandTrackingPipeline.h"
@@ -78,6 +80,17 @@ void VisionThread::setUndistortEnabled(int cameraIndex, bool bEnabled)
 bool VisionThread::isUndistortEnabled(int cameraIndex) const
 {
 	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bUndistortEnabled;
+}
+
+void VisionThread::setDepthPreviewEnabled(int cameraIndex, bool bEnabled)
+{
+	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
+		m_cameras[cameraIndex]->bDepthPreview= bEnabled;
+}
+
+bool VisionThread::isDepthPreviewEnabled(int cameraIndex) const
+{
+	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bDepthPreview;
 }
 
 bool VisionThread::fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFrame)
@@ -575,16 +588,64 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 	}
 	context.lastResult.result= result;
 
-	// Publish this camera's preview (latest-wins)
+	// Publish this camera's preview (latest-wins). Depth preview mode swaps
+	// in the colorized depth stream (tracking above always used color).
 	{
+		cv::Mat depthPreview;
+		const bool bShowDepth=
+			context.bDepthPreview && buildDepthPreview(context, activeFrame->size(), depthPreview);
+
 		std::lock_guard<std::mutex> lock(context.previewMutex);
-		activeFrame->copyTo(context.previewFrame.bgr);
+		if (bShowDepth)
+			depthPreview.copyTo(context.previewFrame.bgr);
+		else
+			activeFrame->copyTo(context.previewFrame.bgr);
 		context.previewFrame.result= result;
 		context.previewFrame.valid= true;
 		context.bPreviewFresh= true;
 	}
 
 	return bProducedTracking;
+}
+
+bool VisionThread::buildDepthPreview(CameraContext& context, const cv::Size& targetSize, cv::Mat& outBgr)
+{
+	RealSenseDepthView depthView;
+	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
+		return false;
+
+	// Fixed desk-scale range: near = warm, far = cool, holes = black.
+	// (The range is a visualization window, not a tracking gate.)
+	constexpr float kNearM= 0.15f;
+	constexpr float kFarM= 1.2f;
+
+	const cv::Mat depth16(depthView.depthHeight, depthView.depthWidth, CV_16UC1,
+						  (void*)depthView.depthData);
+
+	// Z16 -> normalized 8-bit within the window
+	cv::Mat depthMeters;
+	depth16.convertTo(depthMeters, CV_32F, depthView.depthUnitsMeters);
+	cv::Mat normalized;
+	depthMeters.convertTo(normalized, CV_8U, 255.0 / (kFarM - kNearM), -255.0 * kNearM / (kFarM - kNearM));
+	// Invert so NEAR maps to the warm end of the colormap
+	cv::Mat inverted;
+	cv::subtract(cv::Scalar(255), normalized, inverted);
+
+	cv::Mat colorized;
+	cv::applyColorMap(inverted, colorized, cv::COLORMAP_TURBO);
+
+	// Holes (raw 0) and out-of-window depth render black - the holes are the
+	// entire point of this view (see exactly which fingers depth loses)
+	cv::Mat validMask= (depth16 > (uint16_t)(kNearM / depthView.depthUnitsMeters)) &
+		(depth16 < (uint16_t)(kFarM / depthView.depthUnitsMeters));
+	cv::Mat masked= cv::Mat::zeros(colorized.size(), CV_8UC3);
+	colorized.copyTo(masked, validMask);
+
+	// Scale to the color preview's size so the pane geometry (and the
+	// skeleton overlay, approximately - depth and color FOVs differ slightly)
+	// stays consistent when cycling views
+	cv::resize(masked, outBgr, targetSize, 0.0, 0.0, cv::INTER_NEAREST);
+	return true;
 }
 
 void VisionThread::threadLoop()

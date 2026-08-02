@@ -62,6 +62,12 @@ public:
 	void setUndistortEnabled(int cameraIndex, bool bEnabled);
 	bool isUndistortEnabled(int cameraIndex) const;
 
+	// Depth preview (RealSense devices): the camera's preview pane shows the
+	// colorized depth stream instead of color. Tracking is unaffected - it
+	// always consumes the color image.
+	void setDepthPreviewEnabled(int cameraIndex, bool bEnabled);
+	bool isDepthPreviewEnabled(int cameraIndex) const;
+
 	// Copies the newest preview frame + per-camera result for a camera.
 	// Returns false if nothing new arrived since the last call.
 	bool fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFrame);
@@ -127,6 +133,9 @@ private:
 
 		std::atomic_bool bTrackingEnabled{true};
 		std::atomic_bool bUndistortEnabled{true};
+		// Preview shows the colorized depth stream instead of color
+		// (RealSense devices only; ignored when no depth is available)
+		std::atomic_bool bDepthPreview{false};
 
 		// Read by the main thread; written by the vision thread after pipeline
 		// startup (never dereference the pipeline from the main thread)
@@ -164,6 +173,9 @@ private:
 	bool sampleHandDepth(CameraContext& context, const struct CameraProfile& profile,
 						 const TrackingFrameResult& result,
 						 std::array<struct HandDepthMeasurement, 2>& outMeasurements);
+	// Colorized depth image for the preview pane (false when the camera has
+	// no depth stream)
+	bool buildDepthPreview(CameraContext& context, const cv::Size& targetSize, cv::Mat& outBgr);
 	// Cross-camera search seeding: hands the fused result tracks but this
 	// camera lost get projected into its image as pipeline search hints
 	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);

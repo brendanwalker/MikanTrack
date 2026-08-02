@@ -362,6 +362,26 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bool bShowOverlay= previewPanel->getShowOverlay();
 	if (ImGui::Checkbox("Show skeleton overlay", &bShowOverlay))
 		previewPanel->setShowOverlay(bShowOverlay);
+
+	// Depth preview toggle per RealSense camera (colorized depth instead of
+	// color in that camera's preview pane; tracking still runs on color)
+	for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+	{
+		const std::string& devicePath= config->camera(cameraIndex).video.devicePath;
+		if (devicePath.rfind("rs://", 0) != 0)
+			continue;
+
+		char label[48];
+		snprintf(label, sizeof(label), "Depth view (camera %d)", cameraIndex + 1);
+		bool bDepthPreview= visionThread->isDepthPreviewEnabled(cameraIndex);
+		if (ImGui::Checkbox(label, &bDepthPreview))
+			visionThread->setDepthPreviewEnabled(cameraIndex, bDepthPreview);
+		ImGui::SetItemTooltip(
+			"Show the colorized depth stream in this camera's preview pane.\n"
+			"Near = warm, far = cool, BLACK = depth holes - watch which\n"
+			"fingers go black to see exactly what the depth sensor loses.\n"
+			"Tracking is unaffected (it always consumes the color image).");
+	}
 	bool bShowBoxes= previewPanel->getShowDetectionBoxes();
 	if (ImGui::Checkbox("Show detection boxes", &bShowBoxes))
 		previewPanel->setShowDetectionBoxes(bShowBoxes);
