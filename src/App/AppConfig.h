@@ -58,9 +58,6 @@ struct TrackingConfig
 	// matters, strict precision otherwise; fusion's gates absorb the extra
 	// false positives.
 	float palmScoreThresholdRelaxed= 0.25f;
-	// With two calibrated cameras, continuously refine the hand scale from
-	// stereo wrist triangulation (overrides the wizard-measured scale live)
-	bool autoHandScaleFromStereo= true;
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
 	bool crossCameraSeeding= true;

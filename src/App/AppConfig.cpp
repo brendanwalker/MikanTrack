@@ -273,7 +273,6 @@ bool AppConfig::load()
 		tracking.flipHandedness= tr.value("flipHandedness", true);
 		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 		tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
-		tracking.autoHandScaleFromStereo= tr.value("autoHandScaleFromStereo", true);
 		tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
 		tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
 		tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
@@ -342,7 +341,6 @@ std::string AppConfig::toJsonString() const
 		{"flipHandedness", tracking.flipHandedness},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
-		{"autoHandScaleFromStereo", tracking.autoHandScaleFromStereo},
 		{"crossCameraSeeding", tracking.crossCameraSeeding},
 		{"useRealSenseDepth", tracking.useRealSenseDepth},
 		{"palmMinCutoff", tracking.palmMinCutoff},

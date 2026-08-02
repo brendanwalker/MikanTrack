@@ -162,18 +162,18 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			ImGui::EndTable();
 		}
 
-		ImGui::SeparatorText("Stereo Hand Scale");
-		bChanged|= ImGui::Checkbox("Auto hand scale", &tracking.autoHandScaleFromStereo);
-		ImGui::SetItemTooltip(
-			"With two calibrated cameras seeing the same hand, its wrist can\n"
-			"be triangulated - which implies the true hand scale. Refines the\n"
-			"wizard-measured scale continuously while enabled.");
-
+		ImGui::SeparatorText("Hand Scale");
+		// Always measured live: stereo/depth observation of the wrist->knuckle
+		// bone refines the configured seed continuously (slow EMA, clamped)
 		const float scaleFactor= visionThread->getAutoHandScaleFactor();
 		const double autoScaleMeters= config->handScale.refLengthMeters * (double)scaleFactor;
-		ImGui::Text("Configured: %.2f cm   Stereo: %.2f cm (x%.3f)",
+		ImGui::Text("Configured: %.2f cm   Measured: %.2f cm (x%.3f)",
 					config->handScale.refLengthMeters * 100.0, autoScaleMeters * 100.0, scaleFactor);
-		if (tracking.autoHandScaleFromStereo && fabsf(scaleFactor - 1.f) > 0.01f)
+		ImGui::SetItemTooltip(
+			"The wrist->knuckle bone is measured continuously from stereo\n"
+			"triangulation / depth. Saving bakes the measured value in as\n"
+			"the new baseline (the live correction resets on restart).");
+		if (fabsf(scaleFactor - 1.f) > 0.01f)
 		{
 			if (ImGui::Button("Save stereo scale as calibrated"))
 			{

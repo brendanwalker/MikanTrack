@@ -727,7 +727,7 @@ void VisionThread::threadLoop()
 			// Stereo auto hand-scale: slow EMA over the triangulated
 			// correction, applied live to every camera's 3D projection
 			float scaleSample= 1.f;
-			if (m_config->tracking.autoHandScaleFromStereo && m_fusion.getStereoScaleSample(scaleSample))
+			if (m_fusion.getStereoScaleSample(scaleSample))
 			{
 				constexpr float kScaleEmaAlpha= 0.02f;
 				const float ema= m_autoScaleFactor.load() * (1.f - kScaleEmaAlpha) + scaleSample * kScaleEmaAlpha;
