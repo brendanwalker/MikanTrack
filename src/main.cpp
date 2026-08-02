@@ -27,6 +27,7 @@
 #include "MonoLensDistortionCalibrator.h"
 #include "OscWriterTest.h"
 #include "DepthFrameView.h"
+#include "ImuOrientationFilter.h"
 #include "JoyconDevice.h"
 #include "JoyconDeviceManager.h"
 
@@ -1725,6 +1726,240 @@ static int runApp(int argc, char** argv)
 
 			if (result == 0)
 				MIKAN_LOG_INFO("test-handpose") << "All hand-pose checks passed";
+
+			log_dispose();
+			return result;
+		}
+
+		if (std::string(argv[i]) == "--test-imufilter")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-imufilter.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+
+			constexpr float kGravity= 9.80665f;
+			const glm::vec3 worldUp(0.f, 0.f, 1.f);
+			constexpr float kDt= 1.f / 200.f; // Joy-Con rate
+
+			// Synthetic sensor: given a true sensor->world orientation and a
+			// true body-frame rate, produce what the IMU would report
+			// (accelerometer reads specific force = +1g along "up")
+			auto simulateAccel= [&](const glm::quat& sensorToWorld) {
+				return glm::transpose(glm::mat3_cast(sensorToWorld)) * worldUp * kGravity;
+			};
+
+			// (a) Static, gravity only. A stationary sensor with a real
+			// Joy-Con bias must hold level and learn the bias components it
+			// CAN observe. Gravity constrains only 2 DoF (tilt), so the bias
+			// about the gravity axis is unobservable here - the same physics
+			// that makes yaw unobservable. Asserting that explicitly keeps
+			// the limitation documented instead of surprising us later.
+			{
+				const glm::vec3 trueBias(0.007f, -0.033f, -0.006f); // measured Joy-Con R
+				const glm::quat trueOrientation(1.f, 0.f, 0.f, 0.f); // level: gravity axis = sensor Z
+
+				ImuOrientationFilter filter;
+				filter.configure(ImuOrientationFilterConfig());
+
+				const glm::vec3 accel= simulateAccel(trueOrientation);
+				for (int step= 0; step < 200 * 30; ++step) // 30 seconds
+				{
+					ImuSample sample;
+					sample.angularVelocity= trueBias; // stationary: the reading IS the bias
+					sample.acceleration= accel;
+					filter.processSample(sample, kDt);
+				}
+
+				const glm::vec3 estimatedBias= filter.getGyroBias();
+				const glm::vec2 tiltBiasError(estimatedBias.x - trueBias.x, estimatedBias.y - trueBias.y);
+				const float tiltBiasErrorMagnitude= glm::length(tiltBiasError);
+				const float gravityAxisBiasError= fabsf(estimatedBias.z - trueBias.z);
+				const glm::vec3 estimatedUp= glm::mat3_cast(filter.getOrientation()) * glm::vec3(0, 0, 1);
+				const float tiltErrorDegrees= glm::degrees(acosf(std::clamp(estimatedUp.z, -1.f, 1.f)));
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(a) static/gravity-only: tilt-axis bias err=" << tiltBiasErrorMagnitude
+					<< " rad/s, gravity-axis bias err=" << gravityAxisBiasError
+					<< " rad/s (expected ~unobservable), tilt err=" << tiltErrorDegrees << " deg";
+				if (tiltBiasErrorMagnitude > 0.002f || tiltErrorDegrees > 0.5f || !filter.isTiltConverged())
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(a) FAILED: must learn the OBSERVABLE bias axes and hold level";
+					result= 1;
+				}
+				if (gravityAxisBiasError < 0.5f * fabsf(trueBias.z))
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(a) FAILED: gravity-axis bias appears observable - the gravity Jacobian is wrong";
+					result= 1;
+				}
+			}
+
+			// (a2) Same scenario WITH vision. Absolute orientation makes the
+			// third bias axis observable, so the full 3-axis bias converges -
+			// this is the concrete payoff of anchoring the filter to vision.
+			{
+				const glm::vec3 trueBias(0.007f, -0.033f, -0.006f);
+				const glm::quat trueOrientation(1.f, 0.f, 0.f, 0.f);
+
+				ImuOrientationFilter filter;
+				filter.configure(ImuOrientationFilterConfig());
+
+				const glm::vec3 accel= simulateAccel(trueOrientation);
+				for (int step= 0; step < 200 * 30; ++step)
+				{
+					ImuSample sample;
+					sample.angularVelocity= trueBias;
+					sample.acceleration= accel;
+					filter.processSample(sample, kDt);
+
+					// Vision at ~30 Hz, as the tracker would supply it
+					if (step % 7 == 0)
+						filter.updateWithOrientation(trueOrientation);
+				}
+
+				const float biasError= glm::length(filter.getGyroBias() - trueBias);
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(a2) static/vision-aided: full bias err=" << biasError << " rad/s ("
+					<< glm::degrees(biasError) << " deg/s)";
+				if (biasError > 0.002f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(a2) FAILED: vision must make the full gyro bias observable";
+					result= 1;
+				}
+			}
+
+			// (b) Rotation tracking: sustained rotation about a tilted axis
+			// with a bias present. Orientation must track the truth.
+			{
+				const glm::vec3 trueBias(0.01f, -0.02f, 0.005f);
+				const glm::vec3 trueRate= glm::normalize(glm::vec3(0.3f, 0.6f, 0.2f)) * 1.2f; // rad/s
+
+				ImuOrientationFilter filter;
+				filter.configure(ImuOrientationFilterConfig());
+
+				// Let it settle at rest first so the bias is known
+				glm::quat trueOrientation(1.f, 0.f, 0.f, 0.f);
+				for (int step= 0; step < 200 * 20; ++step)
+				{
+					ImuSample sample;
+					sample.angularVelocity= trueBias;
+					sample.acceleration= simulateAccel(trueOrientation);
+					filter.processSample(sample, kDt);
+				}
+
+				// Now rotate for 4 seconds
+				for (int step= 0; step < 200 * 4; ++step)
+				{
+					const float angle= glm::length(trueRate) * kDt;
+					trueOrientation= glm::normalize(
+						trueOrientation * glm::angleAxis(angle, glm::normalize(trueRate)));
+
+					ImuSample sample;
+					sample.angularVelocity= trueRate + trueBias;
+					// Rotating in place: the accelerometer still sees only
+					// gravity, so the gravity update stays valid
+					sample.acceleration= simulateAccel(trueOrientation);
+					filter.processSample(sample, kDt);
+				}
+
+				const glm::quat error= glm::inverse(trueOrientation) * filter.getOrientation();
+				const float errorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(error.x, error.y, error.z)), 0.f, 1.f)));
+				MIKAN_LOG_INFO("test-imufilter") << "(b) rotation: orientation err=" << errorDegrees << " deg";
+				if (errorDegrees > 2.f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter") << "(b) FAILED: must track sustained rotation";
+					result= 1;
+				}
+			}
+
+			// (c) Motion gating: a hard linear acceleration must NOT be
+			// mistaken for gravity and tilt the estimate
+			{
+				ImuOrientationFilter filter;
+				filter.configure(ImuOrientationFilterConfig());
+
+				const glm::quat trueOrientation(1.f, 0.f, 0.f, 0.f);
+				for (int step= 0; step < 200 * 10; ++step)
+				{
+					ImuSample sample;
+					sample.acceleration= simulateAccel(trueOrientation);
+					filter.processSample(sample, kDt);
+				}
+				const glm::vec3 upBefore= glm::mat3_cast(filter.getOrientation()) * glm::vec3(0, 0, 1);
+
+				// 5 m/s^2 sideways shove for half a second
+				int rejectedCount= 0;
+				for (int step= 0; step < 100; ++step)
+				{
+					filter.predict(glm::vec3(0.f), kDt);
+					const glm::vec3 shoved= simulateAccel(trueOrientation) + glm::vec3(5.f, 0.f, 0.f);
+					if (!filter.updateWithGravity(shoved))
+						rejectedCount++;
+				}
+				const glm::vec3 upAfter= glm::mat3_cast(filter.getOrientation()) * glm::vec3(0, 0, 1);
+				const float tiltChangeDegrees=
+					glm::degrees(acosf(std::clamp(glm::dot(upBefore, upAfter), -1.f, 1.f)));
+
+				MIKAN_LOG_INFO("test-imufilter") << "(c) gating: rejected " << rejectedCount
+					<< "/100 accelerated samples, tilt moved " << tiltChangeDegrees << " deg";
+				if (rejectedCount != 100 || tiltChangeDegrees > 0.1f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(c) FAILED: accelerated samples must be gated out of the gravity update";
+					result= 1;
+				}
+			}
+
+			// (d) Yaw is unobservable from inertial data alone, and vision
+			// must be able to fix it. Sanity-checks the whole reason the
+			// filter is vision-anchored.
+			{
+				ImuOrientationFilter filter;
+				filter.configure(ImuOrientationFilterConfig());
+
+				const glm::quat trueOrientation(1.f, 0.f, 0.f, 0.f);
+				for (int step= 0; step < 200 * 10; ++step)
+				{
+					ImuSample sample;
+					sample.acceleration= simulateAccel(trueOrientation);
+					filter.processSample(sample, kDt);
+				}
+
+				const glm::vec3 sigmaBefore= filter.getOrientationSigma();
+
+				// Vision says the sensor is yawed 40 degrees
+				const glm::quat visionOrientation=
+					glm::angleAxis(glm::radians(40.f), glm::vec3(0.f, 0.f, 1.f));
+				for (int update= 0; update < 20; ++update)
+					filter.updateWithOrientation(visionOrientation);
+
+				const glm::vec3 sigmaAfter= filter.getOrientationSigma();
+				const glm::quat error= glm::inverse(visionOrientation) * filter.getOrientation();
+				const float errorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(error.x, error.y, error.z)), 0.f, 1.f)));
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(d) yaw: sigma z before=" << sigmaBefore.z << " after=" << sigmaAfter.z
+					<< " rad, orientation err after vision=" << errorDegrees << " deg";
+				// Before vision, yaw uncertainty must still be large (gravity
+				// can't see it); after vision it must be small and correct
+				if (sigmaBefore.z < 0.5f || sigmaAfter.z > 0.1f || errorDegrees > 3.f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(d) FAILED: yaw must be unobservable inertially and fixable by vision";
+					result= 1;
+				}
+			}
+
+			if (result == 0)
+				MIKAN_LOG_INFO("test-imufilter") << "All IMU filter checks passed";
 
 			log_dispose();
 			return result;
