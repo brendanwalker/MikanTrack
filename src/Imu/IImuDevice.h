@@ -34,6 +34,10 @@ public:
 	virtual size_t fetchSamples(std::vector<ImuSample>& outSamples)= 0;
 
 	// -- Diagnostics
+	// Milliseconds since the last delivered sample; -1 if never. A streaming
+	// device should keep this in the low tens - a large value means it slept
+	// or the link dropped, which the service uses to trigger recovery.
+	virtual double getMillisecondsSinceLastSample() const= 0;
 	virtual float getSampleRateHz() const= 0;
 	// 0..1, or -1 when the backend doesn't report it
 	virtual float getBatteryLevel() const= 0;

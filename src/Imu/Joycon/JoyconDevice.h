@@ -57,10 +57,19 @@ public:
 	// Static + pure so the self test can exercise it without hardware.
 	static ImuSample decodeSample(const unsigned char* report, int byteOffset, double timestampMs);
 
+	virtual double getMillisecondsSinceLastSample() const override;
+
 private:
 	void readThreadLoop();
 	// Sends output report 0x01 with a subcommand; returns false on write failure
 	bool sendSubcommand(unsigned char subcommand, const unsigned char* args, int argCount);
+	// Output report 0x10: neutral rumble, no subcommand. Sent periodically as
+	// a KEEPALIVE - a Joy-Con that hears nothing from the host eventually
+	// sleeps, even while it is happily streaming input reports at us.
+	bool sendRumbleKeepalive();
+	// Shared output-report construction (reportId 0x01 = rumble+subcommand,
+	// 0x10 = rumble only)
+	bool sendOutputReport(unsigned char reportId, int subcommand, const unsigned char* args, int argCount);
 
 	std::string m_devicePath;
 	std::string m_friendlyName;
@@ -82,4 +91,6 @@ private:
 
 	std::atomic<float> m_sampleRateHz{0.f};
 	std::atomic<float> m_batteryLevel{-1.f};
+	// steady_clock ms of the last delivered sample (-1 = never)
+	std::atomic<double> m_lastSampleArrivalMs{-1.0};
 };

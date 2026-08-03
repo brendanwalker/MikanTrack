@@ -231,9 +231,20 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 				ImGui::TableNextColumn();
 				if (status.streaming)
+				{
 					ImGui::Text("%.0f Hz  %d%%", status.sampleRateHz, (int)(status.batteryLevel * 100.f));
+				}
+				else if (status.deviceConnected && status.millisecondsSinceLastSample > 0.0)
+				{
+					// Silent but open: asleep or the link dropped. The service
+					// reopens it automatically; this just makes it visible.
+					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "silent %.0fs",
+									   status.millisecondsSinceLastSample / 1000.0);
+				}
 				else
+				{
 					ImGui::TextDisabled("-");
+				}
 
 				ImGui::TableNextColumn();
 				// The yaw-axis gyro bias is the number that matters: it is the

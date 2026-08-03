@@ -7,6 +7,12 @@
 #include "JoyconDeviceManager.h"
 #include "Logger.h"
 
+// A streaming Joy-Con delivers ~200 samples/second, so a second of total
+// silence already means it is gone (asleep, or the link dropped)
+static constexpr double k_deviceSilentTimeoutMs= 1500.0;
+// Frames to wait between reopen attempts (~2s at camera rate)
+static constexpr int k_reopenCooldownFrames= 60;
+
 ImuService::ImuService()= default;
 
 ImuService::~ImuService()
@@ -123,6 +129,37 @@ void ImuService::update()
 		if (entry->device == nullptr)
 			continue;
 
+		// Recover a controller that went quiet. Joy-Cons sleep on their own
+		// schedule and Bluetooth links drop; either way the fix is the same,
+		// so heal automatically instead of making the user notice and press
+		// a button. Throttled so a genuinely absent controller doesn't spin.
+		const double silentMs= entry->device->getMillisecondsSinceLastSample();
+		if (silentMs > k_deviceSilentTimeoutMs)
+		{
+			if (entry->reopenCooldownFrames <= 0)
+			{
+				MIKAN_LOG_WARNING("ImuService")
+					<< entry->device->getFriendlyName() << " silent for " << (int)silentMs
+					<< " ms - reopening";
+				entry->device->close();
+				if (entry->device->open())
+				{
+					// The nominal orientation survives, but the sample clock
+					// restarts: don't integrate across the gap
+					entry->lastSampleTimestampMs= -1.0;
+				}
+				entry->reopenCooldownFrames= k_reopenCooldownFrames;
+			}
+			else
+			{
+				entry->reopenCooldownFrames--;
+			}
+		}
+		else if (entry->reopenCooldownFrames > 0)
+		{
+			entry->reopenCooldownFrames= 0;
+		}
+
 		m_sampleScratch.clear();
 		entry->device->fetchSamples(m_sampleScratch);
 
@@ -213,7 +250,11 @@ ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 		return status;
 
 	status.deviceConnected= entry.device->isOpen();
-	status.streaming= entry.device->isStreaming();
+	// isStreaming() only says "samples arrived at some point"; a controller
+	// that fell asleep still reports true, so gate on recent traffic
+	const double silentMs= entry.device->getMillisecondsSinceLastSample();
+	status.streaming= entry.device->isStreaming() && silentMs >= 0.0 && silentMs < k_deviceSilentTimeoutMs;
+	status.millisecondsSinceLastSample= silentMs;
 	status.sampleRateHz= entry.device->getSampleRateHz();
 	status.batteryLevel= entry.device->getBatteryLevel();
 	status.deviceName= entry.device->getFriendlyName();

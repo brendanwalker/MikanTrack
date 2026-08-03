@@ -89,17 +89,31 @@ ImuSample JoyconDevice::decodeSample(const unsigned char* report, int byteOffset
 
 bool JoyconDevice::sendSubcommand(unsigned char subcommand, const unsigned char* args, int argCount)
 {
+	return sendOutputReport(0x01, (int)subcommand, args, argCount);
+}
+
+bool JoyconDevice::sendRumbleKeepalive()
+{
+	return sendOutputReport(0x10, -1, nullptr, 0);
+}
+
+bool JoyconDevice::sendOutputReport(unsigned char reportId, int subcommand, const unsigned char* args,
+									int argCount)
+{
 	if (m_handle == nullptr || m_outputReportLength == 0)
 		return false;
 
 	std::vector<unsigned char> buffer(m_outputReportLength, 0);
-	buffer[0]= 0x01; // report id: rumble + subcommand
+	buffer[0]= reportId; // 0x01 = rumble + subcommand, 0x10 = rumble only
 	buffer[1]= (unsigned char)(m_packetCounter & 0x0F);
 	m_packetCounter++;
 	std::memcpy(&buffer[2], k_neutralRumble, sizeof(k_neutralRumble));
-	buffer[10]= subcommand;
-	for (int i= 0; i < argCount && (11 + i) < (int)buffer.size(); ++i)
-		buffer[11 + i]= args[i];
+	if (subcommand >= 0)
+	{
+		buffer[10]= (unsigned char)subcommand;
+		for (int i= 0; i < argCount && (11 + i) < (int)buffer.size(); ++i)
+			buffer[11 + i]= args[i];
+	}
 
 	// Overlapped write (the handle is opened FILE_FLAG_OVERLAPPED)
 	OVERLAPPED overlapped= {};
@@ -161,11 +175,16 @@ bool JoyconDevice::open()
 	m_bOpen= true;
 	m_bStopRequested= false;
 
-	// Handshake: enable the IMU, then switch to the report mode that carries it
+	// Handshake. Order matters: leave shipment low-power mode FIRST (a
+	// controller still in it sleeps aggressively no matter what else we do),
+	// then enable the IMU, then switch to the report mode that carries it.
+	const unsigned char disableShipmentMode= 0x00;
 	const unsigned char enableImu= 0x01;
 	const unsigned char reportMode= 0x30;
-	const bool bImuEnabled= sendSubcommand(0x40, &enableImu, 1);
+	sendSubcommand(0x08, &disableShipmentMode, 1);
 	::Sleep(30); // the controller needs a beat between subcommands
+	const bool bImuEnabled= sendSubcommand(0x40, &enableImu, 1);
+	::Sleep(30);
 	const bool bModeSet= sendSubcommand(0x03, &reportMode, 1);
 	if (!bImuEnabled || !bModeSet)
 	{
@@ -173,6 +192,12 @@ bool JoyconDevice::open()
 		close();
 		return false;
 	}
+
+	// Player LED: 1 for the left wrist, 2 for the right. Purely so a glance
+	// at the controllers tells you which one the app thinks is which.
+	::Sleep(30);
+	const unsigned char playerLight= m_side == eImuSide::Right ? 0x02 : 0x01;
+	sendSubcommand(0x30, &playerLight, 1);
 
 	m_readThread= std::thread([this]() { readThreadLoop(); });
 
@@ -212,9 +237,22 @@ void JoyconDevice::readThreadLoop()
 
 	int samplesThisSecond= 0;
 	double rateWindowStartMs= nowSteadyMs();
+	// Keepalive cadence. The controller streams input reports at us
+	// regardless, but hears nothing back unless we send something - and a
+	// Joy-Con that hears nothing from the host eventually sleeps. Sending
+	// from THIS thread (rather than a timer thread) keeps all I/O on the
+	// handle single-threaded.
+	constexpr double kKeepaliveIntervalMs= 1000.0;
+	double lastKeepaliveMs= nowSteadyMs();
 
 	while (!m_bStopRequested)
 	{
+		if (nowSteadyMs() - lastKeepaliveMs >= kKeepaliveIntervalMs)
+		{
+			sendRumbleKeepalive();
+			lastKeepaliveMs= nowSteadyMs();
+		}
+
 		OVERLAPPED overlapped= {};
 		overlapped.hEvent= readEvent;
 		::ResetEvent(readEvent);
@@ -276,6 +314,7 @@ void JoyconDevice::readThreadLoop()
 		}
 
 		m_bStreaming= true;
+		m_lastSampleArrivalMs= arrivalMs;
 
 		if (arrivalMs - rateWindowStartMs >= 1000.0)
 		{
@@ -287,6 +326,12 @@ void JoyconDevice::readThreadLoop()
 
 	::CloseHandle(readEvent);
 	m_bStreaming= false;
+}
+
+double JoyconDevice::getMillisecondsSinceLastSample() const
+{
+	const double lastArrival= m_lastSampleArrivalMs.load();
+	return lastArrival < 0.0 ? -1.0 : nowSteadyMs() - lastArrival;
 }
 
 size_t JoyconDevice::fetchSamples(std::vector<ImuSample>& outSamples)

@@ -56,6 +56,8 @@ struct ImuSideStatus
 	bool orientationValid= false; // calibrated AND the filter has converged
 	float sampleRateHz= 0.f;
 	float batteryLevel= -1.f;
+	// -1 = never delivered a sample; large = asleep / link dropped
+	double millisecondsSinceLastSample= -1.0;
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
 	float yawSigmaRadians= 0.f;
 	std::string deviceName;
@@ -103,6 +105,7 @@ private:
 		IImuDevice* device= nullptr;
 		ImuOrientationFilter filter;
 		double lastSampleTimestampMs= -1.0;
+		int reopenCooldownFrames= 0;
 	};
 
 	// Index into m_devices for a wrist, honoring swapSides; -1 when none
