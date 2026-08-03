@@ -745,10 +745,12 @@ void VisionThread::threadLoop()
 			// timestamps, so running at camera rate loses no information),
 			// then let the fused palm orientation anchor yaw, then publish
 			// the forearm orientation onto the pose.
-			if (m_bImuRefreshRequested.exchange(false))
-				m_imuService.refreshDevices();
 			if (m_bImuMotionResetRequested.exchange(false))
 				m_imuService.resetMountingMotion();
+			if (m_bImuBiasCalibrationRequested.exchange(false))
+				m_imuService.beginBiasCalibration();
+			if (m_bImuBiasCancelRequested.exchange(false))
+				m_imuService.cancelBiasCalibration();
 			m_imuService.update();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -779,9 +781,8 @@ void VisionThread::threadLoop()
 					const HandPose& pose= outputResult.poses[sideIndex];
 					if (!pose.tracked || !pose.hasWorldPose)
 						continue;
-					capture.bCaptured[sideIndex]= m_imuService.captureMounting(
-						(eHandSide)sideIndex, pose.palmOrientationWorld,
-						capture.forearmToSensor[sideIndex], capture.axisDominance[sideIndex]);
+					m_imuService.captureMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
+												 capture.sides[sideIndex]);
 				}
 
 				std::lock_guard<std::mutex> lock(m_imuMutex);
@@ -904,7 +905,10 @@ void VisionThread::threadLoop()
 				imuState.millisecondsSinceLastSample= status.millisecondsSinceLastSample;
 				imuState.forearmAxisConsistency= status.forearmAxisConsistency;
 				imuState.armAxisDominance= status.armAxisDominance;
+				imuState.twistProgress= status.twistProgress;
+				imuState.twistReversal= status.twistReversal;
 				imuState.gyroBiasDegreesPerSecond= status.gyroBiasDegreesPerSecond;
+				imuState.biasSaturated= status.biasSaturated;
 				imuState.yawSigmaRadians= status.yawSigmaRadians;
 			}
 

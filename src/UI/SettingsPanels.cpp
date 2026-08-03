@@ -163,34 +163,16 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 
 		ImGui::SeparatorText("Hand Scale");
-		// Always measured live: stereo/depth observation of the wrist->knuckle
-		// bone refines the configured seed continuously (slow EMA, clamped)
+		// Measured live and applied live - there is nothing to press. The
+		// wrist->knuckle bone is re-measured from stereo/depth every session,
+		// so persisting it would only save the few seconds the EMA takes to
+		// converge, at the cost of a button and a stale value to explain.
 		const float scaleFactor= visionThread->getAutoHandScaleFactor();
 		const double autoScaleMeters= config->handScale.refLengthMeters * (double)scaleFactor;
-		ImGui::Text("Configured: %.2f cm   Measured: %.2f cm (x%.3f)",
-					config->handScale.refLengthMeters * 100.0, autoScaleMeters * 100.0, scaleFactor);
+		ImGui::Text("Measured: %.2f cm (x%.3f)", autoScaleMeters * 100.0, scaleFactor);
 		ImGui::SetItemTooltip(
-			"The wrist->knuckle bone is measured continuously from stereo\n"
-			"triangulation / depth. Saving bakes the measured value in as\n"
-			"the new baseline (the live correction resets on restart).");
-
-		// Always laid out, disabled when there is nothing to save: showing and
-		// hiding it shifted everything below and made the tooltips above
-		// impossible to hover
-		ImGui::BeginDisabled(fabsf(scaleFactor - 1.f) <= 0.01f);
-		if (ImGui::Button("Save stereo scale as calibrated"))
-		{
-			config->handScale.refLengthMeters= autoScaleMeters;
-			config->handScale.present= true;
-			config->markDirty();
-			// The refresh resets the correction EMA to 1 over the new baseline
-			visionThread->requestConfigRefresh();
-		}
-		ImGui::EndDisabled();
-		ImGui::SetItemTooltip(
-			"Only useful once: the measured correction is applied live either\n"
-			"way, but it restarts from 1.0 every launch. Saving makes the\n"
-			"configured seed right so it starts converged.");
+			"Your wrist->knuckle bone length, measured continuously from\n"
+			"stereo triangulation / depth. Nothing to configure.");
 	}
 
 	ImGui::SeparatorText("Wrist IMU");
@@ -206,10 +188,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 		ImGui::BeginDisabled(!imu.enabled);
 
-		if (ImGui::Button("Scan for controllers"))
-			visionThread->requestImuDeviceRefresh();
-		ImGui::SetItemTooltip("Pair Joy-Cons in Windows Bluetooth settings first");
-
+		// No scan button: the service rescans on its own while a wrist has no
+		// controller, so pairing one in Windows Bluetooth settings is enough
 		if (ImGui::BeginTable("imu", 5, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
 		{
 			ImGui::TableSetupColumn("Wrist");
@@ -298,13 +278,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"along the forearm axis without rotating it. Tune it by watching\n"
 			"the elbow marker against your actual elbow in the camera view.");
 
-		bChanged|= ImGui::SliderFloat("Vision yaw anchor", &imu.visionYawSigma, 0.05f, 1.f, "%.2f rad");
-		ImGui::SetItemTooltip(
-			"How strongly the vision-measured palm pins the IMU's yaw.\n"
-			"A 6-axis IMU cannot observe yaw at all, so without this it\n"
-			"drifts forever. Kept LOOSE because vision sees the palm while\n"
-			"the sensor rides the forearm - the wrist joint between them is\n"
-			"real motion, not error. LOWER = trust vision more.");
+		// No "vision yaw anchor" slider: the value is settled, and it is still
+		// in the config file for anyone who needs to retune it
 
 		if (ImGui::Button("Calibrate Mounting...", ImVec2(-1, 0)))
 			panelState.bLaunchMountingWizard= true;

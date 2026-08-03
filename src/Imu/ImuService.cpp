@@ -15,6 +15,27 @@ static constexpr float k_scatterMinRateRadiansPerSecond= 0.35f; // ~20 deg/s: de
 static constexpr float k_scatterHalfLifeSeconds= 8.f;
 // Frames to wait between reopen attempts (~2s at camera rate)
 static constexpr int k_reopenCooldownFrames= 60;
+// Frames between scans for newly-paired controllers (~5s at camera rate)
+static constexpr int k_rescanCooldownFrames= 150;
+
+// -- Twist quality gates (mounting calibration) -----
+// Total rotation the forearm must travel before the measured axis is
+// trusted. ~5 rad is roughly two full pronation/supination sweeps.
+static constexpr float k_minTwistPathRadians= 5.f;
+// The motion must substantially REVERSE. A steady turn (or an uncorrected
+// rate offset) also produces a rank-1 scatter, but pointing somewhere that
+// has nothing to do with the arm - a Joy-Con whose bias had run away scored
+// 0.9999 dominance while sitting still.
+static constexpr float k_minTwistReversal= 0.5f;
+static constexpr float k_minTwistDominance= 0.7f;
+
+// -- Static gyro bias calibration -----
+static constexpr double k_biasCalibrationSeconds= 4.0;
+// A resting controller reads well under this; anything more means it was
+// touched, and the average would be poisoned
+static constexpr float k_biasRestRateRadiansPerSecond= 0.15f; // ~8.6 deg/s
+static constexpr float k_biasRestAccelTolerance= 0.6f;        // m/s^2 around 1g
+static constexpr float k_gravityMetersPerSecond2= 9.80665f;
 
 ImuService::ImuService()= default;
 
@@ -127,6 +148,22 @@ void ImuService::update()
 	if (!m_config.enabled)
 		return;
 
+	// Look for controllers we do not have yet, so pairing one mid-session just
+	// starts working instead of needing the user to know to press a button.
+	// Throttled, and skipped entirely once both wrists are covered.
+	if (m_devices.size() < 2)
+	{
+		if (m_rescanCooldownFrames <= 0)
+		{
+			refreshDevices();
+			m_rescanCooldownFrames= k_rescanCooldownFrames;
+		}
+		else
+		{
+			m_rescanCooldownFrames--;
+		}
+	}
+
 	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
 	{
 		if (entry->device == nullptr)
@@ -171,10 +208,36 @@ void ImuService::update()
 		// caller running at camera rate loses nothing but output freshness
 		for (const ImuSample& sample : m_sampleScratch)
 		{
-			float dtSeconds= 1.f / 200.f; // nominal Joy-Con rate
-			if (entry->lastSampleTimestampMs >= 0.0 && sample.timestampMs > entry->lastSampleTimestampMs)
-				dtSeconds= (float)((sample.timestampMs - entry->lastSampleTimestampMs) / 1000.0);
-			entry->lastSampleTimestampMs= sample.timestampMs;
+			constexpr double k_nominalSpacingMs= 1000.0 / 200.0; // Joy-Con rate
+			constexpr double k_maxPlausibleSpacingMs= 100.0;
+
+			// Sample times are back-dated from HID arrival, so a Bluetooth
+			// stall followed by a burst yields timestamps that go BACKWARDS or
+			// bunch microseconds apart. Taking those at face value collapses
+			// the filter covariance (see the dt floor in predict). Fall back to
+			// the nominal spacing and keep the clock monotonic instead - the
+			// samples themselves are still good, only their arrival times are
+			// not.
+			double sampleTimeMs= sample.timestampMs;
+			float dtSeconds= (float)(k_nominalSpacingMs / 1000.0);
+			if (entry->lastSampleTimestampMs >= 0.0)
+			{
+				const double deltaMs= sampleTimeMs - entry->lastSampleTimestampMs;
+				if (deltaMs <= 0.0 || deltaMs > k_maxPlausibleSpacingMs)
+					sampleTimeMs= entry->lastSampleTimestampMs + k_nominalSpacingMs;
+				else
+					dtSeconds= (float)(deltaMs / 1000.0);
+			}
+			entry->lastSampleTimestampMs= sampleTimeMs;
+
+			if (entry->bCalibratingBias)
+			{
+				// Deliberately BEFORE the filter: a resting controller carries
+				// no orientation information, and folding its samples in while
+				// the user is told not to touch it just wastes them
+				accumulateBiasCalibration(*entry, sample, dtSeconds);
+				continue;
+			}
 
 			entry->filter.processSample(sample, dtSeconds);
 
@@ -189,11 +252,78 @@ void ImuService::update()
 				const float decay= expf(-dtSeconds / k_scatterHalfLifeSeconds);
 				entry->rotationScatter*= decay;
 				entry->rotationScatterWeight*= decay;
+				entry->rotationPathRadians*= decay;
+				entry->rotationNet*= decay;
+
 				entry->rotationScatter+= glm::outerProduct(rate, rate) * dtSeconds;
 				entry->rotationScatterWeight+= rateMagnitude * rateMagnitude * dtSeconds;
+				entry->rotationPathRadians+= rateMagnitude * dtSeconds;
+				entry->rotationNet+= rate * dtSeconds;
 			}
 		}
 	}
+}
+
+void ImuService::accumulateBiasCalibration(DeviceEntry& entry, const ImuSample& sample, float dtSeconds)
+{
+	const float rateMagnitude= glm::length(sample.angularVelocity);
+	const float accelMagnitude= glm::length(sample.acceleration);
+	const bool bAtRest= rateMagnitude < k_biasRestRateRadiansPerSecond &&
+						fabsf(accelMagnitude - k_gravityMetersPerSecond2) < k_biasRestAccelTolerance;
+	if (!bAtRest)
+	{
+		// Start over rather than average in motion - a single nudge would
+		// otherwise be baked into the bias permanently
+		entry.bBiasDisturbed= true;
+		entry.biasSum= glm::dvec3(0.0);
+		entry.biasSampleCount= 0;
+		entry.biasSeconds= 0.0;
+		return;
+	}
+
+	entry.biasSum+= glm::dvec3(sample.angularVelocity);
+	entry.biasSampleCount++;
+	entry.biasSeconds+= dtSeconds;
+
+	if (entry.biasSeconds < k_biasCalibrationSeconds || entry.biasSampleCount <= 0)
+		return;
+
+	const glm::vec3 measuredBias= glm::vec3(entry.biasSum / (double)entry.biasSampleCount);
+	entry.filter.setGyroBias(measuredBias);
+	entry.bCalibratingBias= false;
+	entry.bBiasDisturbed= false;
+	MIKAN_LOG_INFO("ImuService") << (entry.device != nullptr ? entry.device->getFriendlyName() : "device")
+								 << " gyro bias calibrated: " << glm::degrees(measuredBias).x << ", "
+								 << glm::degrees(measuredBias).y << ", " << glm::degrees(measuredBias).z
+								 << " deg/s over " << entry.biasSampleCount << " samples";
+}
+
+void ImuService::beginBiasCalibration()
+{
+	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+	{
+		entry->bCalibratingBias= true;
+		entry->bBiasDisturbed= false;
+		entry->biasSum= glm::dvec3(0.0);
+		entry->biasSampleCount= 0;
+		entry->biasSeconds= 0.0;
+	}
+}
+
+void ImuService::cancelBiasCalibration()
+{
+	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+		entry->bCalibratingBias= false;
+}
+
+bool ImuService::isBiasCalibrationRunning() const
+{
+	for (const std::unique_ptr<DeviceEntry>& entry : m_devices)
+	{
+		if (entry->bCalibratingBias)
+			return true;
+	}
+	return false;
 }
 
 glm::vec3 imuDominantRotationAxis(const glm::mat3& scatter, float& outDominance)
@@ -313,10 +443,25 @@ bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWo
 	return true;
 }
 
-bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
-								 glm::quat& outForearmToSensor, float& outAxisDominance)
+void imuEvaluateTwist(const glm::mat3& scatter, float pathRadians, const glm::vec3& net,
+					  float& outDominance, float& outProgress, float& outReversal)
 {
-	outAxisDominance= 0.f;
+	outProgress= std::min(1.f, pathRadians / k_minTwistPathRadians);
+	outReversal= pathRadians > 1e-6f ? std::clamp(1.f - glm::length(net) / pathRadians, 0.f, 1.f) : 0.f;
+	outDominance= -1.f;
+	if (pathRadians > 1e-6f)
+		imuDominantRotationAxis(scatter, outDominance);
+}
+
+bool imuIsTwistUsable(float dominance, float progress, float reversal)
+{
+	return progress >= 1.f && reversal >= k_minTwistReversal && dominance >= k_minTwistDominance;
+}
+
+bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
+								 MountingCaptureResult& outResult)
+{
+	outResult= MountingCaptureResult();
 
 	const int deviceIndex= findDeviceIndexForSide(side);
 	if (deviceIndex < 0)
@@ -332,16 +477,26 @@ bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientatio
 	glm::quat mounting=
 		glm::normalize(glm::inverse(entry.filter.getOrientation()) * glm::normalize(palmOrientationWorld));
 
+	float dominance= -1.f;
+	imuEvaluateTwist(entry.rotationScatter, entry.rotationPathRadians, entry.rotationNet, dominance,
+					 outResult.twistProgress, outResult.twistReversal);
+	outResult.axisDominance= std::max(0.f, dominance);
+	outResult.bMotionUsable=
+		imuIsTwistUsable(outResult.axisDominance, outResult.twistProgress, outResult.twistReversal);
+
 	// Then let measured motion fix the axis. The dominant rotation axis in
 	// the SENSOR frame is the forearm's long axis; the mounting must map
 	// forearm +X onto it. Rotating the pose-derived mounting by the minimal
 	// rotation that does so corrects the two degrees of freedom motion can
 	// see, and leaves the third (roll) exactly as the pose set it.
-	const glm::vec3 sensorAxis= imuDominantRotationAxis(entry.rotationScatter, outAxisDominance);
-	if (outAxisDominance > 0.f && entry.rotationScatterWeight > 1e-6f)
+	if (outResult.bMotionUsable)
+	{
+		const glm::vec3 sensorAxis= imuDominantRotationAxis(entry.rotationScatter, dominance);
 		mounting= imuAlignMountingToArmAxis(mounting, sensorAxis);
+	}
 
-	outForearmToSensor= mounting;
+	outResult.forearmToSensor= mounting;
+	outResult.bCaptured= true;
 
 	// A recapture invalidates the old mounting's quality score
 	entry.axisConsistencyEma= -1.f;
@@ -356,7 +511,10 @@ void ImuService::resetMountingMotion()
 	{
 		entry->rotationScatter= glm::mat3(0.f);
 		entry->rotationScatterWeight= 0.f;
+		entry->rotationPathRadians= 0.f;
+		entry->rotationNet= glm::vec3(0.f);
 	}
+	m_motionEpoch++;
 }
 
 ImuSideStatus ImuService::getSideStatus(eHandSide side) const
@@ -382,14 +540,18 @@ ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 	status.batteryLevel= entry.device->getBatteryLevel();
 	status.deviceName= entry.device->getFriendlyName();
 	status.gyroBiasDegreesPerSecond= glm::degrees(entry.filter.getGyroBias());
+	status.biasSaturated= entry.filter.isBiasSaturated();
 	status.yawSigmaRadians= entry.filter.getOrientationSigma().z;
+	status.motionEpoch= m_motionEpoch;
 	// Needs a bit of motion before it means anything
 	status.forearmAxisConsistency= entry.axisConsistencySamples >= 30 ? entry.axisConsistencyEma : -1.f;
-	if (entry.rotationScatterWeight > 1e-6f)
+	imuEvaluateTwist(entry.rotationScatter, entry.rotationPathRadians, entry.rotationNet,
+					 status.armAxisDominance, status.twistProgress, status.twistReversal);
+	if (entry.bCalibratingBias)
 	{
-		float dominance= -1.f;
-		imuDominantRotationAxis(entry.rotationScatter, dominance);
-		status.armAxisDominance= dominance;
+		status.biasCalibrationProgress=
+			(float)std::clamp(entry.biasSeconds / k_biasCalibrationSeconds, 0.0, 1.0);
+		status.biasCalibrationDisturbed= entry.bBiasDisturbed;
 	}
 	status.filterConverged= entry.filter.isTiltConverged();
 	status.orientationValid= status.calibrated && status.streaming && status.filterConverged;

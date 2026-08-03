@@ -2408,6 +2408,129 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (g) Twist gating. Both live failures came down to the same thing:
+			// dominance alone accepts anything. A scatter is rank-1 - so
+			// dominance ~1.0 - for a moment's motion, and ALSO for a constant
+			// rate offset. A Joy-Con whose bias had run away to -5371 deg/s
+			// scored 0.9999 while sitting on a desk, and the wizard's twist
+			// stage completed instantly.
+			{
+				auto accumulate= [](glm::mat3& scatter, float& path, glm::vec3& net, const glm::vec3& rate,
+									float dt) {
+					const float magnitude= glm::length(rate);
+					for (int col= 0; col < 3; ++col)
+						for (int row= 0; row < 3; ++row)
+							scatter[col][row]+= rate[col] * rate[row] * dt;
+					path+= magnitude * dt;
+					net+= rate * dt;
+				};
+
+				const glm::vec3 armAxis= glm::normalize(glm::vec3(0.4f, -0.8f, 0.45f));
+
+				// A brief flick: single-axis by construction, but nowhere near
+				// enough rotation to locate anything
+				glm::mat3 flickScatter(0.f);
+				float flickPath= 0.f;
+				glm::vec3 flickNet(0.f);
+				for (int i= 0; i < 20; ++i)
+					accumulate(flickScatter, flickPath, flickNet, armAxis * 0.6f, 0.005f);
+
+				// A constant rate - what a runaway gyro bias looks like. Lots of
+				// "rotation", perfectly single-axis, and completely meaningless.
+				glm::mat3 driftScatter(0.f);
+				float driftPath= 0.f;
+				glm::vec3 driftNet(0.f);
+				for (int i= 0; i < 2000; ++i)
+					accumulate(driftScatter, driftPath, driftNet, armAxis * 94.f, 0.005f);
+
+				// Real pronation/supination: back and forth about the arm axis
+				glm::mat3 twistScatter(0.f);
+				float twistPath= 0.f;
+				glm::vec3 twistNet(0.f);
+				const glm::vec3 wobbleAxis= glm::normalize(glm::cross(armAxis, glm::vec3(0.f, 0.f, 1.f)));
+				for (int i= 0; i < 800; ++i)
+				{
+					const float phase= (float)i * 0.05f;
+					accumulate(twistScatter, twistPath, twistNet,
+							   armAxis * (3.f * sinf(phase)) + wobbleAxis * (0.25f * sinf(phase * 2.7f)),
+							   0.005f);
+				}
+
+				struct TwistCase
+				{
+					const char* name;
+					const glm::mat3* scatter;
+					float path;
+					const glm::vec3* net;
+					bool bExpectUsable;
+				};
+				const TwistCase cases[]= {
+					{"flick", &flickScatter, flickPath, &flickNet, false},
+					{"constant-rate", &driftScatter, driftPath, &driftNet, false},
+					{"back-and-forth", &twistScatter, twistPath, &twistNet, true},
+				};
+
+				for (const TwistCase& twistCase : cases)
+				{
+					float dominance= 0.f, progress= 0.f, reversal= 0.f;
+					imuEvaluateTwist(*twistCase.scatter, twistCase.path, *twistCase.net, dominance, progress,
+									 reversal);
+					const bool bUsable= imuIsTwistUsable(dominance, progress, reversal);
+					MIKAN_LOG_INFO("test-imufilter")
+						<< "(g) twist " << twistCase.name << ": dominance=" << dominance
+						<< " progress=" << progress << " reversal=" << reversal << " usable=" << bUsable;
+					if (bUsable != twistCase.bExpectUsable)
+					{
+						MIKAN_LOG_ERROR("test-imufilter")
+							<< "(g) FAILED: '" << twistCase.name << "' should"
+							<< (twistCase.bExpectUsable ? " " : " NOT ") << "be usable";
+						result= 1;
+					}
+				}
+
+				// The two rejected cases must still LOOK single-axis - that is
+				// the whole point of the extra gates
+				float dominance= 0.f, progress= 0.f, reversal= 0.f;
+				imuEvaluateTwist(driftScatter, driftPath, driftNet, dominance, progress, reversal);
+				if (dominance < 0.99f || reversal > 0.01f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(g) FAILED: a constant rate should score dominance ~1 and reversal ~0, got "
+						<< dominance << " / " << reversal;
+					result= 1;
+				}
+			}
+
+			// (h) Gyro bias bound. The bias feeds back into predict(), so an
+			// unbounded estimate is self-amplifying rather than self-correcting.
+			{
+				ImuOrientationFilter filter;
+				ImuOrientationFilterConfig config;
+				filter.configure(config);
+				filter.initializeFromGravity(glm::vec3(0.f, 0.f, 9.80665f));
+
+				filter.setGyroBias(glm::vec3(94.f, -50.f, 3.f)); // absurd, as observed live
+				const glm::vec3 bounded= filter.getGyroBias();
+				const bool bClamped= fabsf(bounded.x - config.maxGyroBias) < 1e-5f &&
+									 fabsf(bounded.y + config.maxGyroBias) < 1e-5f &&
+									 fabsf(bounded.z - config.maxGyroBias) < 1e-5f;
+
+				// A sane measured bias must survive untouched
+				filter.setGyroBias(glm::vec3(0.01f, -0.02f, 0.005f));
+				const glm::vec3 kept= filter.getGyroBias();
+				const bool bKept= fabsf(kept.x - 0.01f) < 1e-6f && fabsf(kept.y + 0.02f) < 1e-6f &&
+								  fabsf(kept.z - 0.005f) < 1e-6f;
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(h) bias bound: clamped to " << bounded.x << ", " << bounded.y << ", " << bounded.z
+					<< " rad/s; measured bias preserved=" << bKept;
+				if (!bClamped || !bKept)
+				{
+					MIKAN_LOG_ERROR("test-imufilter") << "(h) FAILED: gyro bias bound is not enforced";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-imufilter") << "All IMU filter checks passed";
 

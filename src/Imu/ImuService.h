@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -72,15 +73,58 @@ struct ImuSideStatus
 	// makes the elbow sweep a cone as you twist.
 	float forearmAxisConsistency= -1.f;
 
-	// LIVE twist conditioning, 0..1, -1 until any motion has been seen. How
-	// dominant a single axis is in the recent angular-velocity scatter - i.e.
-	// how much of what this sensor has been doing lately is pure forearm
-	// twist. This is what makes the arm axis measurable, so the mounting
-	// wizard watches it to decide when enough twisting has happened.
+	// -- Live twist measurement (what the mounting wizard watches) -----
+	//
+	// Three separate numbers because there are three separate ways for a twist
+	// to be useless, and they need different corrections from the user.
+	//
+	// How single-axis the recent motion is (0..1, -1 = nothing measured).
+	// NOT sufficient on its own: a scatter built from a moment's motion is
+	// rank-1, so this reads ~1.0 for free. It only means something once
+	// twistProgress is full.
 	float armAxisDominance= -1.f;
+	// How much twisting has accumulated, 0..1 against the amount needed
+	float twistProgress= 0.f;
+	// How much the motion REVERSES: 1 = perfectly back-and-forth, 0 = a
+	// one-way turn. Pronation/supination oscillates, so this separates real
+	// twisting from a steady turn or a constant rate offset - both of which
+	// also produce a rank-1 scatter pointing somewhere meaningless.
+	float twistReversal= 0.f;
+
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
+	// The bias estimate is pinned at its bound - the filter diverged and
+	// everything this device reports is suspect
+	bool biasSaturated= false;
+	// Static bias calibration: 0..1 while running, -1 when not running.
+	// biasCalibrationDisturbed means the controller was moved and the
+	// measurement restarted.
+	float biasCalibrationProgress= -1.f;
+	bool biasCalibrationDisturbed= false;
+
 	float yawSigmaRadians= 0.f;
 	std::string deviceName;
+
+	// Increments on every resetMountingMotion(). A caller that just requested
+	// a reset can tell an already-refreshed status from a stale one, instead
+	// of latching a twist measurement made before the reset landed.
+	uint32_t motionEpoch= 0;
+};
+
+// Outcome of one mounting capture. A struct rather than out-params because
+// the caller has to tell several different failures apart to say anything
+// useful about them.
+struct MountingCaptureResult
+{
+	// A mounting was computed at all (device streaming + filter converged)
+	bool bCaptured= false;
+	glm::quat forearmToSensor{1.f, 0.f, 0.f, 0.f};
+	// True when the twist measurement was good enough to define the arm axis.
+	// When false the mounting is pose-only, which is what used to land the
+	// axis ~60 deg out, so callers should refuse it.
+	bool bMotionUsable= false;
+	float axisDominance= 0.f;
+	float twistProgress= 0.f;
+	float twistReversal= 0.f;
 };
 
 // Dominant eigenvector of a symmetric angular-velocity scatter sum(w w^T),
@@ -94,6 +138,18 @@ glm::vec3 imuDominantRotationAxis(const glm::mat3& scatter, float& outDominance)
 // roll about that axis exactly as the held pose set it. sensorAxis need not be
 // signed correctly; it is flipped to agree with the pose.
 glm::quat imuAlignMountingToArmAxis(const glm::quat& poseMounting, glm::vec3 sensorAxis);
+
+// Scores accumulated rotation statistics as a forearm-twist measurement.
+// pathRadians is sum(|w| dt), net is sum(w dt), scatter is sum(w w^T dt).
+// Free functions so the status readout, the capture gate and the tests all
+// judge a twist by the same rules.
+void imuEvaluateTwist(const glm::mat3& scatter, float pathRadians, const glm::vec3& net,
+					  float& outDominance, float& outProgress, float& outReversal);
+// True when a twist is good enough to define the forearm axis. All three
+// conditions are needed: enough rotation (a rank-1 scatter is free for tiny
+// motions), enough reversal (a steady turn or an uncorrected rate offset is
+// also rank-1), and enough single-axis dominance (arm-waving is not a twist).
+bool imuIsTwistUsable(float dominance, float progress, float reversal);
 
 class ImuService
 {
@@ -139,17 +195,29 @@ public:
 	// A single held pose alone had to get all three right at one instant and
 	// kept getting the axis wrong by ~60 deg.
 	//
-	// outAxisDominance (0..1) reports how well-conditioned the motion was;
-	// below ~0.7 the axis is unreliable and the caller should say so rather
-	// than bake in a bad mounting.
+	// The result reports how good the twist was; a caller must refuse a
+	// capture whose motion was not usable rather than bake in a bad mounting.
 	bool captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
-						 glm::quat& outForearmToSensor, float& outAxisDominance);
+						 MountingCaptureResult& outResult);
 
 	// Discards the accumulated angular-velocity scatter on every device, so a
 	// fresh calibration measures only the twisting the user does from here on
 	// (the scatter decays on its own, but a wizard should not start with a
 	// half-full history of whatever the arms happened to be doing before).
 	void resetMountingMotion();
+
+	// STATIC GYRO BIAS CALIBRATION. With the controllers resting untouched,
+	// true angular velocity is zero, so the raw gyro reading IS the bias -
+	// measured directly on all three axes.
+	//
+	// This is not redundant with the filter's online estimate: gravity only
+	// makes the bias observable about the TILT axes. The component about the
+	// gravity axis is not inertially observable at all, and it is exactly the
+	// one that shows up later as yaw drift.
+	void beginBiasCalibration();
+	void cancelBiasCalibration();
+	// True while any device is still collecting
+	bool isBiasCalibrationRunning() const;
 
 	ImuSideStatus getSideStatus(eHandSide side) const;
 
@@ -172,7 +240,24 @@ private:
 		// i.e. the forearm's long axis, if the user has been twisting.
 		glm::mat3 rotationScatter{0.f};
 		float rotationScatterWeight= 0.f;
+		// Total rotation travelled, sum(|w| dt) - "how much twisting happened"
+		float rotationPathRadians= 0.f;
+		// Net rotation, sum(w dt). Back-and-forth twisting cancels out here
+		// while the path keeps growing; a one-way turn or a constant rate
+		// offset makes the two equal.
+		glm::vec3 rotationNet{0.f};
+
+		// Static bias calibration in progress
+		bool bCalibratingBias= false;
+		bool bBiasDisturbed= false;
+		glm::dvec3 biasSum{0.0};
+		int biasSampleCount= 0;
+		double biasSeconds= 0.0;
 	};
+
+	// Feeds one sample into a device's static bias measurement, restarting it
+	// if the controller was disturbed
+	void accumulateBiasCalibration(DeviceEntry& entry, const ImuSample& sample, float dtSeconds);
 
 	// Index into m_devices for a wrist, honoring swapSides; -1 when none
 	int findDeviceIndexForSide(eHandSide side) const;
@@ -182,4 +267,6 @@ private:
 	std::vector<std::unique_ptr<DeviceEntry>> m_devices;
 	std::vector<ImuSample> m_sampleScratch;
 	bool m_bStarted= false;
+	uint32_t m_motionEpoch= 0;
+	int m_rescanCooldownFrames= 0;
 };

@@ -105,21 +105,18 @@ public:
 	void requestImuMountingCapture() { m_bImuMountingCaptureRequested= true; }
 	struct ImuMountingCapture
 	{
-		bool bCaptured[2]= {false, false};
-		std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f),
-												 glm::quat(1.f, 0.f, 0.f, 0.f)};
-		// How well-conditioned the motion behind the arm-axis estimate was
-		// (0..1); low means the user did not twist enough for it to be trusted
-		float axisDominance[2]= {0.f, 0.f};
+		MountingCaptureResult sides[2];
 	};
 	bool fetchImuMountingCapture(ImuMountingCapture& outCapture);
 	// Live per-wrist IMU status for the UI (main thread safe: plain copies)
 	ImuSideStatus getImuSideStatus(eHandSide side) const;
-	// Re-scan for controllers (e.g. after pairing one mid-session)
-	void requestImuDeviceRefresh() { m_bImuRefreshRequested= true; }
 	// Clears the accumulated twist history so a calibration session measures
 	// only the motion made from here on
 	void requestImuMotionReset() { m_bImuMotionResetRequested= true; }
+	// Static gyro bias calibration: measures each resting controller's bias
+	// directly. Progress is reported through getImuSideStatus().
+	void requestImuBiasCalibration() { m_bImuBiasCalibrationRequested= true; }
+	void cancelImuBiasCalibration() { m_bImuBiasCancelRequested= true; }
 
 	// One camera's captured rest angles for both sides
 	struct RestPoseCapture
@@ -215,8 +212,9 @@ private:
 	// the vision thread; the UI reads snapshots through a mutex.
 	ImuService m_imuService;
 	std::atomic_bool m_bImuMountingCaptureRequested{false};
-	std::atomic_bool m_bImuRefreshRequested{false};
 	std::atomic_bool m_bImuMotionResetRequested{false};
+	std::atomic_bool m_bImuBiasCalibrationRequested{false};
+	std::atomic_bool m_bImuBiasCancelRequested{false};
 	mutable std::mutex m_imuMutex;
 	ImuMountingCapture m_capturedImuMounting;
 	bool m_bImuMountingReady= false;

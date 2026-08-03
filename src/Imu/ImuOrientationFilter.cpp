@@ -110,6 +110,7 @@ void ImuOrientationFilter::reset()
 	m_gyroBias= glm::vec3(0.f);
 	m_lastAngularVelocity= glm::vec3(0.f);
 	m_bInitialized= false;
+	m_bBiasSaturated= false;
 
 	m_covariance.fill(0.f);
 	// Tilt (body X/Y) is pinned quickly by gravity; yaw (body Z) is not
@@ -150,8 +151,13 @@ void ImuOrientationFilter::initializeFromGravity(const glm::vec3& acceleration)
 
 void ImuOrientationFilter::predict(const glm::vec3& angularVelocity, float dtSeconds)
 {
-	// Guard against timestamp glitches / stalls
-	const float dt= std::clamp(dtSeconds, 1e-5f, 0.1f);
+	// Guard against timestamp glitches / stalls. The lower bound is NOT
+	// cosmetic: dt scales the process noise, so a burst of samples timestamped
+	// microseconds apart adds ~no uncertainty while still applying a full
+	// measurement correction each time. That collapses the covariance and the
+	// filter stops being able to correct itself. Half a millisecond is below
+	// any real IMU's sample interval and far above zero.
+	const float dt= std::clamp(dtSeconds, 5e-4f, 0.1f);
 
 	const glm::vec3 correctedRate= angularVelocity - m_gyroBias;
 	m_lastAngularVelocity= correctedRate;
@@ -313,6 +319,29 @@ void ImuOrientationFilter::applyCorrection(const glm::vec3& residual, const Mat3
 			glm::normalize(m_orientation * glm::angleAxis(errorAngle, orientationError / errorAngle));
 	}
 	m_gyroBias+= glm::vec3(errorState[3], errorState[4], errorState[5]);
+
+	// The bias is fed straight back into predict(), so an unbounded estimate
+	// is a positive feedback loop rather than a slowly-degrading one: a large
+	// bias spins the nominal orientation, the spin looks like error, and the
+	// error grows the bias. Bound it to something a gyro could physically be.
+	m_bBiasSaturated= false;
+	for (int axis= 0; axis < 3; ++axis)
+	{
+		if (fabsf(m_gyroBias[axis]) > m_config.maxGyroBias)
+		{
+			m_gyroBias[axis]= std::clamp(m_gyroBias[axis], -m_config.maxGyroBias, m_config.maxGyroBias);
+			m_bBiasSaturated= true;
+		}
+	}
+
+	// Non-finite state means the covariance has gone singular or a residual
+	// was garbage; there is nothing to salvage, so start over from gravity
+	if (!isfinite(m_orientation.w) || !isfinite(m_orientation.x) || !isfinite(m_orientation.y) ||
+		!isfinite(m_orientation.z) || !isfinite(m_gyroBias.x) || !isfinite(m_gyroBias.y) ||
+		!isfinite(m_gyroBias.z))
+	{
+		reset();
+	}
 }
 
 bool ImuOrientationFilter::updateWithGravity(const glm::vec3& acceleration)
@@ -443,6 +472,32 @@ glm::vec3 ImuOrientationFilter::getOrientationSigma() const
 	return glm::vec3(sqrtf(std::max(at6(m_covariance, 0, 0), 0.f)),
 					 sqrtf(std::max(at6(m_covariance, 1, 1), 0.f)),
 					 sqrtf(std::max(at6(m_covariance, 2, 2), 0.f)));
+}
+
+void ImuOrientationFilter::setGyroBias(const glm::vec3& gyroBias, float sigma)
+{
+	for (int axis= 0; axis < 3; ++axis)
+		m_gyroBias[axis]= std::clamp(gyroBias[axis], -m_config.maxGyroBias, m_config.maxGyroBias);
+	m_bBiasSaturated= false;
+
+	// The measurement replaces whatever the filter believed, so drop the bias
+	// covariance to the measurement's own uncertainty - and clear the
+	// cross-covariance, which described a correlation with an estimate that no
+	// longer exists
+	for (int row= 3; row < 6; ++row)
+	{
+		for (int col= 0; col < 6; ++col)
+		{
+			at6(m_covariance, row, col)= 0.f;
+			at6(m_covariance, col, row)= 0.f;
+		}
+		at6(m_covariance, row, row)= sigma * sigma;
+	}
+}
+
+bool ImuOrientationFilter::isBiasSaturated() const
+{
+	return m_bBiasSaturated;
 }
 
 bool ImuOrientationFilter::isTiltConverged() const

@@ -1,8 +1,11 @@
 #pragma once
 
 #include <array>
+#include <cstdint>
 
 #include "glm/ext/quaternion_float.hpp"
+
+#include "ImuService.h" // MountingCaptureResult
 
 class AppConfig;
 class VisionThread;
@@ -32,6 +35,7 @@ public:
 	enum class eState
 	{
 		VerifyDevices,
+		CalibrateBias,
 		TwistForearms,
 		HoldStraight,
 		Review,
@@ -60,17 +64,22 @@ private:
 	bool m_bWantsClose= false;
 
 	bool m_bParticipating[2]= {false, false};
-	// Latched once a side's twist conditioning clears the bar, so that easing
-	// off the motion (as everyone does when reading the next instruction)
-	// doesn't un-earn it
+	// Latched once a side's twist clears every bar, so that easing off the
+	// motion (as everyone does when reading the next instruction) doesn't
+	// un-earn it
 	bool m_bTwistReady[2]= {false, false};
-	float m_bestDominance[2]= {0.f, 0.f};
+
+	// The motion reset is serviced on the vision thread, so the status read
+	// right after requesting one still describes the PREVIOUS session. Latching
+	// on that is what let the twist stage complete instantly. Wait for the
+	// epoch to move before believing anything.
+	uint32_t m_epochAtReset= 0;
+	bool m_bWaitingForMotionReset= false;
 
 	float m_holdCountdown= 0.f;
 	bool m_bCaptureRequested= false;
 
 	// Review-stage outcome
 	bool m_bAccepted[2]= {false, false};
-	bool m_bAttempted[2]= {false, false};
-	float m_capturedDominance[2]= {-1.f, -1.f};
+	MountingCaptureResult m_captured[2];
 };

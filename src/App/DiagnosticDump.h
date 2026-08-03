@@ -62,7 +62,12 @@ struct DiagImuState
 	// How single-axis the recent motion has been - i.e. whether the above
 	// number was measured against real twisting or against arm-waving
 	float armAxisDominance= -1.f;
+	float twistProgress= 0.f;
+	float twistReversal= 0.f;
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
+	// Bias pinned at its bound = the filter diverged; everything else this
+	// device reported is suspect, so this is the first thing to check
+	bool biasSaturated= false;
 	float yawSigmaRadians= 0.f;
 };
 

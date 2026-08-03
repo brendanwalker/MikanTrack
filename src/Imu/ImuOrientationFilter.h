@@ -50,6 +50,13 @@ struct ImuOrientationFilterConfig
 	float accelGate= 1.0f;
 	// Vision orientation measurement noise, radians
 	float visionNoise= 0.05f;
+	// Hard bound on the estimated gyro bias, rad/s. A real MEMS gyro bias is a
+	// few deg/s; anything approaching this is the filter diverging, not a
+	// sensor property. Bounding it matters because the bias feeds straight
+	// back into predict(), so a runaway bias spins the nominal orientation,
+	// which produces more apparent error, which grows the bias further - a
+	// Joy-Con was observed at -5371 deg/s on one axis.
+	float maxGyroBias= 1.0f; // rad/s (~57 deg/s)
 
 	// Initial uncertainty
 	float initialTiltSigma= 1.0f;    // rad; gravity fixes this fast
@@ -99,11 +106,22 @@ public:
 	glm::vec3 getOrientationSigma() const;
 	// True once tilt uncertainty has converged (gravity has been seen enough)
 	bool isTiltConverged() const;
+	// True when the bias estimate is pinned at its bound, i.e. the filter has
+	// been diverging. Surfaced rather than hidden: it invalidates everything
+	// downstream and is otherwise invisible.
+	bool isBiasSaturated() const;
 
 	// Seeds the nominal orientation directly, e.g. from the first gravity
 	// sample, without waiting for the filter to converge from an arbitrary
 	// start. Leaves yaw at identity (unobservable).
 	void initializeFromGravity(const glm::vec3& acceleration);
+
+	// Overwrites the bias with a directly MEASURED one (sensor at rest, where
+	// the raw gyro reading is the bias) and tightens its covariance to match.
+	// Worth doing because the gravity update cannot observe the bias component
+	// about the gravity axis at all, and that is the one that becomes yaw
+	// drift. Clamped to the configured bound like any other bias update.
+	void setGyroBias(const glm::vec3& gyroBias, float sigma= 0.002f);
 
 private:
 	// 6x6 / 6x3 / 3x3 row-major fixed-size matrices (no Eigen dependency)
@@ -125,4 +143,5 @@ private:
 	Mat6 m_covariance{};
 
 	bool m_bInitialized= false;
+	bool m_bBiasSaturated= false;
 };
