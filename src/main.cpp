@@ -1765,17 +1765,33 @@ static int runApp(int argc, char** argv)
 			for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
 				manager.getDeviceByIndex(deviceIndex)->open();
 
+			// Collection time is a knob because it is the thing that decides
+			// whether the result is conclusive: it takes a lot of varied,
+			// slow rotation to accumulate enough usable windows. 12s was not
+			// enough in practice; 30s was.
+			int collectSeconds= 30;
+			for (int argIndex= i + 1; argIndex < argc; ++argIndex)
+			{
+				const int parsed= atoi(argv[argIndex]);
+				if (parsed > 0)
+				{
+					collectSeconds= parsed;
+					break;
+				}
+			}
+
 			MIKAN_LOG_INFO("test-imuaxes")
-				<< "Collecting 12 seconds - SLOWLY rotate each controller through all "
-				   "three axes (roll, pitch, yaw), avoiding sharp shakes.";
+				<< "Collecting " << collectSeconds
+				<< " seconds - SLOWLY rotate each controller through all three axes "
+				   "(roll, pitch, yaw) in large sweeps, avoiding sharp shakes.";
 
 			std::vector<std::vector<ImuSample>> collected(deviceCount);
-			for (int second= 0; second < 12; ++second)
+			for (int second= 0; second < collectSeconds; ++second)
 			{
 				std::this_thread::sleep_for(std::chrono::seconds(1));
 				for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
 					manager.getDeviceByIndex(deviceIndex)->fetchSamples(collected[deviceIndex]);
-				MIKAN_LOG_INFO("test-imuaxes") << "  " << (second + 1) << "/12";
+				MIKAN_LOG_INFO("test-imuaxes") << "  " << (second + 1) << "/" << collectSeconds;
 			}
 
 			// All 48 signed permutations: which axis of the raw gyro feeds

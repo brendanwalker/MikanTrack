@@ -26,6 +26,22 @@
 // (subcommand 0x10). Gyro bias is estimated online by the fusion filter,
 // which is both more robust and drift-tracking; accel scale error is
 // second-order because only the gravity DIRECTION is used for tilt.
+//
+// AXES. Nintendo's notes say the two Joy-Cons have an axis reversed relative
+// to each other because of how the IMU chip is placed, and phase-1 capture
+// agrees (L reads +Z up at rest, R reads -Z up). That difference does NOT
+// need handling here IF it is a rotation - the per-side mounting calibration
+// absorbs any fixed rotation between sensor and forearm, which is its whole
+// job. It WOULD need handling if a controller's reported frame is
+// left-handed (an odd number of flipped axes, determinant -1), because a
+// reflection is not a rotation and no quaternion can represent it.
+//
+// --test-imuaxes settles which, per controller, by checking the gyro against
+// the accelerometer: a world-fixed direction in the sensor frame must obey
+// dg/dt = -omega x g, and under a reflection that relation flips sign, so a
+// compensating gyro mapping wins decisively. Measured so far:
+//   Joy-Con (R): identity, wins by 2.2x -> self-consistent, right-handed.
+//   Joy-Con (L): NOT YET MEASURED.
 class JoyconDevice : public IImuDevice
 {
 public:
