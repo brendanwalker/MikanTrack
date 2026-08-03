@@ -350,6 +350,15 @@ bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientatio
 	return true;
 }
 
+void ImuService::resetMountingMotion()
+{
+	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+	{
+		entry->rotationScatter= glm::mat3(0.f);
+		entry->rotationScatterWeight= 0.f;
+	}
+}
+
 ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 {
 	ImuSideStatus status;
@@ -376,6 +385,13 @@ ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 	status.yawSigmaRadians= entry.filter.getOrientationSigma().z;
 	// Needs a bit of motion before it means anything
 	status.forearmAxisConsistency= entry.axisConsistencySamples >= 30 ? entry.axisConsistencyEma : -1.f;
-	status.orientationValid= status.calibrated && status.streaming && entry.filter.isTiltConverged();
+	if (entry.rotationScatterWeight > 1e-6f)
+	{
+		float dominance= -1.f;
+		imuDominantRotationAxis(entry.rotationScatter, dominance);
+		status.armAxisDominance= dominance;
+	}
+	status.filterConverged= entry.filter.isTiltConverged();
+	status.orientationValid= status.calibrated && status.streaming && status.filterConverged;
 	return status;
 }

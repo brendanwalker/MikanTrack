@@ -53,6 +53,10 @@ struct ImuSideStatus
 	bool deviceConnected= false;
 	bool streaming= false;
 	bool calibrated= false;
+	// The filter's tilt has settled. Independent of `calibrated` on purpose:
+	// this is the precondition for CAPTURING a mounting, so it has to be
+	// knowable before one exists.
+	bool filterConverged= false;
 	bool orientationValid= false; // calibrated AND the filter has converged
 	float sampleRateHz= 0.f;
 	float batteryLevel= -1.f;
@@ -67,6 +71,13 @@ struct ImuSideStatus
 	// straight wrist and +X points somewhere other than along the arm - which
 	// makes the elbow sweep a cone as you twist.
 	float forearmAxisConsistency= -1.f;
+
+	// LIVE twist conditioning, 0..1, -1 until any motion has been seen. How
+	// dominant a single axis is in the recent angular-velocity scatter - i.e.
+	// how much of what this sensor has been doing lately is pure forearm
+	// twist. This is what makes the arm axis measurable, so the mounting
+	// wizard watches it to decide when enough twisting has happened.
+	float armAxisDominance= -1.f;
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
 	float yawSigmaRadians= 0.f;
 	std::string deviceName;
@@ -133,6 +144,12 @@ public:
 	// than bake in a bad mounting.
 	bool captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
 						 glm::quat& outForearmToSensor, float& outAxisDominance);
+
+	// Discards the accumulated angular-velocity scatter on every device, so a
+	// fresh calibration measures only the twisting the user does from here on
+	// (the scatter decays on its own, but a wizard should not start with a
+	// half-full history of whatever the arms happened to be doing before).
+	void resetMountingMotion();
 
 	ImuSideStatus getSideStatus(eHandSide side) const;
 

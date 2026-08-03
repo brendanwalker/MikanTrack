@@ -11,6 +11,7 @@ class CalibrationPanel;
 class DevicePanel;
 class ExtrinsicsWizard;
 class IntrinsicsWizard;
+class MountingWizard;
 class Scene3dPanel;
 class VideoPreviewPanel;
 
@@ -41,6 +42,7 @@ private:
 	std::unique_ptr<CalibrationPanel> m_calibrationPanel;
 	std::unique_ptr<IntrinsicsWizard> m_intrinsicsWizard;
 	std::unique_ptr<ExtrinsicsWizard> m_extrinsicsWizard;
+	std::unique_ptr<MountingWizard> m_mountingWizard;
 
 	// Latest per-camera previews + the fused result (kept between updates so
 	// the UI still has data when no new frame arrived this tick)

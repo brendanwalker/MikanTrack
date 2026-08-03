@@ -1262,8 +1262,20 @@ static int runApp(int argc, char** argv)
 
 			DiagnosticDump dump;
 			const int dominant[2]= {0, -1};
+			// One side with a live IMU, one without - the writer must emit both
+			DiagImuState imuStates[2];
+			imuStates[0].deviceConnected= true;
+			imuStates[0].streaming= true;
+			imuStates[0].calibrated= true;
+			imuStates[0].orientationValid= true;
+			imuStates[0].sampleRateHz= 200.f;
+			imuStates[0].millisecondsSinceLastSample= 4.0;
+			imuStates[0].forearmAxisConsistency= 0.88f;
+			imuStates[0].armAxisDominance= 0.94f;
+			imuStates[0].gyroBiasDegreesPerSecond= glm::vec3(0.1f, -0.2f, 0.3f);
+			imuStates[0].yawSigmaRadians= 0.02f;
 			for (int record= 0; record < 3; ++record)
-				dump.record({&cameraResult}, frame, diagnostics, dominant, 1.02f);
+				dump.record({&cameraResult}, frame, diagnostics, dominant, 1.02f, imuStates);
 
 			cv::Mat testFrame(128, 128, CV_8UC3, cv::Scalar(40, 40, 40));
 			DiagCameraSnapshot snapshot;
@@ -1293,7 +1305,8 @@ static int runApp(int argc, char** argv)
 					(std::istreambuf_iterator<char>(jsonFile)), std::istreambuf_iterator<char>());
 				for (const char* needle :
 					 {"\"config\"", "\"cameras\"", "\"fusedSnapshot\"", "\"history\"", "\"affinity\"",
-					  "\"imagePoints\"", "\"assignedSide\""})
+					  "\"imagePoints\"", "\"assignedSide\"", "\"imu\"", "\"armAxisDominance\"",
+					  "\"forearmAxisConsistency\""})
 				{
 					if (content.find(needle) == std::string::npos)
 					{

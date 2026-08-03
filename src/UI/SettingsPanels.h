@@ -15,14 +15,10 @@ struct TrackingPanelState
 	// Transient result banner after a capture
 	float restPoseResultTimer= 0.f;
 	bool bRestPoseResultCaptured[2]= {false, false};
-	// Wrist IMU mounting calibration (same countdown/banner pattern)
-	float imuMountingCountdown= 0.f;
-	float imuMountingResultTimer= 0.f;
-	bool bImuMountingCaptured[2]= {false, false};
-	// Arm-axis conditioning reported by the last capture, per side; -1 when
-	// that side produced no capture at all (so the banner can tell the two
-	// failure modes apart)
-	float imuAxisDominance[2]= {-1.f, -1.f};
+	// Set when the panel wants the wrist IMU mounting wizard opened; the owner
+	// consumes and clears it (the mounting calibration is a multi-step guided
+	// flow, not something a panel button can drive)
+	bool bLaunchMountingWizard= false;
 };
 
 // Small side panels: tracking/fusion options and OSC output settings.

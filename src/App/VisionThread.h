@@ -117,6 +117,9 @@ public:
 	ImuSideStatus getImuSideStatus(eHandSide side) const;
 	// Re-scan for controllers (e.g. after pairing one mid-session)
 	void requestImuDeviceRefresh() { m_bImuRefreshRequested= true; }
+	// Clears the accumulated twist history so a calibration session measures
+	// only the motion made from here on
+	void requestImuMotionReset() { m_bImuMotionResetRequested= true; }
 
 	// One camera's captured rest angles for both sides
 	struct RestPoseCapture
@@ -213,6 +216,7 @@ private:
 	ImuService m_imuService;
 	std::atomic_bool m_bImuMountingCaptureRequested{false};
 	std::atomic_bool m_bImuRefreshRequested{false};
+	std::atomic_bool m_bImuMotionResetRequested{false};
 	mutable std::mutex m_imuMutex;
 	ImuMountingCapture m_capturedImuMounting;
 	bool m_bImuMountingReady= false;

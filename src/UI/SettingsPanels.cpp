@@ -173,17 +173,24 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"The wrist->knuckle bone is measured continuously from stereo\n"
 			"triangulation / depth. Saving bakes the measured value in as\n"
 			"the new baseline (the live correction resets on restart).");
-		if (fabsf(scaleFactor - 1.f) > 0.01f)
+
+		// Always laid out, disabled when there is nothing to save: showing and
+		// hiding it shifted everything below and made the tooltips above
+		// impossible to hover
+		ImGui::BeginDisabled(fabsf(scaleFactor - 1.f) <= 0.01f);
+		if (ImGui::Button("Save stereo scale as calibrated"))
 		{
-			if (ImGui::Button("Save stereo scale as calibrated"))
-			{
-				config->handScale.refLengthMeters= autoScaleMeters;
-				config->handScale.present= true;
-				config->markDirty();
-				// The refresh resets the correction EMA to 1 over the new baseline
-				visionThread->requestConfigRefresh();
-			}
+			config->handScale.refLengthMeters= autoScaleMeters;
+			config->handScale.present= true;
+			config->markDirty();
+			// The refresh resets the correction EMA to 1 over the new baseline
+			visionThread->requestConfigRefresh();
 		}
+		ImGui::EndDisabled();
+		ImGui::SetItemTooltip(
+			"Only useful once: the measured correction is applied live either\n"
+			"way, but it restarts from 1.0 every launch. Saving makes the\n"
+			"configured seed right so it starts converged.");
 	}
 
 	ImGui::SeparatorText("Wrist IMU");
@@ -299,101 +306,12 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"the sensor rides the forearm - the wrist joint between them is\n"
 			"real motion, not error. LOWER = trust vision more.");
 
-		// Mounting calibration (same countdown pattern as the rest pose)
-		if (panelState.imuMountingCountdown > 0.f)
-		{
-			panelState.imuMountingCountdown-= ImGui::GetIO().DeltaTime;
-			if (panelState.imuMountingCountdown <= 0.f)
-			{
-				panelState.imuMountingCountdown= 0.f;
-				visionThread->requestImuMountingCapture();
-			}
-
-			char countdownText[16];
-			snprintf(countdownText, sizeof(countdownText), "%d",
-					 (int)ceilf(panelState.imuMountingCountdown));
-			ImGui::SetWindowFontScale(3.f);
-			const float textWidth= ImGui::CalcTextSize(countdownText).x;
-			ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
-			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
-			ImGui::SetWindowFontScale(1.f);
-			if (ImGui::Button("Cancel", ImVec2(-1, 0)))
-				panelState.imuMountingCountdown= 0.f;
-		}
-		else if (ImGui::Button("Calibrate Mounting", ImVec2(-1, 0)))
-		{
-			panelState.imuMountingCountdown= k_restPoseCountdownSeconds;
-			panelState.imuMountingResultTimer= 0.f;
-		}
+		if (ImGui::Button("Calibrate Mounting...", ImVec2(-1, 0)))
+			panelState.bLaunchMountingWizard= true;
 		ImGui::SetItemTooltip(
-			"1. FIRST twist both forearms back and forth (palms up, palms\n"
-			"   down) for a few seconds. That motion is what measures each\n"
-			"   forearm's long axis, and it is the part the elbow depends on.\n"
-			"2. THEN hold both hands STRAIGHT in line with your forearms (no\n"
-			"   wrist bend) where the cameras can see them, and wait for the\n"
-			"   count. That pose only sets the roll about the measured axis.\n"
-			"\n"
-			"Together they define the forearm frame as 'the palm frame at a\n"
-			"neutral wrist', which is what makes the streamed wrist rotation\n"
-			"identity when your wrist is straight. Absorbs however the strap\n"
-			"happens to sit, so nothing about controller orientation matters.\n"
-			"A side with too little twist is REJECTED, not saved.");
-
-		// Poll for a completed capture. A capture whose arm axis was measured
-		// from too little twist is REJECTED rather than saved: an unnoticed
-		// bad mounting is what makes the elbow sweep a cone, and it looks
-		// perfect at the captured pose, so it cannot be caught by eye.
-		constexpr float kMinAxisDominance= 0.7f;
-		VisionThread::ImuMountingCapture mounting;
-		if (visionThread->fetchImuMountingCapture(mounting))
-		{
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				const bool bAccepted=
-					mounting.bCaptured[sideIndex] && mounting.axisDominance[sideIndex] >= kMinAxisDominance;
-				panelState.bImuMountingCaptured[sideIndex]= bAccepted;
-				panelState.imuAxisDominance[sideIndex]= mounting.bCaptured[sideIndex]
-					? mounting.axisDominance[sideIndex]
-					: -1.f;
-				if (!bAccepted)
-					continue;
-
-				imu.forearmToSensor[sideIndex]= mounting.forearmToSensor[sideIndex];
-				imu.mountingPresent[sideIndex]= true;
-				bChanged= true;
-			}
-			panelState.imuMountingResultTimer= k_restPoseResultSeconds;
-		}
-
-		if (panelState.imuMountingResultTimer > 0.f)
-		{
-			panelState.imuMountingResultTimer-= ImGui::GetIO().DeltaTime;
-			const bool bLeft= panelState.bImuMountingCaptured[0];
-			const bool bRight= panelState.bImuMountingCaptured[1];
-			if (bLeft && bRight)
-				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Calibrated both wrists");
-			else if (bLeft || bRight)
-				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Calibrated %s only",
-								   bLeft ? "left" : "right");
-			else
-				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Not calibrated");
-
-			// Say WHY a side was refused - "not enough twist" and "hand not
-			// tracked" need completely different responses from the user
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				if (panelState.bImuMountingCaptured[sideIndex])
-					continue;
-				const char* sideName= sideIndex == 0 ? "Left" : "Right";
-				if (panelState.imuAxisDominance[sideIndex] < 0.f)
-					ImGui::TextDisabled("  %s: needs a tracked hand + a streaming, settled controller",
-										sideName);
-				else
-					ImGui::TextDisabled("  %s: not enough forearm twist (axis %.2f, need 0.70) - "
-										"rotate that forearm and retry",
-										sideName, panelState.imuAxisDominance[sideIndex]);
-			}
-		}
+			"Opens a guided calibration: twist your forearms (which measures\n"
+			"each arm's axis from the motion itself), then hold them straight\n"
+			"(which sets the roll about that axis).");
 
 		ImGui::EndDisabled();
 	}

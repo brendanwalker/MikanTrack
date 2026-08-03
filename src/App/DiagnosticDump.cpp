@@ -48,6 +48,27 @@ static json landmarksToJson(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& po
 	return out;
 }
 
+static json diagImuToJson(const DiagImuState& imu)
+{
+	if (!imu.deviceConnected)
+		return {{"deviceConnected", false}};
+
+	return {
+		{"deviceConnected", true},
+		{"streaming", imu.streaming},
+		{"calibrated", imu.calibrated},
+		{"orientationValid", imu.orientationValid},
+		{"sampleRateHz", imu.sampleRateHz},
+		{"msSinceLastSample", imu.millisecondsSinceLastSample},
+		{"forearmAxisConsistency", imu.forearmAxisConsistency},
+		{"armAxisDominance", imu.armAxisDominance},
+		{"gyroBiasDegPerSec", json::array({imu.gyroBiasDegreesPerSecond.x,
+										   imu.gyroBiasDegreesPerSecond.y,
+										   imu.gyroBiasDegreesPerSecond.z})},
+		{"yawSigmaRadians", imu.yawSigmaRadians},
+	};
+}
+
 static json diagHandToJson(const DiagHandState& hand)
 {
 	if (!hand.tracked)
@@ -156,12 +177,15 @@ void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraR
 							const TrackingFrameResult& fused,
 							const FusionDiagnostics& fusionDiagnostics,
 							const int dominantCamera[2],
-							float autoScaleFactor)
+							float autoScaleFactor,
+							const DiagImuState imu[2])
 {
 	DiagFrameRecord record;
 	record.fuseTimestampMs= fused.timestampMs;
 	record.autoScaleFactor= autoScaleFactor;
 	record.fusion= fusionDiagnostics;
+	record.imu[0]= imu[0];
+	record.imu[1]= imu[1];
 
 	for (const CameraFrameResult* cameraResult : cameraResults)
 	{
@@ -411,6 +435,11 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 			 }},
 			{"autoScaleFactor", record.autoScaleFactor},
 			{"fusion", fusionDiagnosticsToJson(record.fusion)},
+			{"imu",
+			 {
+				 {"left", diagImuToJson(record.imu[0])},
+				 {"right", diagImuToJson(record.imu[1])},
+			 }},
 		});
 	}
 	j["history"]= historyJson;

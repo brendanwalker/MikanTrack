@@ -9,6 +9,7 @@
 #include "DevicePanel.h"
 #include "ExtrinsicsWizard.h"
 #include "IntrinsicsWizard.h"
+#include "MountingWizard.h"
 #include "LogPanel.h"
 #include "Logger.h"
 #include "Scene3dPanel.h"
@@ -25,6 +26,7 @@ MainWindow::MainWindow(App* app)
 	, m_calibrationPanel(std::make_unique<CalibrationPanel>(app->getConfig()))
 	, m_intrinsicsWizard(std::make_unique<IntrinsicsWizard>(app->getConfig(), app->getVisionThread()))
 	, m_extrinsicsWizard(std::make_unique<ExtrinsicsWizard>(app->getConfig(), app->getVisionThread()))
+	, m_mountingWizard(std::make_unique<MountingWizard>(app->getConfig(), app->getVisionThread()))
 {
 	// Hotplug / disconnect notifications refresh the device panel
 	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
@@ -152,7 +154,8 @@ void MainWindow::drawDockspaceAndMenuBar()
 		}
 		if (ImGui::BeginMenu("Calibration"))
 		{
-			const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();
+			const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
+							  m_mountingWizard->isActive();
 			AppConfig* config= m_app->getConfig();
 
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
@@ -214,13 +217,21 @@ void MainWindow::update(float deltaSeconds)
 
 	drawDockspaceAndMenuBar();
 
-	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();
+	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
+							  m_mountingWizard->isActive();
 
 	// Panels
 	m_devicePanel->draw();
 	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
 									  m_trackingPanelState);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
+
+	if (m_trackingPanelState.bLaunchMountingWizard)
+	{
+		m_trackingPanelState.bLaunchMountingWizard= false;
+		if (!bWizardActive)
+			m_mountingWizard->enter();
+	}
 
 	const CalibrationPanel::DrawResult calibrationAction= m_calibrationPanel->draw(bWizardActive);
 	if (calibrationAction.bLaunchIntrinsicsWizard)
@@ -323,6 +334,13 @@ void MainWindow::update(float deltaSeconds)
 	{
 		if (!m_extrinsicsWizard->update(deltaSeconds, m_latestPreviews, m_videoPreviewPanel.get()))
 			m_extrinsicsWizard->exit();
+	}
+	else if (m_mountingWizard->isActive())
+	{
+		// Unlike the calibration wizards this one leaves tracking running - it
+		// needs live tracked hands for the straight-wrist pose
+		if (!m_mountingWizard->update(deltaSeconds, m_latestFused))
+			m_mountingWizard->exit();
 	}
 
 	if (m_bShowLogPanel)

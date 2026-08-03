@@ -747,6 +747,8 @@ void VisionThread::threadLoop()
 			// the forearm orientation onto the pose.
 			if (m_bImuRefreshRequested.exchange(false))
 				m_imuService.refreshDevices();
+			if (m_bImuMotionResetRequested.exchange(false))
+				m_imuService.resetMountingMotion();
 			m_imuService.update();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -888,9 +890,27 @@ void VisionThread::threadLoop()
 		// Diagnostic history (compact copies - cheap enough for every frame)
 		{
 			const int dominant[2]= {m_dominantCamera[0].load(), m_dominantCamera[1].load()};
+
+			DiagImuState imuStates[2];
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const ImuSideStatus status= m_imuService.getSideStatus((eHandSide)sideIndex);
+				DiagImuState& imuState= imuStates[sideIndex];
+				imuState.deviceConnected= status.deviceConnected;
+				imuState.streaming= status.streaming;
+				imuState.calibrated= status.calibrated;
+				imuState.orientationValid= status.orientationValid;
+				imuState.sampleRateHz= status.sampleRateHz;
+				imuState.millisecondsSinceLastSample= status.millisecondsSinceLastSample;
+				imuState.forearmAxisConsistency= status.forearmAxisConsistency;
+				imuState.armAxisDominance= status.armAxisDominance;
+				imuState.gyroBiasDegreesPerSecond= status.gyroBiasDegreesPerSecond;
+				imuState.yawSigmaRadians= status.yawSigmaRadians;
+			}
+
 			m_diagnostics.record(fusionCandidates, outputResult,
 								 bAnyWorldCandidate ? m_fusion.getLastDiagnostics() : FusionDiagnostics(),
-								 dominant, m_autoScaleFactor.load());
+								 dominant, m_autoScaleFactor.load(), imuStates);
 		}
 
 		if (m_bDumpRequested.exchange(false))
