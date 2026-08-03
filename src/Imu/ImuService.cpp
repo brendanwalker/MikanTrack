@@ -10,6 +10,9 @@
 // A streaming Joy-Con delivers ~200 samples/second, so a second of total
 // silence already means it is gone (asleep, or the link dropped)
 static constexpr double k_deviceSilentTimeoutMs= 1500.0;
+// Angular-velocity scatter (mounting axis estimation)
+static constexpr float k_scatterMinRateRadiansPerSecond= 0.35f; // ~20 deg/s: deliberate motion, not jiggle
+static constexpr float k_scatterHalfLifeSeconds= 8.f;
 // Frames to wait between reopen attempts (~2s at camera rate)
 static constexpr int k_reopenCooldownFrames= 60;
 
@@ -174,8 +177,74 @@ void ImuService::update()
 			entry->lastSampleTimestampMs= sample.timestampMs;
 
 			entry->filter.processSample(sample, dtSeconds);
+
+			// Accumulate the angular-velocity scatter used by mounting
+			// calibration. Only real rotation carries axis information, and
+			// weighting by |w|^2 lets deliberate twisting dominate incidental
+			// jiggle. Decays so a calibration reflects RECENT motion.
+			const glm::vec3 rate= sample.angularVelocity - entry->filter.getGyroBias();
+			const float rateMagnitude= glm::length(rate);
+			if (rateMagnitude > k_scatterMinRateRadiansPerSecond)
+			{
+				const float decay= expf(-dtSeconds / k_scatterHalfLifeSeconds);
+				entry->rotationScatter*= decay;
+				entry->rotationScatterWeight*= decay;
+				entry->rotationScatter+= glm::outerProduct(rate, rate) * dtSeconds;
+				entry->rotationScatterWeight+= rateMagnitude * rateMagnitude * dtSeconds;
+			}
 		}
 	}
+}
+
+glm::vec3 imuDominantRotationAxis(const glm::mat3& scatter, float& outDominance)
+{
+	glm::vec3 axis(1.f, 0.f, 0.f);
+	for (int iteration= 0; iteration < 64; ++iteration)
+	{
+		const glm::vec3 next= scatter * axis;
+		const float length= glm::length(next);
+		if (length < 1e-20f)
+		{
+			outDominance= 0.f;
+			return glm::vec3(1.f, 0.f, 0.f);
+		}
+		axis= next / length;
+	}
+
+	const float eigenvalue= glm::dot(axis, scatter * axis);
+	const float trace= scatter[0][0] + scatter[1][1] + scatter[2][2];
+	outDominance= trace > 1e-20f ? eigenvalue / trace : 0.f;
+	return axis;
+}
+
+glm::quat imuAlignMountingToArmAxis(const glm::quat& poseMounting, glm::vec3 sensorAxis)
+{
+	const float sensorAxisLength= glm::length(sensorAxis);
+	if (sensorAxisLength < 1e-6f)
+		return poseMounting;
+	sensorAxis/= sensorAxisLength;
+
+	// Where the held pose thinks the arm axis is, expressed in sensor frame
+	const glm::vec3 poseAxis= glm::normalize(poseMounting * glm::vec3(1.f, 0.f, 0.f));
+
+	// The eigenvector's sign is arbitrary; +X must point toward the hand, so
+	// resolve it by agreeing with the pose
+	if (glm::dot(sensorAxis, poseAxis) < 0.f)
+		sensorAxis= -sensorAxis;
+
+	const float alignment= glm::clamp(glm::dot(poseAxis, sensorAxis), -1.f, 1.f);
+	if (alignment > 0.999999f)
+		return poseMounting;
+
+	const glm::vec3 rotationAxis= glm::cross(poseAxis, sensorAxis);
+	const float rotationAxisLength= glm::length(rotationAxis);
+	if (rotationAxisLength < 1e-6f) // exactly antiparallel: the sign flip above rules this out
+		return poseMounting;
+
+	// Left-multiply: the correction acts in SENSOR frame, which is where both
+	// axes live
+	return glm::normalize(
+		glm::angleAxis(acosf(alignment), rotationAxis / rotationAxisLength) * poseMounting);
 }
 
 void ImuService::applyVisionPalmOrientation(eHandSide side, const glm::quat& palmOrientationWorld)
@@ -245,26 +314,39 @@ bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWo
 }
 
 bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
-								 glm::quat& outForearmToSensor)
+								 glm::quat& outForearmToSensor, float& outAxisDominance)
 {
+	outAxisDominance= 0.f;
+
 	const int deviceIndex= findDeviceIndexForSide(side);
 	if (deviceIndex < 0)
 		return false;
 
-	const DeviceEntry& entry= *m_devices[deviceIndex];
+	DeviceEntry& entry= *m_devices[deviceIndex];
 	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
 		return false;
 
-	// With the wrist straight, the forearm frame IS the palm frame:
-	//   q_fs = inverse(q_sw) * q_palm
-	outForearmToSensor=
+	// Start from the held pose: with the wrist straight the forearm frame IS
+	// the palm frame, so q_fs = inverse(q_sw) * q_palm. This gets the roll
+	// about the arm right, but its ARM AXIS is only as good as the pose was.
+	glm::quat mounting=
 		glm::normalize(glm::inverse(entry.filter.getOrientation()) * glm::normalize(palmOrientationWorld));
 
+	// Then let measured motion fix the axis. The dominant rotation axis in
+	// the SENSOR frame is the forearm's long axis; the mounting must map
+	// forearm +X onto it. Rotating the pose-derived mounting by the minimal
+	// rotation that does so corrects the two degrees of freedom motion can
+	// see, and leaves the third (roll) exactly as the pose set it.
+	const glm::vec3 sensorAxis= imuDominantRotationAxis(entry.rotationScatter, outAxisDominance);
+	if (outAxisDominance > 0.f && entry.rotationScatterWeight > 1e-6f)
+		mounting= imuAlignMountingToArmAxis(mounting, sensorAxis);
+
+	outForearmToSensor= mounting;
+
 	// A recapture invalidates the old mounting's quality score
-	DeviceEntry& mutableEntry= *m_devices[deviceIndex];
-	mutableEntry.axisConsistencyEma= -1.f;
-	mutableEntry.axisConsistencySamples= 0;
-	mutableEntry.bHasLastPublishedForearm= false;
+	entry.axisConsistencyEma= -1.f;
+	entry.axisConsistencySamples= 0;
+	entry.bHasLastPublishedForearm= false;
 	return true;
 }
 

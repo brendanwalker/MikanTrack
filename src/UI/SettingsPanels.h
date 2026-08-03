@@ -19,6 +19,10 @@ struct TrackingPanelState
 	float imuMountingCountdown= 0.f;
 	float imuMountingResultTimer= 0.f;
 	bool bImuMountingCaptured[2]= {false, false};
+	// Arm-axis conditioning reported by the last capture, per side; -1 when
+	// that side produced no capture at all (so the banner can tell the two
+	// failure modes apart)
+	float imuAxisDominance[2]= {-1.f, -1.f};
 };
 
 // Small side panels: tracking/fusion options and OSC output settings.

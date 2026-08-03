@@ -4,3 +4,4 @@ models/
 .vs/
 *.user
 imgui.ini
+*.log

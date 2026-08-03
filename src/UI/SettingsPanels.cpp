@@ -326,27 +326,42 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			panelState.imuMountingResultTimer= 0.f;
 		}
 		ImGui::SetItemTooltip(
-			"Hold both hands STRAIGHT in line with your forearms (no wrist\n"
-			"bend) where the cameras can see them, then wait for the count.\n"
-			"That pose defines the forearm frame as 'the palm frame at a\n"
+			"1. FIRST twist both forearms back and forth (palms up, palms\n"
+			"   down) for a few seconds. That motion is what measures each\n"
+			"   forearm's long axis, and it is the part the elbow depends on.\n"
+			"2. THEN hold both hands STRAIGHT in line with your forearms (no\n"
+			"   wrist bend) where the cameras can see them, and wait for the\n"
+			"   count. That pose only sets the roll about the measured axis.\n"
+			"\n"
+			"Together they define the forearm frame as 'the palm frame at a\n"
 			"neutral wrist', which is what makes the streamed wrist rotation\n"
 			"identity when your wrist is straight. Absorbs however the strap\n"
-			"happens to sit, so nothing about controller orientation matters.");
+			"happens to sit, so nothing about controller orientation matters.\n"
+			"A side with too little twist is REJECTED, not saved.");
 
-		// Poll for a completed capture
+		// Poll for a completed capture. A capture whose arm axis was measured
+		// from too little twist is REJECTED rather than saved: an unnoticed
+		// bad mounting is what makes the elbow sweep a cone, and it looks
+		// perfect at the captured pose, so it cannot be caught by eye.
+		constexpr float kMinAxisDominance= 0.7f;
 		VisionThread::ImuMountingCapture mounting;
 		if (visionThread->fetchImuMountingCapture(mounting))
 		{
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
-				if (!mounting.bCaptured[sideIndex])
+				const bool bAccepted=
+					mounting.bCaptured[sideIndex] && mounting.axisDominance[sideIndex] >= kMinAxisDominance;
+				panelState.bImuMountingCaptured[sideIndex]= bAccepted;
+				panelState.imuAxisDominance[sideIndex]= mounting.bCaptured[sideIndex]
+					? mounting.axisDominance[sideIndex]
+					: -1.f;
+				if (!bAccepted)
 					continue;
+
 				imu.forearmToSensor[sideIndex]= mounting.forearmToSensor[sideIndex];
 				imu.mountingPresent[sideIndex]= true;
 				bChanged= true;
 			}
-			panelState.bImuMountingCaptured[0]= mounting.bCaptured[0];
-			panelState.bImuMountingCaptured[1]= mounting.bCaptured[1];
 			panelState.imuMountingResultTimer= k_restPoseResultSeconds;
 		}
 
@@ -361,9 +376,23 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Calibrated %s only",
 								   bLeft ? "left" : "right");
 			else
-				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-								   "Nothing captured - each wrist needs a TRACKED hand and a "
-								   "streaming, settled controller");
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Not calibrated");
+
+			// Say WHY a side was refused - "not enough twist" and "hand not
+			// tracked" need completely different responses from the user
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (panelState.bImuMountingCaptured[sideIndex])
+					continue;
+				const char* sideName= sideIndex == 0 ? "Left" : "Right";
+				if (panelState.imuAxisDominance[sideIndex] < 0.f)
+					ImGui::TextDisabled("  %s: needs a tracked hand + a streaming, settled controller",
+										sideName);
+				else
+					ImGui::TextDisabled("  %s: not enough forearm twist (axis %.2f, need 0.70) - "
+										"rotate that forearm and retry",
+										sideName, panelState.imuAxisDominance[sideIndex]);
+			}
 		}
 
 		ImGui::EndDisabled();

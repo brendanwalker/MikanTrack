@@ -72,6 +72,18 @@ struct ImuSideStatus
 	std::string deviceName;
 };
 
+// Dominant eigenvector of a symmetric angular-velocity scatter sum(w w^T),
+// plus how dominant it is (lambda1 / trace): 1 = all rotation about a single
+// axis, 1/3 = isotropic and therefore uninformative. Free function so the
+// mounting math can be tested without a physical device attached.
+glm::vec3 imuDominantRotationAxis(const glm::mat3& scatter, float& outDominance);
+
+// Rotates a pose-derived mounting so that forearm +X lands on the measured
+// sensor-frame arm axis, by the MINIMAL rotation that does so - which leaves
+// roll about that axis exactly as the held pose set it. sensorAxis need not be
+// signed correctly; it is flipped to agree with the pose.
+glm::quat imuAlignMountingToArmAxis(const glm::quat& poseMounting, glm::vec3 sensorAxis);
+
 class ImuService
 {
 public:
@@ -102,11 +114,25 @@ public:
 	// watch the orientation actually being published.
 	bool getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld);
 
-	// Captures the mounting rotation for one side from the CURRENT sensor
-	// orientation plus a vision palm orientation, with the wrist held
-	// straight. Returns false when the side has no converged device.
+	// Captures the mounting rotation for one side.
+	//
+	// Two sources, because they are good at different things:
+	// - MOTION decides the forearm's long axis. Pronating/supinating rotates
+	//   the arm about that axis and nothing else, so the dominant axis of the
+	//   recent angular-velocity scatter IS the arm axis, measured in the
+	//   sensor's own frame over thousands of samples. This is the part the
+	//   elbow depends on, and it needs no pose to be held correctly.
+	// - The held POSE decides the remaining degree of freedom (roll about
+	//   that axis), which motion cannot observe and which a straight-wrist
+	//   pose gives for free.
+	// A single held pose alone had to get all three right at one instant and
+	// kept getting the axis wrong by ~60 deg.
+	//
+	// outAxisDominance (0..1) reports how well-conditioned the motion was;
+	// below ~0.7 the axis is unreliable and the caller should say so rather
+	// than bake in a bad mounting.
 	bool captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
-						 glm::quat& outForearmToSensor);
+						 glm::quat& outForearmToSensor, float& outAxisDominance);
 
 	ImuSideStatus getSideStatus(eHandSide side) const;
 
@@ -123,6 +149,12 @@ private:
 		bool bHasLastPublishedForearm= false;
 		float axisConsistencyEma= -1.f;
 		int axisConsistencySamples= 0;
+
+		// Decaying scatter of sensor-frame angular velocity, sum(w w^T). Its
+		// dominant eigenvector is the axis the arm has been rotating about -
+		// i.e. the forearm's long axis, if the user has been twisting.
+		glm::mat3 rotationScatter{0.f};
+		float rotationScatterWeight= 0.f;
 	};
 
 	// Index into m_devices for a wrist, honoring swapSides; -1 when none

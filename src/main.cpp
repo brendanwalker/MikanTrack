@@ -28,6 +28,7 @@
 #include "OscWriterTest.h"
 #include "DepthFrameView.h"
 #include "ImuOrientationFilter.h"
+#include "ImuService.h"
 #include "JoyconDevice.h"
 #include "JoyconDeviceManager.h"
 
@@ -2303,6 +2304,93 @@ static int runApp(int argc, char** argv)
 				{
 					MIKAN_LOG_ERROR("test-imufilter")
 						<< "(e) FAILED: mounting calibration / wrist rotation chain is inconsistent";
+					result= 1;
+				}
+			}
+
+			// (f) Motion-based arm-axis recovery. A held pose alone has to get
+			// all three mounting DoF right at one instant, and in practice got
+			// the ARM AXIS wrong by ~60 deg - which is the one the elbow rides
+			// on. Twisting the forearm measures that axis directly: pronation
+			// rotates about the arm and nothing else, so the dominant axis of
+			// the sensor-frame angular-velocity scatter IS the arm axis.
+			{
+				const glm::quat trueMounting= glm::normalize(
+					glm::angleAxis(glm::radians(115.f), glm::normalize(glm::vec3(0.3f, -0.7f, 0.6f))));
+				// Arm axis (forearm +X) as the SENSOR sees it
+				const glm::vec3 trueSensorArmAxis=
+					glm::normalize(trueMounting * glm::vec3(1.f, 0.f, 0.f));
+
+				auto accumulate= [](glm::mat3& scatter, const glm::vec3& rate, float weight) {
+					for (int col= 0; col < 3; ++col)
+						for (int row= 0; row < 3; ++row)
+							scatter[col][row]+= rate[col] * rate[row] * weight;
+				};
+
+				// Simulated twisting: mostly about the arm axis, with a little
+				// off-axis wobble because no one twists perfectly
+				glm::mat3 twistScatter(0.f);
+				const glm::vec3 offAxis= glm::normalize(glm::cross(trueSensorArmAxis, glm::vec3(0.f, 0.f, 1.f)));
+				for (int sampleIndex= 0; sampleIndex < 400; ++sampleIndex)
+				{
+					const float phase= (float)sampleIndex * 0.05f;
+					const glm::vec3 rate=
+						trueSensorArmAxis * (3.f * sinf(phase)) + offAxis * (0.3f * sinf(phase * 2.7f));
+					accumulate(twistScatter, rate, 0.005f);
+				}
+
+				float twistDominance= 0.f;
+				const glm::vec3 measuredAxis= imuDominantRotationAxis(twistScatter, twistDominance);
+				const float axisErrorDegrees= glm::degrees(
+					acosf(std::clamp(fabsf(glm::dot(measuredAxis, trueSensorArmAxis)), 0.f, 1.f)));
+
+				// A pose held with a BENT wrist: the mounting is off by 55 deg
+				// about an axis perpendicular to the arm (exactly the error the
+				// motion can see)
+				const glm::quat poseError=
+					glm::angleAxis(glm::radians(55.f), glm::normalize(glm::cross(trueSensorArmAxis, offAxis)));
+				const glm::quat badPoseMounting= glm::normalize(poseError * trueMounting);
+				const glm::quat corrected= imuAlignMountingToArmAxis(badPoseMounting, measuredAxis);
+				const float correctedArmErrorDegrees= glm::degrees(acosf(std::clamp(
+					glm::dot(glm::normalize(corrected * glm::vec3(1.f, 0.f, 0.f)), trueSensorArmAxis),
+					-1.f, 1.f)));
+
+				// Motion CANNOT see roll about the arm, by construction - a
+				// pure-roll pose error must survive untouched (that is the
+				// held pose's job, and why we still need one)
+				const glm::quat rollError= glm::angleAxis(glm::radians(20.f), trueSensorArmAxis);
+				const glm::quat rolled= imuAlignMountingToArmAxis(
+					glm::normalize(rollError * trueMounting), measuredAxis);
+				// The 20 deg roll must STILL be there afterwards - the correction
+				// may only nudge things by as much as the axis measurement error
+				const glm::quat rollDelta= glm::inverse(glm::normalize(rollError * trueMounting)) * rolled;
+				const float rollMovedDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(rollDelta.x, rollDelta.y, rollDelta.z)), 0.f, 1.f)));
+				const glm::quat rollResidual= glm::inverse(trueMounting) * rolled;
+				const float rollSurvivingDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(rollResidual.x, rollResidual.y, rollResidual.z)), 0.f, 1.f)));
+
+				// Isotropic motion (waving the arm around, no real twist) must
+				// score as uninformative so the UI can refuse the capture
+				glm::mat3 isotropicScatter(0.f);
+				accumulate(isotropicScatter, glm::vec3(1.f, 0.f, 0.f), 1.f);
+				accumulate(isotropicScatter, glm::vec3(0.f, 1.f, 0.f), 1.f);
+				accumulate(isotropicScatter, glm::vec3(0.f, 0.f, 1.f), 1.f);
+				float isotropicDominance= 0.f;
+				imuDominantRotationAxis(isotropicScatter, isotropicDominance);
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(f) motion axis: measured axis err=" << axisErrorDegrees
+					<< " deg (dominance=" << twistDominance << "), 55 deg bad pose corrected to "
+					<< correctedArmErrorDegrees << " deg, 20 deg roll error left at "
+					<< rollSurvivingDegrees << " deg (moved " << rollMovedDegrees
+					<< " deg), isotropic dominance=" << isotropicDominance;
+				if (axisErrorDegrees > 2.f || twistDominance < 0.9f || correctedArmErrorDegrees > 2.f ||
+					rollMovedDegrees > 1.f || fabsf(rollSurvivingDegrees - 20.f) > 1.f ||
+					isotropicDominance > 0.4f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(f) FAILED: motion-based arm axis recovery is wrong";
 					result= 1;
 				}
 			}

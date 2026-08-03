@@ -108,6 +108,9 @@ public:
 		bool bCaptured[2]= {false, false};
 		std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f),
 												 glm::quat(1.f, 0.f, 0.f, 0.f)};
+		// How well-conditioned the motion behind the arm-axis estimate was
+		// (0..1); low means the user did not twist enough for it to be trusted
+		float axisDominance[2]= {0.f, 0.f};
 	};
 	bool fetchImuMountingCapture(ImuMountingCapture& outCapture);
 	// Live per-wrist IMU status for the UI (main thread safe: plain copies)

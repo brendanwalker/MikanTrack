@@ -779,7 +779,7 @@ void VisionThread::threadLoop()
 						continue;
 					capture.bCaptured[sideIndex]= m_imuService.captureMounting(
 						(eHandSide)sideIndex, pose.palmOrientationWorld,
-						capture.forearmToSensor[sideIndex]);
+						capture.forearmToSensor[sideIndex], capture.axisDominance[sideIndex]);
 				}
 
 				std::lock_guard<std::mutex> lock(m_imuMutex);
