@@ -63,11 +63,12 @@ struct OscStreamerConfig
 ///         Sourced from a wrist-strapped IMU; valid=0 (and identity
 ///         quaternions) when no IMU is calibrated for that hand.
 ///       /mikan/hand/{s}/fingers ,f x20 per finger (thumb..pinky):
-///         lateral, proximalBend, intermediateBend, distalBend (radians)
+///         lateral, proximalBend, intermediateBend, distalBend (DEGREES -
+///         the wire is degrees, everything inside this app is radians)
 ///       /mikan/hand/{s}/skeleton ,f x45 (1 Hz) per finger: base position in
 ///         the palm frame xyz + phalanx lengths [prox, inter, distal] +
 ///         neutral (zero-angle) direction in the palm frame xyz
-///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z" appVersion
+///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z;...;angles=deg" appVersion
 ///     (at most once per second)
 class OscStreamer
 {

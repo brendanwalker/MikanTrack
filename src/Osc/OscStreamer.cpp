@@ -15,9 +15,9 @@ static const char* k_frameAddress= "/mikan/frame";
 static const char* k_infoAddress= "/mikan/info";
 
 static const char* k_infoWorldSpace=
-	"space=marker;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=rad";
+	"space=marker;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=deg";
 static const char* k_infoCameraSpace=
-	"space=camera;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=rad";
+	"space=camera;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=deg";
 
 static void addVec3(OscMessage& message, const glm::vec3& point)
 {
@@ -277,16 +277,21 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 	}
 
 	// /mikan/hand/{s}/fingers ,f x20 -- per finger (thumb..pinky):
-	// [lateral, proximalBend, intermediateBend, distalBend] radians,
-	// relative to the neutral straight pose
+	// [lateral, proximalBend, intermediateBend, distalBend] DEGREES, relative
+	// to the neutral straight pose.
+	//
+	// Degrees only on the wire; every angle inside this application is
+	// radians, which is what the math wants. The conversion sits here, at the
+	// boundary, because the consumers are animation rigs and game engines
+	// whose own rotation types are degrees.
 	OscMessage& fingersMessage= m_bundle.addMessage(k_handFingersAddress[sideIndex]);
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
 	{
 		const FingerAngles& angles= pose.fingers[finger];
-		fingersMessage.addFloat(angles.lateral)
-			.addFloat(angles.proximal)
-			.addFloat(angles.intermediate)
-			.addFloat(angles.distal);
+		fingersMessage.addFloat(glm::degrees(angles.lateral))
+			.addFloat(glm::degrees(angles.proximal))
+			.addFloat(glm::degrees(angles.intermediate))
+			.addFloat(glm::degrees(angles.distal));
 	}
 
 	// /mikan/hand/{s}/skeleton ,f x45 (1 Hz) -- per finger: base position in
