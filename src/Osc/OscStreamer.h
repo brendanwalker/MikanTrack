@@ -30,6 +30,10 @@ struct OscStreamerConfig
 	// tracked=0. Bridges 2-10 frame dropouts so clients don't slam to their
 	// rest-pose blend and back. 0 = report the dropout immediately.
 	float holdOnDropoutMs= 250.f;
+	// Wrist-to-elbow distance used to place the streamed elbow. Only the
+	// length is assumed; the direction is measured, so an error here slides
+	// the elbow along the forearm rather than rotating it.
+	float forearmLengthMeters= 0.25f;
 	std::string appVersion= "MikanMediaPipe";
 };
 
@@ -41,6 +45,14 @@ struct OscStreamerConfig
 ///   /mikan/frame ,iif frameId timestampMs fps
 ///   per side s in {left,right}:
 ///     /mikan/hand/{s}/tracked ,iff tracked(0|1) presence confidence
+///     /mikan/hand/{s}/elbow ,ffff position xyz + confidence [0,1].
+///       Sent EVERY frame, tracked or not, because a consumer holds the last
+///       value for any address that stops arriving - an elbow that simply
+///       went silent would sit at its last confident value while the hand
+///       was gone. Confidence therefore carries validity: 0 means do not use
+///       this position. It folds together the hand's own confidence, the IMU
+///       mounting quality (a bad mounting leaves the hand looking correct
+///       while swinging the elbow around it) and the dropout decay.
 ///     if tracked (confidence below minConfidence reports tracked=0 and
 ///     withholds everything below):
 ///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
@@ -99,6 +111,14 @@ public:
 	/// @returns true when outPose should be sent as tracked
 	static bool resolveOutputPose(const HandPose& pose, double frameTimestampMs, float minConfidence,
 								  float holdMs, HeldPoseState& ioHeld, HandPose& outPose);
+
+	/// Decides what /elbow carries for one hand. Always produces a value,
+	/// because that message is sent whether or not the hand is tracked; an
+	/// unusable elbow reports confidence 0 rather than going silent, since a
+	/// consumer holds the last value for an address that stops arriving.
+	/// Static so the self test can exercise the contract without a socket.
+	static void resolveElbowOutput(const HandPose& pose, bool bPoseSent, float forearmLengthMeters,
+								   glm::vec3& outPosition, float& outConfidence);
 
 private:
 	using ClockTimePoint= std::chrono::steady_clock::time_point;

@@ -214,6 +214,13 @@ struct HandPose
 	bool hasForearmPose= false;
 	glm::quat forearmOrientationWorld{1.f, 0.f, 0.f, 0.f};
 
+	// How much the forearm estimate - and so the elbow derived from it - can
+	// be trusted, [0,1], 0 when there is no forearm pose at all. Distinct from
+	// `confidence`, which scores the HAND: the elbow additionally depends on
+	// the IMU's mounting calibration, and a mounting that is subtly wrong
+	// leaves the palm perfect while swinging the elbow around it.
+	float forearmConfidence= 0.f;
+
 	// Wrist joint rotation: the palm expressed IN the forearm frame, i.e.
 	// the local rotation a skeleton hierarchy applies to the hand bone.
 	// Identity when the palm points straight along the forearm. Only

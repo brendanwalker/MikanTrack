@@ -210,14 +210,22 @@ bool runOscWriterSelfTest()
 		OscStreamer::HeldPoseState held;
 		HandPose out;
 
+		live.hasForearmPose= true;
+		live.forearmConfidence= 0.6f;
+
 		// live pose passes through and arms the hold
 		holdPassed&= OscStreamer::resolveOutputPose(live, 1000.0, 0.f, 250.f, held, out);
 		holdPassed&= out.confidence == 0.8f;
+		holdPassed&= out.forearmConfidence == 0.6f;
 
 		// dropout at +100ms: held pose, confidence decayed by 100/250
 		holdPassed&= OscStreamer::resolveOutputPose(lost, 1100.0, 0.f, 250.f, held, out);
 		holdPassed&= fabsf(out.confidence - 0.8f * (1.f - 100.f / 250.f)) < 1e-4f;
 		holdPassed&= out.palmPositionWorld == live.palmPositionWorld;
+		// The elbow confidence must decay WITH the hand's. A consumer gates
+		// the elbow on that one number, so a held pose advertising its last
+		// live value would read as freshly measured.
+		holdPassed&= fabsf(out.forearmConfidence - 0.6f * (1.f - 100.f / 250.f)) < 1e-4f;
 
 		// still down at +250ms: last held frame (confidence ~0)
 		holdPassed&= OscStreamer::resolveOutputPose(lost, 1250.0, 0.f, 250.f, held, out);
@@ -289,6 +297,70 @@ bool runOscWriterSelfTest()
 			MIKAN_LOG_ERROR("runOscWriterSelfTest")
 				<< "wrist joint rotation FAILED (err " << errorDegrees << " deg)";
 		allPassed&= wristPassed;
+	}
+
+	// -- Elbow output (OscStreamer::resolveElbowOutput) ----------------------
+	{
+		bool elbowPassed= true;
+
+		// Forearm pointing along world +X, so the elbow sits one forearm
+		// length back along -X from the WRIST (not the palm center - the palm
+		// origin is half a palm forward of the wrist joint)
+		HandPose pose;
+		pose.tracked= true;
+		pose.hasWorldPose= true;
+		pose.hasForearmPose= true;
+		pose.confidence= 0.9f;
+		pose.forearmConfidence= 0.72f;
+		pose.palmPositionWorld= glm::vec3(0.5f, 0.f, 1.f);
+		pose.palmOrientationWorld= glm::quat(1.f, 0.f, 0.f, 0.f);
+		pose.forearmOrientationWorld= glm::quat(1.f, 0.f, 0.f, 0.f);
+		pose.skeleton.baseInPalm[(int)eFinger::Middle]= glm::vec3(0.04f, 0.f, 0.f);
+
+		glm::vec3 elbow(0.f);
+		float confidence= -1.f;
+		OscStreamer::resolveElbowOutput(pose, true, 0.25f, elbow, confidence);
+
+		const glm::vec3 expected= pose.getWristPositionWorld() - glm::vec3(0.25f, 0.f, 0.f);
+		elbowPassed&= glm::length(elbow - expected) < 1e-5f;
+		elbowPassed&= fabsf(confidence - 0.72f) < 1e-5f;
+
+		// A hand with no calibrated IMU still produces output, reporting
+		// confidence 0 - the message is sent every frame, so silence is not
+		// available as a way to say "unusable"
+		HandPose noImu= pose;
+		noImu.hasForearmPose= false;
+		OscStreamer::resolveElbowOutput(noImu, true, 0.25f, elbow, confidence);
+		elbowPassed&= confidence == 0.f;
+		elbowPassed&= elbow == glm::vec3(0.f);
+
+		// Same for a hand that is not being sent at all
+		OscStreamer::resolveElbowOutput(pose, false, 0.25f, elbow, confidence);
+		elbowPassed&= confidence == 0.f;
+
+		// And for a camera-space pose, which has no world frame to hang an
+		// elbow off
+		HandPose cameraSpace= pose;
+		cameraSpace.hasWorldPose= false;
+		OscStreamer::resolveElbowOutput(cameraSpace, true, 0.25f, elbow, confidence);
+		elbowPassed&= confidence == 0.f;
+
+		// Forearm length only slides the elbow along the forearm axis; it
+		// must not rotate it
+		glm::vec3 shortElbow(0.f);
+		glm::vec3 longElbow(0.f);
+		float ignored= 0.f;
+		OscStreamer::resolveElbowOutput(pose, true, 0.20f, shortElbow, ignored);
+		OscStreamer::resolveElbowOutput(pose, true, 0.30f, longElbow, ignored);
+		const glm::vec3 slide= longElbow - shortElbow;
+		elbowPassed&= fabsf(slide.y) < 1e-6f && fabsf(slide.z) < 1e-6f;
+		elbowPassed&= fabsf(glm::length(slide) - 0.10f) < 1e-5f;
+
+		if (elbowPassed)
+			MIKAN_LOG_INFO("runOscWriterSelfTest") << "elbow output passed";
+		else
+			MIKAN_LOG_ERROR("runOscWriterSelfTest") << "elbow output FAILED";
+		allPassed&= elbowPassed;
 	}
 
 	if (allPassed)

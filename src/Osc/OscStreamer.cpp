@@ -7,6 +7,7 @@
 static const char* k_handTrackedAddress[2]= {"/mikan/hand/left/tracked", "/mikan/hand/right/tracked"};
 static const char* k_handPalmAddress[2]= {"/mikan/hand/left/palm", "/mikan/hand/right/palm"};
 static const char* k_handWristAddress[2]= {"/mikan/hand/left/wrist", "/mikan/hand/right/wrist"};
+static const char* k_handElbowAddress[2]= {"/mikan/hand/left/elbow", "/mikan/hand/right/elbow"};
 static const char* k_handFingersAddress[2]= {"/mikan/hand/left/fingers", "/mikan/hand/right/fingers"};
 static const char* k_handSkeletonAddress[2]= {"/mikan/hand/left/skeleton", "/mikan/hand/right/skeleton"};
 
@@ -161,8 +162,13 @@ bool OscStreamer::resolveOutputPose(const HandPose& pose, double frameTimestampM
 		const double elapsedMs= frameTimestampMs - ioHeld.timestampMs;
 		if (elapsedMs >= 0.0 && elapsedMs <= (double)holdMs)
 		{
+			const float decay= (float)(1.0 - elapsedMs / (double)holdMs);
 			outPose= ioHeld.pose;
-			outPose.confidence= ioHeld.pose.confidence * (float)(1.0 - elapsedMs / (double)holdMs);
+			outPose.confidence= ioHeld.pose.confidence * decay;
+			// The elbow confidence decays with it. A consumer gates the elbow
+			// on this one number, so leaving it at its last live value would
+			// advertise a held pose as freshly measured.
+			outPose.forearmConfidence= ioHeld.pose.forearmConfidence * decay;
 			return true;
 		}
 	}
@@ -170,6 +176,24 @@ bool OscStreamer::resolveOutputPose(const HandPose& pose, double frameTimestampM
 	ioHeld.valid= false;
 	outPose= pose;
 	return false;
+}
+
+void OscStreamer::resolveElbowOutput(const HandPose& pose, bool bPoseSent, float forearmLengthMeters,
+									 glm::vec3& outPosition, float& outConfidence)
+{
+	// The elbow needs a measured forearm direction AND a world-anchored palm
+	// to hang it off. Camera-space poses are excluded because the forearm
+	// orientation is only ever produced in world space.
+	const bool bUsable= bPoseSent && pose.hasForearmPose && pose.hasWorldPose;
+	if (!bUsable)
+	{
+		outPosition= glm::vec3(0.f);
+		outConfidence= 0.f;
+		return;
+	}
+
+	outPosition= pose.getElbowPositionWorld(forearmLengthMeters);
+	outConfidence= glm::clamp(pose.forearmConfidence, 0.f, 1.f);
 }
 
 void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton)
@@ -184,6 +208,29 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 	trackedMessage.addInt32(bSendPose ? 1 : 0);
 	trackedMessage.addFloat(pose.presence);
 	trackedMessage.addFloat(pose.confidence);
+
+	// /mikan/hand/{s}/elbow ,ffff -- position xyz + confidence.
+	//
+	// Emitted before the untracked early-out, so this address arrives EVERY
+	// frame no matter what. A consumer holds the last value it received for
+	// any address that stops arriving, so an elbow that simply went silent
+	// would sit at its last confident value while the hand was gone.
+	// Confidence therefore carries validity too: 0 means do not use this
+	// position. Every degraded case - no calibrated IMU, poor mounting, a
+	// low-confidence hand, a decaying dropout hold, no hand at all - ends in
+	// the same question, which is how much to trust this position.
+	//
+	// Derived here rather than left to the client because the wrist-to-elbow
+	// length is the sender's calibrated value.
+	{
+		glm::vec3 elbowPosition(0.f);
+		float elbowConfidence= 0.f;
+		resolveElbowOutput(pose, bSendPose, m_config.forearmLengthMeters, elbowPosition, elbowConfidence);
+
+		OscMessage& elbowMessage= m_bundle.addMessage(k_handElbowAddress[sideIndex]);
+		addVec3(elbowMessage, elbowPosition);
+		elbowMessage.addFloat(elbowConfidence);
+	}
 
 	if (!bSendPose)
 		return;

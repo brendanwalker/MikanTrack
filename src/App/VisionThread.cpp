@@ -377,6 +377,9 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
 		oscConfig.minConfidence= m_config->osc.minConfidence;
 		oscConfig.holdOnDropoutMs= m_config->osc.holdOnDropoutMs;
+		// The streamer derives the elbow from the forearm direction, so it
+		// needs the same length the rest of the app uses
+		oscConfig.forearmLengthMeters= m_config->imu.forearmLengthMeters;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
@@ -769,6 +772,21 @@ void VisionThread::threadLoop()
 					// cascade two filters onto one signal
 					outputResult.poses[sideIndex].hasForearmPose= true;
 					outputResult.poses[sideIndex].forearmOrientationWorld= forearmToWorld;
+
+					// The elbow rides on both the palm position and the
+					// forearm direction, so it is only as good as the weaker
+					// of the two. Mounting quality is the one a consumer
+					// cannot see for itself: a bad mounting leaves the hand
+					// looking perfect while the elbow sweeps a cone.
+					const ImuSideStatus status= m_imuService.getSideStatus((eHandSide)sideIndex);
+					const float mountingQuality= status.forearmAxisConsistency < 0.f
+						// Not enough motion to score it yet. Treated as good
+						// because the calibration wizard refuses a mounting
+						// whose arm axis was not measurable in the first place.
+						? 1.f
+						: std::clamp(status.forearmAxisConsistency, 0.f, 1.f);
+					outputResult.poses[sideIndex].forearmConfidence=
+						outputResult.poses[sideIndex].confidence * mountingQuality;
 				}
 			}
 
