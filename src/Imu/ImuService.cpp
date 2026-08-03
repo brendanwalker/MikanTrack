@@ -199,7 +199,7 @@ void ImuService::applyVisionPalmOrientation(eHandSide side, const glm::quat& pal
 	entry.filter.updateWithYawReference(referenceSensorToWorld, m_config.visionYawSigma);
 }
 
-bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld) const
+bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld)
 {
 	if (!m_config.enabled || !m_config.mountingPresent[(int)side])
 		return false;
@@ -208,13 +208,39 @@ bool ImuService::getForearmOrientation(eHandSide side, glm::quat& outForearmToWo
 	if (deviceIndex < 0)
 		return false;
 
-	const DeviceEntry& entry= *m_devices[deviceIndex];
+	DeviceEntry& entry= *m_devices[deviceIndex];
 	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
 		return false;
 
 	// q_fw = q_sw * q_fs
 	outForearmToWorld=
 		glm::normalize(entry.filter.getOrientation() * m_config.forearmToSensor[(int)side]);
+
+	// Score the mounting against real motion. Twisting a forearm about its
+	// own long axis must leave the forearm frame's +X fixed - so when the
+	// incremental rotation is a twist, its axis should BE +X. A mounting
+	// captured at a bent wrist fails this and shows up as an elbow that
+	// sweeps a cone instead of staying put.
+	if (entry.bHasLastPublishedForearm)
+	{
+		const glm::quat delta= glm::inverse(entry.lastPublishedForearm) * outForearmToWorld;
+		const glm::vec3 axisPart(delta.x, delta.y, delta.z);
+		const float axisLength= glm::length(axisPart);
+		// Only meaningful rotation carries information about the axis
+		if (axisLength > 0.004f) // ~0.5 deg
+		{
+			const glm::vec3 axis= axisPart / axisLength;
+			const float alignment= fabsf(axis.x); // +X in the forearm's own frame
+			constexpr float kEmaAlpha= 0.05f;
+			entry.axisConsistencyEma= entry.axisConsistencyEma < 0.f
+				? alignment
+				: entry.axisConsistencyEma * (1.f - kEmaAlpha) + alignment * kEmaAlpha;
+			entry.axisConsistencySamples++;
+		}
+	}
+	entry.lastPublishedForearm= outForearmToWorld;
+	entry.bHasLastPublishedForearm= true;
+
 	return true;
 }
 
@@ -233,6 +259,12 @@ bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientatio
 	//   q_fs = inverse(q_sw) * q_palm
 	outForearmToSensor=
 		glm::normalize(glm::inverse(entry.filter.getOrientation()) * glm::normalize(palmOrientationWorld));
+
+	// A recapture invalidates the old mounting's quality score
+	DeviceEntry& mutableEntry= *m_devices[deviceIndex];
+	mutableEntry.axisConsistencyEma= -1.f;
+	mutableEntry.axisConsistencySamples= 0;
+	mutableEntry.bHasLastPublishedForearm= false;
 	return true;
 }
 
@@ -260,6 +292,8 @@ ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 	status.deviceName= entry.device->getFriendlyName();
 	status.gyroBiasDegreesPerSecond= glm::degrees(entry.filter.getGyroBias());
 	status.yawSigmaRadians= entry.filter.getOrientationSigma().z;
+	// Needs a bit of motion before it means anything
+	status.forearmAxisConsistency= entry.axisConsistencySamples >= 30 ? entry.axisConsistencyEma : -1.f;
 	status.orientationValid= status.calibrated && status.streaming && entry.filter.isTiltConverged();
 	return status;
 }

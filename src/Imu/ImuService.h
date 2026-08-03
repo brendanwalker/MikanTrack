@@ -58,6 +58,15 @@ struct ImuSideStatus
 	float batteryLevel= -1.f;
 	// -1 = never delivered a sample; large = asleep / link dropped
 	double millisecondsSinceLastSample= -1.0;
+
+	// MOUNTING QUALITY, 0..1, -1 until enough motion has been seen.
+	// Rotating a forearm about its own long axis (pronation/supination) must
+	// leave the forearm frame's +X fixed, because +X IS that axis when the
+	// mounting is right. So |dot(rotation axis, +X)| over real motion scores
+	// the calibration: near 1 = good, near 0 = the captured pose was not a
+	// straight wrist and +X points somewhere other than along the arm - which
+	// makes the elbow sweep a cone as you twist.
+	float forearmAxisConsistency= -1.f;
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
 	float yawSigmaRadians= 0.f;
 	std::string deviceName;
@@ -89,7 +98,9 @@ public:
 
 	// Forearm orientation in world space. False when that side has no
 	// calibrated, streaming, converged device.
-	bool getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld) const;
+	// NOT const: also feeds the mounting-quality metric below, which needs to
+	// watch the orientation actually being published.
+	bool getForearmOrientation(eHandSide side, glm::quat& outForearmToWorld);
 
 	// Captures the mounting rotation for one side from the CURRENT sensor
 	// orientation plus a vision palm orientation, with the wrist held
@@ -106,6 +117,12 @@ private:
 		ImuOrientationFilter filter;
 		double lastSampleTimestampMs= -1.0;
 		int reopenCooldownFrames= 0;
+
+		// Mounting-quality tracking (see ImuSideStatus::forearmAxisConsistency)
+		glm::quat lastPublishedForearm{1.f, 0.f, 0.f, 0.f};
+		bool bHasLastPublishedForearm= false;
+		float axisConsistencyEma= -1.f;
+		int axisConsistencySamples= 0;
 	};
 
 	// Index into m_devices for a wrist, honoring swapSides; -1 when none

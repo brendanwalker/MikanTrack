@@ -203,12 +203,13 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			visionThread->requestImuDeviceRefresh();
 		ImGui::SetItemTooltip("Pair Joy-Cons in Windows Bluetooth settings first");
 
-		if (ImGui::BeginTable("imu", 4, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+		if (ImGui::BeginTable("imu", 5, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
 		{
 			ImGui::TableSetupColumn("Wrist");
 			ImGui::TableSetupColumn("Device");
 			ImGui::TableSetupColumn("Rate");
 			ImGui::TableSetupColumn("Yaw drift");
+			ImGui::TableSetupColumn("Mounting");
 			ImGui::TableHeadersRow();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -253,6 +254,28 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 					ImGui::Text("%.2f deg/s", status.gyroBiasDegreesPerSecond.z);
 				else
 					ImGui::TextDisabled("-");
+
+				// Mounting quality, scored against real forearm twist
+				ImGui::TableNextColumn();
+				if (status.forearmAxisConsistency < 0.f)
+				{
+					ImGui::TextDisabled("twist to test");
+				}
+				else
+				{
+					const ImVec4 color= status.forearmAxisConsistency > 0.8f
+						? ImVec4(0.4f, 1.f, 0.5f, 1.f)
+						: (status.forearmAxisConsistency > 0.5f ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
+																: ImVec4(1.f, 0.4f, 0.4f, 1.f));
+					ImGui::TextColored(color, "%.2f", status.forearmAxisConsistency);
+				}
+				ImGui::SetItemTooltip(
+					"Mounting quality, measured from your own motion. Twisting a\n"
+					"forearm about its long axis must leave the forearm frame's\n"
+					"forward axis fixed - so this scores how well it does.\n"
+					">0.8 = good. Low means the calibration pose was not a\n"
+					"straight wrist, and the elbow will sweep a cone as you\n"
+					"twist. Rotate your forearms for a few seconds to fill it in.");
 			}
 			ImGui::EndTable();
 		}
