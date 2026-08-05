@@ -347,6 +347,58 @@ static int runApp(int argc, char** argv)
 							result= 1;
 						}
 					}
+
+					// THE MARKER DEFINES THE WORLD AXES, not just the origin.
+					// The synthetic marker above was laid down with its own
+					// pattern-right along +X and its pattern-top along +Y, so
+					// recovering a point that way round is what fixes the
+					// convention the printed sheet and its labels depend on.
+					//
+					// This is asserted separately from the raycast check
+					// because the two fail for different reasons and only one
+					// of them means "the world frame silently rotated".
+					{
+						// A point one marker-half toward the pattern's right
+						// edge, and one toward its top edge
+						const cv::Point2f rightPixel= projectTablePoint(halfLenM, 0.0);
+						const cv::Point2f topPixel= projectTablePoint(0.0, halfLenM);
+
+						glm::dvec3 rightCameraSpace, topCameraSpace;
+						const bool bCast=
+							ExtrinsicsWizard::raycastPixelOntoPlane(intrinsics, cameraFromMarker,
+																	glm::vec2(rightPixel.x, rightPixel.y),
+																	rightCameraSpace) &&
+							ExtrinsicsWizard::raycastPixelOntoPlane(intrinsics, cameraFromMarker,
+																	glm::vec2(topPixel.x, topPixel.y),
+																	topCameraSpace);
+						if (!bCast)
+						{
+							MIKAN_LOG_ERROR("test-extrinsics") << "REGRESSION: axis raycast failed";
+							result= 1;
+						}
+						else
+						{
+							const glm::dvec3 rightWorld=
+								glm::normalize(glm::dvec3(worldFromCamera * glm::dvec4(rightCameraSpace, 1.0)));
+							const glm::dvec3 topWorld=
+								glm::normalize(glm::dvec3(worldFromCamera * glm::dvec4(topCameraSpace, 1.0)));
+
+							const double rightAlongX= glm::dot(rightWorld, glm::dvec3(1.0, 0.0, 0.0));
+							const double topAlongY= glm::dot(topWorld, glm::dvec3(0.0, 1.0, 0.0));
+
+							MIKAN_LOG_INFO("test-extrinsics")
+								<< "Marker axes: pattern-right . +X = " << rightAlongX
+								<< ", pattern-top . +Y = " << topAlongY << " (both expected +1)";
+
+							if (rightAlongX < 0.99 || topAlongY < 0.99)
+							{
+								MIKAN_LOG_ERROR("test-extrinsics")
+									<< "REGRESSION: the world frame no longer matches the printed marker's "
+									   "labels - pattern-right must be world +X and pattern-top world +Y";
+								result= 1;
+							}
+						}
+					}
 				}
 
 				if (result == 0)

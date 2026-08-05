@@ -279,6 +279,15 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				"the tracking space. ALL cameras are calibrated in this one session so they "
 				"agree on the same marker placement; make sure every camera can see it.");
 
+			ImGui::Spacing();
+			// The marker defines the world AXES, not just the origin, and a
+			// sheet laid down turned gives tracking that is self-consistent
+			// and points the wrong way - which reads as a tracking fault
+			ImGui::TextWrapped(
+				"ORIENTATION MATTERS: lay the sheet down the way it reads, with the printed "
+				"FORWARD arrow pointing away from you. That makes the tracking world +X "
+				"forward, +Y left, +Z up.");
+
 			ImGui::InputInt("Marker ID", &m_markerId);
 			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.0f");
 
@@ -294,7 +303,8 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 					PathUtils::getResourceDirectory() / "calibration" / "aruco_marker.png";
 				try
 				{
-					if (generateArucoMarkerPng(exportPath, m_markerId, eCharucoDictionaryType::DICT_6X6, 1000))
+					if (generateArucoMarkerPng(exportPath, m_markerId, eCharucoDictionaryType::DICT_6X6, 1000,
+											   m_markerLengthMM))
 					{
 						MIKAN_LOG_INFO("ExtrinsicsWizard") << "Exported aruco marker to " << exportPath;
 					}
