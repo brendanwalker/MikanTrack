@@ -380,6 +380,7 @@ void VisionThread::refreshConfigOnThread()
 		// The streamer derives the elbow from the forearm direction, so it
 		// needs the same length the rest of the app uses
 		oscConfig.forearmLengthMeters= m_config->imu.forearmLengthMeters;
+		oscConfig.logPalmFrames= m_config->osc.logPalmFrames;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }

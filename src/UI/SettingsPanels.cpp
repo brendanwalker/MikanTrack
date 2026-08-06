@@ -554,9 +554,16 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		"2-10 frame losses so the client doesn't slam to its rest-pose\n"
 		"blend and back. 0 = report dropouts immediately.");
 
+	bChanged|= ImGui::Checkbox("Log palm frames", &osc.logPalmFrames);
+	ImGui::SetItemTooltip(
+		"Writes every palm transform to the log as it goes on the wire,\n"
+		"tagged with the frame id, so it can be diffed against a client's\n"
+		"own receive log to prove what did or did not arrive.\n"
+		"One line per hand per frame - leave it off for normal use.");
+
 	ImGui::Separator();
 	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
-	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: radians on the wire, degrees below");
+	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: degrees on the wire");
 
 	// Live readout of exactly what's being streamed: palm transform + the 20
 	// finger angles per hand (shown in degrees)

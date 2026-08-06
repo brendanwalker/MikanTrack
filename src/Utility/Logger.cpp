@@ -143,8 +143,13 @@ std::string log_get_timestamp_prefix()
 	auto milliseconds= std::chrono::duration_cast<std::chrono::milliseconds>(now - seconds);
 	time_t in_time_t= std::chrono::system_clock::to_time_t(now);
 
+	// Milliseconds are ZERO PADDED to three digits. Without the padding, 7ms
+	// prints as ".7", which any reader parses as 700ms - so a perfectly
+	// regular 33ms cadence reads back as a stream of 300-800ms stalls. That
+	// silently inverted a real diagnosis once already.
 	std::stringstream ss;
-	ss << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "." << milliseconds.count() << "]: ";
+	ss << "[" << std::put_time(std::localtime(&in_time_t), "%Y-%m-%d %H:%M:%S") << "." << std::setfill('0')
+	   << std::setw(3) << milliseconds.count() << "]: ";
 
 	return ss.str();
 }

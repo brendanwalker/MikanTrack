@@ -305,6 +305,7 @@ bool AppConfig::load()
 		osc.maxRateHz= os.value("maxRateHz", 60);
 		osc.minConfidence= os.value("minConfidence", 0.f);
 		osc.holdOnDropoutMs= os.value("holdOnDropoutMs", 250.f);
+		osc.logPalmFrames= os.value("logPalmFrames", false);
 	}
 	catch (const std::exception& e)
 	{
@@ -391,6 +392,7 @@ std::string AppConfig::toJsonString() const
 		{"maxRateHz", osc.maxRateHz},
 		{"minConfidence", osc.minConfidence},
 		{"holdOnDropoutMs", osc.holdOnDropoutMs},
+		{"logPalmFrames", osc.logPalmFrames},
 	};
 
 	return j.dump(2);

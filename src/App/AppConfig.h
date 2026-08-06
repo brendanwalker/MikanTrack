@@ -89,6 +89,10 @@ struct OscConfig
 	// long after a dropout before reporting tracked=0 - bridges brief losses
 	// so clients don't slam to their rest-pose blend. 0 = report immediately.
 	float holdOnDropoutMs= 250.f;
+	// Log every palm transform as it goes onto the wire, for diffing against
+	// what a client reports receiving. Off by default: this is one line per
+	// hand per frame.
+	bool logPalmFrames= false;
 };
 
 // Everything specific to one physical camera. Each camera calibrates
