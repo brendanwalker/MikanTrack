@@ -3,6 +3,8 @@
 #include "Logger.h"
 #include "TrackingTypes.h"
 
+#include <cstdio>
+
 // Per-side OSC address tables, indexed by eHandSide (Left= 0, Right= 1)
 static const char* k_handTrackedAddress[2]= {"/mikan/hand/left/tracked", "/mikan/hand/right/tracked"};
 static const char* k_handPalmAddress[2]= {"/mikan/hand/left/palm", "/mikan/hand/right/palm"};
@@ -45,6 +47,9 @@ bool OscStreamer::startup()
 	m_isRunning= true;
 	m_lastSendTimestampMs= -1.0;
 	m_hasSentInfo= false;
+	// Restart the sequence with the socket, so a client that reconnects sees
+	// a clean discontinuity rather than a phantom loss of thousands
+	m_sendSequence= 0;
 	m_sentInWindow= 0;
 	m_statsWindowStart= std::chrono::steady_clock::now();
 	m_messagesPerSecond.store(0.f, std::memory_order_relaxed);
@@ -109,11 +114,17 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 	m_bundle.clear();
 	m_bundle.setTimeTag(k_oscTimeTagImmediate);
 
-	// /mikan/frame ,iif frameId timestampMs fps
+	// /mikan/frame ,iifi frameId timestampMs fps sendSequence
+	//
+	// The sequence is appended rather than placed first so that a client
+	// reading the original three arguments positionally keeps working.
+	// Incremented here, past the rate gate, so it counts bundles SENT rather
+	// than frames considered - that is what makes a gap mean packet loss.
 	OscMessage& frameMessage= m_bundle.addMessage(k_frameAddress);
 	frameMessage.addInt32(static_cast<int32_t>(frame.frameIndex));
 	frameMessage.addInt32(static_cast<int32_t>(frame.timestampMs));
 	frameMessage.addFloat(frame.captureFps);
+	frameMessage.addInt32(m_sendSequence++);
 
 	// Skeleton geometry is slowly varying - ride the 1 Hz info cadence
 	const ClockTimePoint now= std::chrono::steady_clock::now();
@@ -248,6 +259,21 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 		.addFloat(palmOrientation.y)
 		.addFloat(palmOrientation.z)
 		.addFloat(palmOrientation.w);
+
+	// Diff log against a client's receive log. Emitted from the same locals
+	// that were just encoded, not from the pose, so it cannot drift from what
+	// actually went on the wire. frame is the join key with the receiver,
+	// which reads it from the /mikan/frame message earlier in this bundle.
+	if (m_config.logPalmFrames)
+	{
+		char palmLine[256];
+		snprintf(palmLine, sizeof(palmLine),
+				 "PALM SEND frame=%lld side=%s pos=%.6f,%.6f,%.6f quat=%.6f,%.6f,%.6f,%.6f",
+				 (long long)frame.frameIndex, sideIndex == 0 ? "left" : "right", palmPosition.x,
+				 palmPosition.y, palmPosition.z, palmOrientation.x, palmOrientation.y, palmOrientation.z,
+				 palmOrientation.w);
+		MIKAN_LOG_INFO("OscPalmSend") << palmLine;
+	}
 
 	// /mikan/hand/{s}/wrist ,iffffffff -- valid + forearm orientation (world,
 	// xyzw) + wrist joint rotation (xyzw). The wrist rotation is the palm

@@ -34,6 +34,9 @@ struct OscStreamerConfig
 	// length is assumed; the direction is measured, so an error here slides
 	// the elbow along the forearm rather than rotating it.
 	float forearmLengthMeters= 0.25f;
+	// Log each palm transform as it is encoded, so a client's receive log can
+	// be diffed against it frame for frame. One line per hand per frame.
+	bool logPalmFrames= false;
 	std::string appVersion= "MikanMediaPipe";
 };
 
@@ -42,7 +45,13 @@ struct OscStreamerConfig
 ///
 /// Bundle layout (positions in world/marker space meters when available,
 /// otherwise camera space — the active space is reported via /mikan/info):
-///   /mikan/frame ,iif frameId timestampMs fps
+///   /mikan/frame ,iifi frameId timestampMs fps sendSequence
+///     sendSequence increments by exactly one per bundle actually sent, so a
+///     client can measure packet loss. frameId CANNOT do that job: it is the
+///     capture index of whichever camera produced the newest result, so with
+///     several cameras it repeats, skips, and steps backwards (measured at
+///     11.7% backwards steps on a two-camera rig). It is kept because it
+///     identifies the capture, not the transmission.
 ///   per side s in {left,right}:
 ///     /mikan/hand/{s}/tracked ,iff tracked(0|1) presence confidence
 ///     /mikan/hand/{s}/elbow ,ffff position xyz + confidence [0,1].
@@ -135,6 +144,9 @@ private:
 
 	// Per-frame encode state (reused to stay allocation-light)
 	OscBundle m_bundle;
+
+	// Increments once per bundle actually put on the wire; the client's loss counter
+	int32_t m_sendSequence= 0;
 	std::vector<uint8_t> m_scratchBuffer;
 
 	// Dropout hold state per side
