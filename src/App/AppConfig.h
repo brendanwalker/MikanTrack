@@ -199,6 +199,10 @@ public:
 	// Guarantees cameras.size() >= 1 afterwards.
 	bool load();
 	bool save() const;
+	// Parses the same schema load() reads from an in-memory JSON string.
+	// Tracking recordings embed a config snapshot in their header; replay
+	// reconstructs the recorded AppConfig through this.
+	bool loadFromJsonString(const std::string& jsonText);
 	// Serialized live config (same schema save() writes) - diagnostic dumps
 	// embed this so a dump always reflects unsaved in-UI changes too
 	std::string toJsonString() const;
@@ -211,6 +215,10 @@ public:
 	// Fresh timestamped folder path for a diagnostic dump:
 	// <config dir>/dumps/<yyyy-mm-dd_hh-mm-ss> (not created here)
 	static std::string makeDumpDirectoryPath();
+	// Fresh timestamped file path for a tracking recording:
+	// <config dir>/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl (directory created)
+	static std::string makeRecordingFilePath();
+	static std::string getRecordingsDirectoryPath();
 
 private:
 	bool m_bDirty= false;

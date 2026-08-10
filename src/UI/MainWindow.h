@@ -13,6 +13,7 @@ class ExtrinsicsWizard;
 class IntrinsicsWizard;
 class MountingWizard;
 class Scene3dPanel;
+class TimelinePanel;
 class VideoPreviewPanel;
 
 // Owns the ImGui layout: dockspace, menu bar, all panels and the calibration
@@ -43,6 +44,7 @@ private:
 	std::unique_ptr<IntrinsicsWizard> m_intrinsicsWizard;
 	std::unique_ptr<ExtrinsicsWizard> m_extrinsicsWizard;
 	std::unique_ptr<MountingWizard> m_mountingWizard;
+	std::unique_ptr<TimelinePanel> m_timelinePanel;
 
 	// Latest per-camera previews + the fused result (kept between updates so
 	// the UI still has data when no new frame arrived this tick)

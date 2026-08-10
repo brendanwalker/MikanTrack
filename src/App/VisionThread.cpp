@@ -150,6 +150,73 @@ ImuSideStatus VisionThread::getImuSideStatus(eHandSide side) const
 	return m_imuStatus[(int)side];
 }
 
+void VisionThread::requestRecordingStart(const std::string& filePath)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_recordingMutex);
+		m_requestedRecordingPath= filePath;
+	}
+	m_bRecordingStartRequested= true;
+}
+
+void VisionThread::requestRecordingStop()
+{
+	m_bRecordingStopRequested= true;
+}
+
+std::string VisionThread::getLastRecordingPath()
+{
+	std::lock_guard<std::mutex> lock(m_recordingMutex);
+	return m_lastRecordingPath;
+}
+
+void VisionThread::handleRecordingStartOnThread()
+{
+	std::string filePath;
+	{
+		std::lock_guard<std::mutex> lock(m_recordingMutex);
+		filePath= m_requestedRecordingPath;
+	}
+	if (filePath.empty())
+		return;
+
+	// Reset the transient tracking state so replay's freshly constructed
+	// instances start from the identical zero state as live. Also invalidate
+	// every camera's fusion input: a pre-recording lastResult would feed the
+	// first fuses with data the file cannot reproduce. m_autoScaleFactor is
+	// deliberately NOT reset - the effective ref length is recorded per frame
+	// as a plain input, and resetting the EMA would blip the live hand scale.
+	m_fusion.resetTransientState();
+	for (std::unique_ptr<CameraContext>& context : m_cameras)
+	{
+		if (context->landmarkTo3D != nullptr)
+			context->landmarkTo3D->resetTransientState();
+		context->lastResult= CameraFrameResult();
+		context->lastResult.cameraIndex= context->cameraIndex;
+		context->bPendingRecordFresh= false;
+	}
+	m_recordingSeq= 0;
+
+	RecordingHeader header;
+	header.formatVersion= TrackingRecording::k_formatVersion;
+	header.appConfigJsonText= m_config->toJsonString();
+	header.cameraCount= (int)m_cameras.size();
+
+	if (m_recorder == nullptr)
+		m_recorder= std::make_unique<TrackingRecorder>();
+	m_recorder->start(filePath, TrackingRecording::headerToJson(header));
+}
+
+void VisionThread::finalizeRecordingOnThread(bool bAborted, const std::string& reason)
+{
+	if (m_recorder == nullptr || !m_recorder->isRecording())
+		return;
+
+	m_recorder->stop(bAborted, reason);
+	std::lock_guard<std::mutex> lock(m_recordingMutex);
+	m_lastRecordingPath= m_recorder->getFilePath();
+}
+
 void VisionThread::requestDiagnosticDump(const std::string& dumpDir)
 {
 	{
@@ -634,6 +701,31 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 		for (TrackedHand& hand : result.hands)
 			HandRoiQuality::analyzeHand(*activeFrame, hand);
 
+		// Recording tap, part 1: the pipeline-output hands, exactly as the
+		// LandmarkTo3D call below consumes them
+		if (m_recorder != nullptr && m_recorder->isRecording())
+		{
+			context.pendingRecordInput.bHaveDepth= false;
+			context.pendingRecordInput.refLengthMeters= 0.f;
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const TrackedHand& hand= result.hands[sideIndex];
+				RecordedHandInput& outHand= context.pendingRecordInput.hands[sideIndex];
+				outHand= RecordedHandInput();
+				outHand.tracked= hand.tracked;
+				if (!hand.tracked)
+					continue;
+				outHand.side= (int)hand.side;
+				outHand.slotId= hand.slotId;
+				outHand.presence= hand.presence;
+				outHand.handednessScore= hand.handednessScore;
+				outHand.rightProb= hand.rightProb;
+				outHand.imagePoints= hand.imagePoints;
+				outHand.modelPoints= hand.modelPoints;
+				outHand.imageQuality= hand.imageQuality;
+			}
+		}
+
 		// Image space -> camera space (needs intrinsics + hand scale)
 		if (context.landmarkTo3D != nullptr)
 		{
@@ -644,6 +736,18 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 			const bool bHaveDepth= m_config->tracking.useRealSenseDepth &&
 				sampleHandDepth(context, profile, result, depthMeasurements);
 
+			// Recording tap, part 2: the depth measurements and the hand
+			// scale in effect for this exact process() call (the auto-scale
+			// EMA feedback loop becomes a recorded input)
+			if (m_recorder != nullptr && m_recorder->isRecording())
+			{
+				context.pendingRecordInput.bHaveDepth= bHaveDepth;
+				if (bHaveDepth)
+					context.pendingRecordInput.depth= depthMeasurements;
+				context.pendingRecordInput.refLengthMeters=
+					context.landmarkTo3D->getRefLengthMeters();
+			}
+
 			context.landmarkTo3D->process(result, bHaveDepth ? &depthMeasurements : nullptr);
 
 			// Camera space -> marker/world space (needs extrinsics)
@@ -652,6 +756,27 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 		}
 
 		bProducedTracking= true;
+	}
+
+	// Recording tap, part 3: frame metadata + the fresh flag. A popped frame
+	// with tracking disabled records as fresh-but-invalid (replay advances
+	// that camera's mirror timestamp without running LandmarkTo3D).
+	if (m_recorder != nullptr && m_recorder->isRecording())
+	{
+		RecordedCameraInput& record= context.pendingRecordInput;
+		if (!bProducedTracking)
+			record= RecordedCameraInput();
+		record.cameraIndex= context.cameraIndex;
+		record.timestampMs= timestampMs;
+		record.valid= bProducedTracking;
+		record.frameIndex= frameIndex;
+		record.frameWidth= result.frameWidth;
+		record.frameHeight= result.frameHeight;
+		record.captureFps= result.captureFps;
+		record.inferenceMs= result.inferenceMs;
+		record.lumaInstability= result.lumaInstability;
+		record.lumaFlickerHz= result.lumaFlickerHz;
+		context.bPendingRecordFresh= true;
 	}
 
 	// Store the fusion input
@@ -752,7 +877,17 @@ void VisionThread::threadLoop()
 	while (m_bRunning)
 	{
 		if (m_bConfigRefreshRequested.exchange(false))
+		{
+			// A refresh wipes fusion inputs and resets fusion state - a hard
+			// discontinuity the recording's header snapshot cannot describe
+			finalizeRecordingOnThread(false, "config changed");
 			refreshConfigOnThread();
+		}
+		if (m_bRecordingStopRequested.exchange(false))
+			finalizeRecordingOnThread(false, "");
+		// Start AFTER any refresh so the header snapshot reflects it
+		if (m_bRecordingStartRequested.exchange(false))
+			handleRecordingStartOnThread();
 
 		// Process whichever cameras have a new frame (sequential; DirectML
 		// serializes on one GPU queue anyway)
@@ -794,10 +929,22 @@ void VisionThread::threadLoop()
 			bAnyWorldCandidate|= context->lastResult.valid && context->lastResult.hasExtrinsics;
 		}
 
+		RecordedFrame recordFrame;
+		const bool bRecordingThisFrame= m_recorder != nullptr && m_recorder->isRecording();
+
 		TrackingFrameResult outputResult;
 		if (bAnyWorldCandidate)
 		{
 			m_fusion.fuse(fusionCandidates, newestTimestampMs, outputResult);
+
+			// Recording: fused output + checksum, PRE-IMU (the forearm fill
+			// below mutates the poses; replay checksums at this same point)
+			if (bRecordingThisFrame)
+			{
+				recordFrame.bFused= true;
+				TrackingRecording::snapshotFusedOutput(outputResult, recordFrame.outPoses);
+				recordFrame.checksum= TrackingRecording::computeFusedChecksum(outputResult);
+			}
 
 			// -- Wrist IMU ---------------------------------------------
 			// Integrate every buffered inertial sample (they carry their own
@@ -866,6 +1013,20 @@ void VisionThread::threadLoop()
 				}
 			}
 
+			// Recording: the published forearm output. The IMU EKF is not
+			// replayed (fusion never reads it); replay overlays these onto the
+			// replayed poses for display.
+			if (bRecordingThisFrame)
+			{
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					const HandPose& pose= outputResult.poses[sideIndex];
+					recordFrame.imu[sideIndex].hasForearmPose= pose.hasForearmPose;
+					recordFrame.imu[sideIndex].forearmOrientationWorld= pose.forearmOrientationWorld;
+					recordFrame.imu[sideIndex].forearmConfidence= pose.forearmConfidence;
+				}
+			}
+
 			// Mounting capture: needs a tracked palm AND a converged filter
 			if (m_bImuMountingCaptureRequested.exchange(false))
 			{
@@ -930,6 +1091,16 @@ void VisionThread::threadLoop()
 			lastFusedForHints= TrackingFrameResult(); // camera-space - can't project
 			m_dominantCamera[0]= -1;
 			m_dominantCamera[1]= -1;
+
+			// Recording: passthrough frames checksum too (replay reconstructs
+			// them from its own camera-0 mirror, so this still verifies the
+			// LandmarkTo3D stage)
+			if (bRecordingThisFrame)
+			{
+				recordFrame.bFused= false;
+				TrackingRecording::snapshotFusedOutput(outputResult, recordFrame.outPoses);
+				recordFrame.checksum= TrackingRecording::computeFusedChecksum(outputResult);
+			}
 		}
 
 		if (m_oscStreamer != nullptr)
@@ -1013,9 +1184,30 @@ void VisionThread::threadLoop()
 								 dominant, m_autoScaleFactor.load(), imuStates);
 		}
 
+		// Recording: assemble this iteration's record (the fresh cameras'
+		// staged inputs + the fused output taps above) and hand it to the
+		// writer thread
+		if (bRecordingThisFrame)
+		{
+			recordFrame.seq= m_recordingSeq++;
+			recordFrame.nowTimestampMs= newestTimestampMs;
+			for (std::unique_ptr<CameraContext>& context : m_cameras)
+			{
+				if (context->bPendingRecordFresh)
+				{
+					recordFrame.freshCameras.push_back(context->pendingRecordInput);
+					context->bPendingRecordFresh= false;
+				}
+			}
+			m_recorder->enqueueFrame(std::move(recordFrame));
+		}
+
 		if (m_bDumpRequested.exchange(false))
 			performDiagnosticDump(lastOutputResult);
 	}
+
+	// Finalize an in-flight recording before the contexts are torn down
+	finalizeRecordingOnThread(false, "vision thread stopped");
 
 	// ORT sessions must be destroyed on this thread
 	m_cameras.clear();

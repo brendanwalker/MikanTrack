@@ -60,6 +60,21 @@ client-side with Two-Bone IK from the palm transform.
   camera's current frame (raw + annotated PNG) to
   `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
   tracking misbehaves and attach the folder to a bug report
+- **Tracking recording + deterministic replay (F10 / Timeline panel)**:
+  records every input to the post-MediaPipe stages (per-camera landmarks,
+  depth samples, timestamps - no video, ~1 MB/s) as JSONL under
+  `%APPDATA%/MikanMediaPipe/recordings/`, then re-runs the whole
+  triangulation/fusion/smoothing pipeline offline, verified bit-exact by
+  per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
+  the 3D scene view, marks any divergent frames, and re-simulates the same
+  incident with edited fusion parameters ("what-if") to judge a candidate
+  fix against the recorded original. Headless:
+  `MikanMediaPipe --replay-verify <file>` re-verifies a recording;
+  `MikanMediaPipe --replay-dump <file> <first> <last>` emits a frame range
+  with regenerated fusion diagnostics for offline analysis. Starting a
+  recording resets transient tracking state (brief blip); editing tracking
+  settings mid-recording finalizes the file. Checksums only verify against
+  the same build that recorded them.
 
 ## Building
 

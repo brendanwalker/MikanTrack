@@ -8,45 +8,12 @@
 #include "opencv2/imgproc.hpp"
 
 #include "Logger.h"
+#include "TrackingJson.h"
 
 using json= nlohmann::json;
 
-// -- json helpers ----
-static json vec2ToJson(const glm::vec2& v)
-{
-	return json::array({v.x, v.y});
-}
-
-static json vec3ToJson(const glm::vec3& v)
-{
-	return json::array({v.x, v.y, v.z});
-}
-
-static json quatToJson(const glm::quat& q)
-{
-	return json::array({q.x, q.y, q.z, q.w}); // xyzw, matching the OSC schema
-}
-
-static const char* sideName(int side)
-{
-	return side == 0 ? "left" : (side == 1 ? "right" : "none");
-}
-
-static json fingersToJson(const std::array<FingerAngles, FINGER_COUNT>& fingers)
-{
-	json out= json::array();
-	for (const FingerAngles& angles : fingers)
-		out.push_back(json::array({angles.lateral, angles.proximal, angles.intermediate, angles.distal}));
-	return out;
-}
-
-static json landmarksToJson(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points)
-{
-	json out= json::array();
-	for (const glm::vec3& p : points)
-		out.push_back(vec3ToJson(p));
-	return out;
-}
+// json helpers shared with the tracking recorder/replay live in TrackingJson
+using namespace TrackingJson;
 
 static json diagImuToJson(const DiagImuState& imu)
 {
@@ -77,19 +44,6 @@ static json diagImuToJson(const DiagImuState& imu)
 	};
 }
 
-static json imageQualityToJson(const HandImageQuality& quality)
-{
-	return {
-		{"meanLuma", quality.meanLuma},
-		{"shadowClipRatio", quality.shadowClipRatio},
-		{"highlightClipRatio", quality.highlightClipRatio},
-		{"contrast", quality.contrast},
-		{"backgroundSeparation", quality.backgroundSeparation},
-		{"sharpness", quality.sharpness},
-		{"noise", quality.noise},
-	};
-}
-
 static json diagHandToJson(const DiagHandState& hand)
 {
 	if (!hand.tracked)
@@ -117,57 +71,6 @@ static json diagHandToJson(const DiagHandState& hand)
 	if (hand.imageQuality.valid)
 		out["imageQuality"]= imageQualityToJson(hand.imageQuality);
 	return out;
-}
-
-static json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
-{
-	json clusters= json::array();
-	for (const FusionDiagnostics::Cluster& cluster : diagnostics.clusters)
-	{
-		json observations= json::array();
-		for (const FusionDiagnostics::Observation& observation : cluster.observations)
-		{
-			observations.push_back({
-				{"camera", observation.cameraIndex},
-				{"labeledSide", sideName(observation.labeledSide)},
-				{"weight", observation.weight},
-				{"confidence", observation.confidence},
-				{"stability", observation.stability},
-				{"jitterMm", observation.jitterMm},
-				{"sideVoteWeight", observation.sideVoteWeight},
-				{"palmWorld", vec3ToJson(observation.palmWorld)},
-			});
-		}
-
-		json affinity;
-		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-		{
-			affinity[sideName(sideIndex)]= {
-				{"vote", cluster.affinity[sideIndex][0]},
-				{"temporal", cluster.affinity[sideIndex][1]},
-				{"spatial", cluster.affinity[sideIndex][2]},
-				{"total",
-				 cluster.affinity[sideIndex][0] + cluster.affinity[sideIndex][1] + cluster.affinity[sideIndex][2]},
-			};
-		}
-
-		clusters.push_back({
-			{"palmWorld", vec3ToJson(cluster.palmWorld)},
-			{"bestWeight", cluster.bestWeight},
-			{"assignedSide", sideName(cluster.assignedSide)},
-			{"triangulated", cluster.triangulated},
-			{"triVetoed", cluster.triVetoed},
-			{"triResidualRmsPx", cluster.triResidualRmsPx},
-			{"triResidualMaxPx", cluster.triResidualMaxPx},
-			{"affinity", affinity},
-			{"observations", observations},
-		});
-	}
-
-	return {
-		{"totalObservations", diagnostics.totalObservations},
-		{"clusters", clusters},
-	};
 }
 
 static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIndex, DiagHandState& outHand)

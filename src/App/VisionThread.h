@@ -13,6 +13,7 @@
 #include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
 #include "HandRoiQuality.h" // LumaFlickerTracker
+#include "TrackingRecorder.h"
 #include "TrackingTypes.h"
 
 class AppConfig;
@@ -137,6 +138,23 @@ public:
 	// returns false if none is pending
 	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused);
 
+	// Tracking recording: captures every input to the post-MediaPipe stages
+	// (per-camera landmarks, depth measurements, timestamps, IMU forearm
+	// output) so the tracking pipeline can be re-run offline bit-exactly.
+	// Starting a recording RESETS the transient tracking state (filters,
+	// jitter EMAs, PnP warm starts, palmar memories) - replay runs on fresh
+	// instances, so live must start from the same zero state. A config
+	// refresh while recording finalizes the file (the header's config
+	// snapshot must describe every frame).
+	void requestRecordingStart(const std::string& filePath);
+	void requestRecordingStop();
+	bool isRecording() const { return m_recorder != nullptr && m_recorder->isRecording(); }
+	int64_t getRecordingFrameCount() const { return m_recorder != nullptr ? m_recorder->getFrameCount() : 0; }
+	uint64_t getRecordingBytes() const { return m_recorder != nullptr ? m_recorder->getBytesWritten() : 0; }
+	bool didLastRecordingAbort() const { return m_recorder != nullptr && m_recorder->wasAborted(); }
+	// Path of the last finalized recording ("" until one completes)
+	std::string getLastRecordingPath();
+
 	// Diagnostic dump (F9): the vision thread writes its rolling state history,
 	// the current camera frames (raw + annotated PNGs) and the live config to
 	// dumpDir on its next loop iteration
@@ -191,6 +209,12 @@ private:
 		// Cross-camera seeding retry throttle (a failed speculative landmark
 		// pass costs a few ms - don't pay it every frame)
 		int hintCooldownFrames= 0;
+
+		// Recording staging: this camera's inputs for the current iteration,
+		// gathered in processCameraFrame and consumed when the frame record
+		// is assembled after fusion
+		RecordedCameraInput pendingRecordInput;
+		bool bPendingRecordFresh= false;
 	};
 
 	void threadLoop();
@@ -257,6 +281,22 @@ private:
 	std::vector<RestPoseCapture> m_capturedRestPose;
 	RestPoseCapture m_capturedFusedRest;
 	bool m_bRestPoseReady= false;
+
+	// Consumes a pending recording start request on the vision thread (state
+	// reset + header snapshot + recorder start)
+	void handleRecordingStartOnThread();
+	// Finalizes an active recording on the vision thread
+	void finalizeRecordingOnThread(bool bAborted, const std::string& reason);
+
+	// Tracking recorder (vision thread owns it; UI reads atomics through the
+	// accessors above)
+	std::unique_ptr<TrackingRecorder> m_recorder;
+	std::atomic_bool m_bRecordingStartRequested{false};
+	std::atomic_bool m_bRecordingStopRequested{false};
+	std::mutex m_recordingMutex;
+	std::string m_requestedRecordingPath;
+	std::string m_lastRecordingPath;
+	int64_t m_recordingSeq= 0;
 
 	// Diagnostic dump: history lives on the vision thread; the request path
 	// and completion path are the only cross-thread strings (mutex-guarded)

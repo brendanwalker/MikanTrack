@@ -210,6 +210,32 @@ std::string AppConfig::makeDumpDirectoryPath()
 	return (configDir / "dumps" / stamp).string();
 }
 
+std::string AppConfig::getRecordingsDirectoryPath()
+{
+	const std::filesystem::path configDir= std::filesystem::path(getConfigFilePath()).parent_path();
+	return (configDir / "recordings").string();
+}
+
+std::string AppConfig::makeRecordingFilePath()
+{
+	const std::filesystem::path recordingsDir(getRecordingsDirectoryPath());
+	std::error_code ec;
+	std::filesystem::create_directories(recordingsDir, ec);
+
+	const std::time_t now= std::time(nullptr);
+	std::tm local{};
+	localtime_s(&local, &now);
+	char stamp[32];
+	std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &local);
+
+	return (recordingsDir / (std::string(stamp) + ".jsonl")).string();
+}
+
+// Applies a parsed config JSON onto the config object (shared by load() and
+// loadFromJsonString()). Throws on malformed structure; the callers own the
+// error handling and camera-list guarantee.
+static void applyConfigJson(AppConfig& config, const json& j);
+
 bool AppConfig::load()
 {
 	const std::string path= getConfigFilePath();
@@ -224,88 +250,7 @@ bool AppConfig::load()
 	{
 		json j;
 		file >> j;
-
-		cameras.clear();
-		if (j.contains("cameras") && j["cameras"].is_array())
-		{
-			for (const json& cameraJson : j["cameras"])
-			{
-				CameraProfile profile;
-				cameraProfileFromJson(cameraJson, profile);
-				cameras.push_back(profile);
-			}
-		}
-		else
-		{
-			// v1 migration: the old schema kept a single camera's video/
-			// intrinsics/extrinsics at the top level - fold into cameras[0]
-			CameraProfile profile;
-			cameraProfileFromJson(j, profile);
-			cameras.push_back(profile);
-			MIKAN_LOG_INFO("AppConfig::load") << "Migrated v1 single-camera config to camera list";
-		}
-		if (cameras.empty())
-			cameras.emplace_back();
-
-		const json& fu= j.value("fusion", json::object());
-		fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
-		fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
-		fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
-		fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
-		fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
-		fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
-		fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
-		fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
-
-		restAnglesFromJson(j.value("fusedRestAngles", json::object()), fusedRestAngles);
-
-		const json& im= j.value("imu", json::object());
-		imu.enabled= im.value("enabled", true);
-		imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
-		imu.swapSides= im.value("swapSides", false);
-		imu.forearmLengthMeters= im.value("forearmLengthMeters", 0.25f);
-		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-		{
-			const char* key= sideIndex == 0 ? "mountingLeft" : "mountingRight";
-			imu.mountingPresent[sideIndex]= false;
-			if (!im.contains(key) || !im[key].is_array() || im[key].size() != 4)
-				continue;
-			imu.forearmToSensor[sideIndex]=
-				glm::quat((float)im[key][3], (float)im[key][0], (float)im[key][1], (float)im[key][2]);
-			imu.mountingPresent[sideIndex]= true;
-		}
-
-		const json& hs= j.value("handScale", json::object());
-		handScale.present= hs.value("present", false);
-		handScale.refLengthMeters= hs.value("refLengthMeters", 0.08);
-
-		const json& cb= j.value("charucoBoard", json::object());
-		charucoBoard.cols= cb.value("cols", 11);
-		charucoBoard.rows= cb.value("rows", 8);
-		charucoBoard.squareLengthMM= cb.value("squareMm", 16.0);
-		charucoBoard.markerLengthMM= cb.value("markerMm", 12.0);
-
-		const json& tr= j.value("tracking", json::object());
-		tracking.flipHandedness= tr.value("flipHandedness", true);
-		tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
-		tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
-		tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
-		tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
-		tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
-		tracking.palmBeta= tr.value("palmBeta", 0.1f);
-		tracking.angleMinCutoff= tr.value("angleMinCutoff", 0.75f);
-		tracking.angleBeta= tr.value("angleBeta", 0.02f);
-		tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
-		tracking.onnxEp= tr.value("onnxEp", "directml");
-
-		const json& os= j.value("osc", json::object());
-		osc.enabled= os.value("enabled", true);
-		osc.targetIp= os.value("ip", "127.0.0.1");
-		osc.targetPort= os.value("port", 8000);
-		osc.maxRateHz= os.value("maxRateHz", 60);
-		osc.minConfidence= os.value("minConfidence", 0.f);
-		osc.holdOnDropoutMs= os.value("holdOnDropoutMs", 250.f);
-		osc.logPalmFrames= os.value("logPalmFrames", false);
+		applyConfigJson(*this, j);
 	}
 	catch (const std::exception& e)
 	{
@@ -317,6 +262,107 @@ bool AppConfig::load()
 
 	MIKAN_LOG_INFO("AppConfig::load") << "Loaded config from " << path;
 	return true;
+}
+
+bool AppConfig::loadFromJsonString(const std::string& jsonText)
+{
+	try
+	{
+		applyConfigJson(*this, json::parse(jsonText));
+	}
+	catch (const std::exception& e)
+	{
+		MIKAN_LOG_ERROR("AppConfig::loadFromJsonString") << "Failed to parse: " << e.what();
+		if (cameras.empty())
+			cameras.emplace_back();
+		return false;
+	}
+	return true;
+}
+
+static void applyConfigJson(AppConfig& config, const json& j)
+{
+	config.cameras.clear();
+	if (j.contains("cameras") && j["cameras"].is_array())
+	{
+		for (const json& cameraJson : j["cameras"])
+		{
+			CameraProfile profile;
+			cameraProfileFromJson(cameraJson, profile);
+			config.cameras.push_back(profile);
+		}
+	}
+	else
+	{
+		// v1 migration: the old schema kept a single camera's video/
+		// intrinsics/extrinsics at the top level - fold into cameras[0]
+		CameraProfile profile;
+		cameraProfileFromJson(j, profile);
+		config.cameras.push_back(profile);
+		MIKAN_LOG_INFO("AppConfig::load") << "Migrated v1 single-camera config to camera list";
+	}
+	if (config.cameras.empty())
+		config.cameras.emplace_back();
+
+	const json& fu= j.value("fusion", json::object());
+	config.fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
+	config.fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
+	config.fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
+	config.fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
+	config.fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
+	config.fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
+	config.fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
+	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
+
+	restAnglesFromJson(j.value("fusedRestAngles", json::object()), config.fusedRestAngles);
+
+	const json& im= j.value("imu", json::object());
+	config.imu.enabled= im.value("enabled", true);
+	config.imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
+	config.imu.swapSides= im.value("swapSides", false);
+	config.imu.forearmLengthMeters= im.value("forearmLengthMeters", 0.25f);
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const char* key= sideIndex == 0 ? "mountingLeft" : "mountingRight";
+		config.imu.mountingPresent[sideIndex]= false;
+		if (!im.contains(key) || !im[key].is_array() || im[key].size() != 4)
+			continue;
+		config.imu.forearmToSensor[sideIndex]=
+			glm::quat((float)im[key][3], (float)im[key][0], (float)im[key][1], (float)im[key][2]);
+		config.imu.mountingPresent[sideIndex]= true;
+	}
+
+	const json& hs= j.value("handScale", json::object());
+	config.handScale.present= hs.value("present", false);
+	config.handScale.refLengthMeters= hs.value("refLengthMeters", 0.08);
+
+	const json& cb= j.value("charucoBoard", json::object());
+	config.charucoBoard.cols= cb.value("cols", 11);
+	config.charucoBoard.rows= cb.value("rows", 8);
+	config.charucoBoard.squareLengthMM= cb.value("squareMm", 16.0);
+	config.charucoBoard.markerLengthMM= cb.value("markerMm", 12.0);
+
+	const json& tr= j.value("tracking", json::object());
+	config.tracking.flipHandedness= tr.value("flipHandedness", true);
+	config.tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
+	config.tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
+	config.tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
+	config.tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
+	config.tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
+	config.tracking.palmBeta= tr.value("palmBeta", 0.1f);
+	config.tracking.angleMinCutoff= tr.value("angleMinCutoff", 0.75f);
+	config.tracking.angleBeta= tr.value("angleBeta", 0.02f);
+	config.tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
+	config.tracking.onnxEp= tr.value("onnxEp", "directml");
+
+	const json& os= j.value("osc", json::object());
+	config.osc.enabled= os.value("enabled", true);
+	config.osc.targetIp= os.value("ip", "127.0.0.1");
+	config.osc.targetPort= os.value("port", 8000);
+	config.osc.maxRateHz= os.value("maxRateHz", 60);
+	config.osc.minConfidence= os.value("minConfidence", 0.f);
+	config.osc.holdOnDropoutMs= os.value("holdOnDropoutMs", 250.f);
+	config.osc.logPalmFrames= os.value("logPalmFrames", false);
 }
 
 std::string AppConfig::toJsonString() const

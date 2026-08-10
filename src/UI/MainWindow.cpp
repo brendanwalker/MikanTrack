@@ -14,6 +14,7 @@
 #include "Logger.h"
 #include "Scene3dPanel.h"
 #include "SettingsPanels.h"
+#include "TimelinePanel.h"
 #include "VideoModeUtils.h"
 #include "VideoCaptureSystem.h"
 #include "VideoPreviewPanel.h"
@@ -27,6 +28,7 @@ MainWindow::MainWindow(App* app)
 	, m_intrinsicsWizard(std::make_unique<IntrinsicsWizard>(app->getConfig(), app->getVisionThread()))
 	, m_extrinsicsWizard(std::make_unique<ExtrinsicsWizard>(app->getConfig(), app->getVisionThread()))
 	, m_mountingWizard(std::make_unique<MountingWizard>(app->getConfig(), app->getVisionThread()))
+	, m_timelinePanel(std::make_unique<TimelinePanel>())
 {
 	// Hotplug / disconnect notifications refresh the device panel
 	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
@@ -135,6 +137,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 		ImGui::DockBuilderDockWindow("Calibration", rightId);
 		ImGui::DockBuilderDockWindow("OSC Output", rightId);
 		ImGui::DockBuilderDockWindow("Log", bottomId);
+		ImGui::DockBuilderDockWindow("Timeline", bottomId);
 		ImGui::DockBuilderFinish(dockspaceId);
 	}
 	m_bDockLayoutInitialized= true;
@@ -215,6 +218,16 @@ void MainWindow::update(float deltaSeconds)
 	if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
 		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());
 
+	// F10 anywhere: toggle the tracking recording (deterministic replay input
+	// capture; starting resets transient tracking state - brief blip)
+	if (ImGui::IsKeyPressed(ImGuiKey_F10, false))
+	{
+		if (visionThread->isRecording())
+			visionThread->requestRecordingStop();
+		else
+			visionThread->requestRecordingStart(AppConfig::makeRecordingFilePath());
+	}
+
 	drawDockspaceAndMenuBar();
 
 	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
@@ -225,6 +238,7 @@ void MainWindow::update(float deltaSeconds)
 	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
 									  m_trackingPanelState, m_latestPreviews, m_latestFused);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
+	m_timelinePanel->draw(config, visionThread);
 
 	if (m_trackingPanelState.bLaunchMountingWizard)
 	{
@@ -293,7 +307,16 @@ void MainWindow::update(float deltaSeconds)
 		m_videoPreviewPanel->draw(previewResults, executionProviders, &forearmOverlays);
 	}
 
-	// 3D scene: fused skeleton + all calibrated camera frustums
+	// 3D scene: fused skeleton + all calibrated camera frustums. In replay
+	// view the whole feed comes from the timeline's scrub position instead,
+	// with the frustums built from the RECORDING's config snapshot.
+	if (m_timelinePanel->isReplayViewActive())
+	{
+		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
+		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
+							 m_timelinePanel->getPerCameraResults());
+	}
+	else
 	{
 		std::vector<SceneCameraView> sceneCameras;
 		std::vector<const TrackingFrameResult*> perCameraResults;

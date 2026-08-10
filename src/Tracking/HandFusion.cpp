@@ -80,6 +80,29 @@ void HandFusion::configure(const HandFusionConfig& config)
 	m_bStereoScaleFresh= false;
 }
 
+void HandFusion::resetTransientState()
+{
+	configure(m_config);
+
+	// configure() resets the valid/initialized flags but leaves these VALUES
+	// behind. Replay runs on freshly constructed (zeroed) instances, so live
+	// must zero them too - a flag-guarded stale value that never influences
+	// output is still fine, but a stale palmar normal or held tri angle set
+	// would diverge the first frames after a hand reacquisition.
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		m_triPalmarMemory[sideIndex].reset();
+		m_rawTriAngles[sideIndex]= {};
+		m_bRawTriAnglesValid[sideIndex]= false;
+		m_lastTriAngles[sideIndex]= {};
+		m_lastTriSkeleton[sideIndex]= HandSkeleton();
+		m_lastFusedPalm[sideIndex]= glm::vec3(0.f);
+		m_dominantCamera[sideIndex]= -1;
+	}
+	m_fuseTimestampMs= 0.0;
+	m_lastDiagnostics= FusionDiagnostics();
+}
+
 float HandFusion::stabilityFactor(float jitterM, float jitterReferenceM)
 {
 	// Soft inverse-variance weight: 1 at zero jitter, 0.5 at the reference,

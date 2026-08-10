@@ -139,6 +139,12 @@ class HandFusion
 public:
 	void configure(const HandFusionConfig& config);
 
+	// Returns every cross-frame member to the state of a freshly constructed
+	// instance (configure() resets most but not all of it). Called when a
+	// tracking recording starts: replay re-runs the recording on new instances,
+	// so live must start from the identical zero state for bit-exact replay.
+	void resetTransientState();
+
 	// Fuses the candidates that are valid, fresh (within the staleness window
 	// of nowTimestampMs) and world-tracked. outFused's poses are world-space;
 	// its hands are the best camera's landmark data (advisory, for debug).

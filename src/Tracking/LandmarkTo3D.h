@@ -53,6 +53,22 @@ public:
 	void process(TrackingFrameResult& ioResult,
 				 const std::array<HandDepthMeasurement, 2>* depthMeasurements= nullptr);
 
+	// Returns every cross-frame member to a freshly constructed state (palmar
+	// side memories, PnP warm starts, tracked flags). Called when a tracking
+	// recording starts so live matches replay's fresh instances bit-exactly.
+	void resetTransientState()
+	{
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			m_cameraPalmarMemory[sideIndex].reset();
+			m_modelPalmarMemory[sideIndex].reset();
+			m_pnpRvec[sideIndex]= {};
+			m_pnpTvec[sideIndex]= {};
+			m_bPnpPoseValid[sideIndex]= false;
+			m_bSideWasTracked[sideIndex]= false;
+		}
+	}
+
 	// Live hand-scale override (stereo auto-scale); does not touch filter state
 	void setRefLengthMeters(float refLengthMeters)
 	{
