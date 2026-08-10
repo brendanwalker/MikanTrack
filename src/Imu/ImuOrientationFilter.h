@@ -50,6 +50,19 @@ struct ImuOrientationFilterConfig
 	float accelGate= 1.0f;
 	// Vision orientation measurement noise, radians
 	float visionNoise= 0.05f;
+	// Random walk on YAW specifically, rad/sqrt(s).
+	//
+	// Yaw is not observable from inertial data at all, so its uncertainty has
+	// to GROW without bound between vision corrections. The generic gyro
+	// process noise is far too small to do that: after the first vision
+	// update the yaw covariance collapses and never recovers, and since the
+	// Kalman gain is P/(P+R), a 0.01 rad prior against a 0.31 rad vision
+	// measurement gives a gain of ~0.1%. The anchor is then switched off in
+	// all but name, which is exactly what was measured - yaw sigma pinned at
+	// 0.010 rad with the correction reading 0.00 deg.
+	//
+	// Sized from the measured Joy-Con yaw drift of ~1.9 deg/s.
+	float yawRandomWalk= 0.03f;
 	// Hard bound on the estimated gyro bias, rad/s. A real MEMS gyro bias is a
 	// few deg/s; anything approaching this is the filter diverging, not a
 	// sensor property. Bounding it matters because the bias feeds straight
@@ -111,6 +124,27 @@ public:
 	// downstream and is otherwise invisible.
 	bool isBiasSaturated() const;
 
+	// Fraction of recent accelerometer samples the gravity gate ACCEPTED,
+	// -1 until any have been seen.
+	//
+	// Near zero means the filter is running open loop on the gyro, with
+	// nothing correcting its tilt - it will look stable and drift anywhere.
+	// Near one during hard motion means the opposite failure: linear
+	// acceleration is being mistaken for gravity and dragging tilt around.
+	// Neither is visible in the orientation itself, which is why a frozen
+	// filter went undiagnosed.
+	float getGravityAcceptRatio() const { return m_gravityAcceptEma; }
+
+	// 1-sigma tilt uncertainty (radians): the larger of the two body axes
+	// gravity can actually constrain
+	float getTiltSigma() const;
+
+	// Rolling magnitude of the correction the vision yaw reference is
+	// applying, degrees. Sustained large values mean vision and the gyro
+	// disagree systematically, which is a different fault from either one
+	// drifting on its own.
+	float getVisionYawCorrectionDegrees() const { return m_visionYawCorrectionEma; }
+
 	// Seeds the nominal orientation directly, e.g. from the first gravity
 	// sample, without waiting for the filter to converge from an arbitrary
 	// start. Leaves yaw at identity (unobservable).
@@ -144,4 +178,6 @@ private:
 
 	bool m_bInitialized= false;
 	bool m_bBiasSaturated= false;
+	float m_gravityAcceptEma= -1.f;
+	float m_visionYawCorrectionEma= 0.f;
 };

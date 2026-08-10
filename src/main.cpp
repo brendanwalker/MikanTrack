@@ -2583,6 +2583,63 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (l) Yaw covariance must RE-INFLATE. Yaw is not observable from
+			// inertial data, so its uncertainty has to grow between vision
+			// corrections. Without that it collapses on the first correction
+			// and never recovers, and since the Kalman gain is P/(P+R) a tiny
+			// prior against a loose vision measurement switches the anchor off
+			// in all but name - measured live as yaw sigma pinned at 0.010 rad
+			// with the applied correction reading 0.00 deg.
+			{
+				ImuOrientationFilter filter;
+				ImuOrientationFilterConfig config;
+				filter.configure(config);
+				filter.initializeFromGravity(glm::vec3(0.f, 0.f, 9.80665f));
+
+				// Settle, then let vision pin yaw hard
+				for (int step= 0; step < 400; ++step)
+				{
+					filter.predict(glm::vec3(0.f), 1.f / 200.f);
+					filter.updateWithGravity(glm::vec3(0.f, 0.f, 9.80665f));
+				}
+				for (int step= 0; step < 200; ++step)
+					filter.updateWithYawReference(glm::quat(1.f, 0.f, 0.f, 0.f), 0.05f);
+
+				const float pinnedYaw= filter.getOrientationSigma().z;
+
+				// Now coast on the gyro alone for two seconds
+				for (int step= 0; step < 400; ++step)
+				{
+					filter.predict(glm::vec3(0.f), 1.f / 200.f);
+					filter.updateWithGravity(glm::vec3(0.f, 0.f, 9.80665f));
+				}
+				const float coastedYaw= filter.getOrientationSigma().z;
+				const float coastedTilt= filter.getTiltSigma();
+
+				// A vision correction must now actually move the estimate
+				const glm::quat reference= glm::angleAxis(glm::radians(20.f), glm::vec3(0.f, 0.f, 1.f));
+				const glm::quat before= filter.getOrientation();
+				for (int step= 0; step < 30; ++step)
+					filter.updateWithYawReference(reference, 0.31f);
+				const glm::quat moved= glm::inverse(before) * filter.getOrientation();
+				const float movedDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(moved.x, moved.y, moved.z)), 0.f, 1.f)));
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(l) yaw covariance: pinned " << pinnedYaw << " rad, re-inflated to " << coastedYaw
+					<< " after 2s coasting (tilt stayed " << coastedTilt << "), vision then moved yaw "
+					<< movedDegrees << " deg";
+
+				// Yaw must grow, tilt must NOT (gravity observes it), and the
+				// anchor must have real authority again
+				if (coastedYaw <= pinnedYaw * 1.5f || coastedTilt > 0.05f || movedDegrees < 1.f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(l) FAILED: yaw uncertainty is not recovering, so the vision anchor is inert";
+					result= 1;
+				}
+			}
+
 			// (m) Palmar side must be temporally stable.
 			//
 			// The sign is decided per frame from geometry. On a nearly flat

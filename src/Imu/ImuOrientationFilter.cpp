@@ -111,6 +111,8 @@ void ImuOrientationFilter::reset()
 	m_lastAngularVelocity= glm::vec3(0.f);
 	m_bInitialized= false;
 	m_bBiasSaturated= false;
+	m_gravityAcceptEma= -1.f;
+	m_visionYawCorrectionEma= 0.f;
 
 	m_covariance.fill(0.f);
 	// Tilt (body X/Y) is pinned quickly by gravity; yaw (body Z) is not
@@ -194,6 +196,25 @@ void ImuOrientationFilter::predict(const glm::vec3& angularVelocity, float dtSec
 	{
 		at6(m_covariance, axis, axis)+= orientationNoise;
 		at6(m_covariance, axis + 3, axis + 3)+= biasNoise;
+	}
+
+	// Extra uncertainty about WORLD UP, because nothing inertial can observe
+	// rotation about it. Injected along that axis expressed in the body frame,
+	// so it tracks the sensor as it turns rather than leaking into tilt -
+	// which gravity does observe and must stay confident about.
+	//
+	// Without this the yaw covariance collapses on the first vision update and
+	// stays collapsed, silently disabling the only absolute yaw reference the
+	// system has.
+	if (m_bInitialized && m_config.yawRandomWalk > 0.f)
+	{
+		const glm::vec3 bodyUp= glm::normalize(glm::transpose(glm::mat3_cast(m_orientation)) * k_worldUp);
+		const float yawNoise= m_config.yawRandomWalk * m_config.yawRandomWalk * dt;
+		for (int row= 0; row < 3; ++row)
+		{
+			for (int col= 0; col < 3; ++col)
+				at6(m_covariance, row, col)+= yawNoise * bodyUp[row] * bodyUp[col];
+		}
 	}
 }
 
@@ -353,7 +374,16 @@ bool ImuOrientationFilter::updateWithGravity(const glm::vec3& acceleration)
 	// Gate: only believe the accelerometer when it plausibly reads gravity
 	// alone. Under real motion the specific force is gravity PLUS linear
 	// acceleration, and using it would drag the tilt estimate around.
-	if (fabsf(magnitude - k_gravityMetersPerSecond2) > m_config.accelGate)
+	//
+	// The accept RATE is tracked because the failure it hides is invisible
+	// otherwise: a filter rejecting everything runs open loop on the gyro and
+	// still reports a confident-looking orientation.
+	constexpr float kAcceptEmaAlpha= 0.01f;
+	const bool bAccepted= fabsf(magnitude - k_gravityMetersPerSecond2) <= m_config.accelGate;
+	m_gravityAcceptEma= m_gravityAcceptEma < 0.f
+		? (bAccepted ? 1.f : 0.f)
+		: m_gravityAcceptEma * (1.f - kAcceptEmaAlpha) + (bAccepted ? 1.f : 0.f) * kAcceptEmaAlpha;
+	if (!bAccepted)
 		return false;
 
 	if (!m_bInitialized)
@@ -455,7 +485,15 @@ void ImuOrientationFilter::updateWithYawReference(const glm::quat& sensorToWorld
 		}
 	}
 
+	const glm::quat before= m_orientation;
 	applyCorrection(residual, identity3(), Mat3{}, measurementNoise);
+
+	const glm::quat applied= glm::inverse(before) * m_orientation;
+	const float appliedDegrees= glm::degrees(2.f * asinf(std::min(
+		1.f, glm::length(glm::vec3(applied.x, applied.y, applied.z)))));
+	constexpr float kCorrectionEmaAlpha= 0.02f;
+	m_visionYawCorrectionEma=
+		m_visionYawCorrectionEma * (1.f - kCorrectionEmaAlpha) + appliedDegrees * kCorrectionEmaAlpha;
 }
 
 void ImuOrientationFilter::processSample(const ImuSample& sample, float dtSeconds)
@@ -498,6 +536,12 @@ void ImuOrientationFilter::setGyroBias(const glm::vec3& gyroBias, float sigma)
 bool ImuOrientationFilter::isBiasSaturated() const
 {
 	return m_bBiasSaturated;
+}
+
+float ImuOrientationFilter::getTiltSigma() const
+{
+	const glm::vec3 sigma= getOrientationSigma();
+	return std::max(sigma.x, sigma.y);
 }
 
 bool ImuOrientationFilter::isTiltConverged() const
