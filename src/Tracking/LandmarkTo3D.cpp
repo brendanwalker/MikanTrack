@@ -156,7 +156,8 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 	outPose.presence= hand.presence;
 
 	// Palm transform from the (rigid, PnP-consistent) camera-space landmarks
-	const glm::mat4 palmFrame= HandPoseModel::computePalmFrame(hand.cameraPoints, hand.side);
+	const glm::mat4 palmFrame=
+		HandPoseModel::computePalmFrame(hand.cameraPoints, hand.side, &m_cameraPalmarMemory[(int)hand.side]);
 	outPose.palmPositionCamera= glm::vec3(palmFrame[3]);
 	outPose.palmOrientationCamera= glm::quat_cast(glm::mat3(palmFrame));
 	outPose.hasCameraPose= true;
@@ -171,10 +172,11 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 	const float modelScale= modelBone > 1e-4f ? m_refLengthMeters / modelBone : 1.f;
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 		metricModel[i]= hand.modelPoints[i] * modelScale;
-	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton);
+	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton,
+								   &m_modelPalmarMemory[(int)hand.side]);
 
 	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.skeleton.neutralDirInPalm,
-									   outPose.fingers);
+									   outPose.fingers, &m_modelPalmarMemory[(int)hand.side]);
 
 	// Fidelity of the parameterization itself, so it must be measured on the
 	// RAW angles - before the rest offset reinterprets what zero means

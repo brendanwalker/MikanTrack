@@ -2583,6 +2583,88 @@ static int runApp(int argc, char** argv)
 				}
 			}
 
+			// (m) Palmar side must be temporally stable.
+			//
+			// The sign is decided per frame from geometry. On a nearly flat
+			// hand the evidence is weak and its SIGN follows landmark noise,
+			// so the palm frame inverts between frames - measured live as the
+			// left palm frame flipping twice in 240 frames while the right
+			// never did, which poisoned the mounting average with two clusters
+			// 180 deg apart (70 deg pose spread against the right's 13).
+			//
+			// The test asserts the CONTRAST: the unprotected path must flip,
+			// or the fix is being credited for nothing.
+			{
+				// A flat hand whose fingers carry a barely-there curl. The
+				// curl sign alternates, which is what landmark noise does to a
+				// hand held flat, and it keeps the score inside the weak band
+				// where the old code had no stable answer.
+				auto buildHand= [](float curlSign) {
+					std::array<glm::vec3, HAND_LANDMARK_COUNT> points{};
+					points[(int)eHandLandmark::WRIST]= glm::vec3(0.f, 0.f, 0.f);
+					const float spread[FINGER_COUNT]= {0.035f, 0.02f, 0.f, -0.018f, -0.032f};
+					for (int finger= 0; finger < FINGER_COUNT; ++finger)
+					{
+						const int* joints= FINGER_JOINTS[finger];
+						const glm::vec3 base(0.075f, spread[finger], 0.f);
+						points[joints[0]]= base;
+						for (int joint= 1; joint < 4; ++joint)
+						{
+							const float along= 0.022f * (float)joint;
+							// Quadratic droop = a gentle curl; ~0.5 deg per joint
+							const float curl= curlSign * 0.00018f * (float)(joint * joint);
+							points[joints[joint]]= base + glm::vec3(along, 0.f, curl);
+						}
+					}
+					return points;
+				};
+
+				auto runSequence= [&buildHand](HandPoseModel::PalmarSideMemory* memory) {
+					int flips= 0;
+					glm::vec3 previousZ(0.f);
+					for (int step= 0; step < 120; ++step)
+					{
+						// Sign alternates every few frames, as noise would
+						const float curlSign= sinf((float)step * 1.1f) > 0.f ? 1.f : -1.f;
+						const std::array<glm::vec3, HAND_LANDMARK_COUNT> points= buildHand(curlSign);
+						const glm::vec3 z=
+							glm::vec3(HandPoseModel::computePalmFrame(points, eHandSide::Left, memory)[2]);
+						if (step > 0 && glm::dot(z, previousZ) < 0.f)
+							flips++;
+						previousZ= z;
+					}
+					return flips;
+				};
+
+				HandPoseModel::PalmarSideMemory memory;
+				const int flipsWithMemory= runSequence(&memory);
+				const int flipsWithoutMemory= runSequence(nullptr);
+
+				// A reacquired hand must not inherit the old side
+				HandPoseModel::PalmarSideMemory cleared= memory;
+				cleared.reset();
+				const bool bClearedForgets= glm::dot(cleared.palmarNormal, cleared.palmarNormal) < 1e-6f;
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(m) palmar side: " << flipsWithMemory << " flips with memory, "
+					<< flipsWithoutMemory << " without, reset clears=" << bClearedForgets;
+
+				// flipsWithoutMemory > 0 is the teeth: without it this test
+				// passes whether or not the memory does anything at all
+				if (flipsWithoutMemory == 0)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(m) FAILED: the unprotected path did not flip, so this proves nothing";
+					result= 1;
+				}
+				else if (flipsWithMemory != 0 || !bClearedForgets)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(m) FAILED: the palmar side is not temporally stable";
+					result= 1;
+				}
+			}
+
 			if (result == 0)
 				MIKAN_LOG_INFO("test-imufilter") << "All IMU filter checks passed";
 

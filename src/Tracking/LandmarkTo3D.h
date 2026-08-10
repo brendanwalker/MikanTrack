@@ -89,6 +89,12 @@ private:
 	// Fills the parametric HandPose (camera-space palm transform, finger
 	// angles, skeleton) from a camera-space-tracked hand
 	void fillHandPose(const TrackedHand& hand, HandPose& outPose);
+
+	// Remembered palmar side, per hand. Separate memories per SPACE: the
+	// stored normal is expressed in the point set's own frame, and camera
+	// space and model space are unrelated.
+	HandPoseModel::PalmarSideMemory m_cameraPalmarMemory[2];
+	HandPoseModel::PalmarSideMemory m_modelPalmarMemory[2];
 	// Mean pixel error between the hand's 2D landmarks and the FK hand
 	// rebuilt from the extracted pose, projected back into the image
 	float computeFkReprojectionError(const TrackedHand& hand, const HandPose& pose) const;

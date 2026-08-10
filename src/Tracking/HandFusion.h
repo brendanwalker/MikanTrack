@@ -6,6 +6,7 @@
 
 #include "glm/ext/matrix_double4x4.hpp"
 
+#include "HandPoseModel.h"
 #include "OneEuroFilter.h"
 #include "TrackingTypes.h"
 
@@ -280,6 +281,11 @@ private:
 	glm::quat m_lastFilteredQuat[2]= {glm::quat(1, 0, 0, 0), glm::quat(1, 0, 0, 0)};
 	double m_lastTimestampMs= -1.0;
 	bool m_bSideWasTracked[2]= {false, false};
+
+	// Remembered palmar side for the triangulated (world-space) palm frame.
+	// Cleared when a side is lost: a reacquired hand may be anywhere, and a
+	// stale normal would then pin the wrong side.
+	HandPoseModel::PalmarSideMemory m_triPalmarMemory[2];
 
 	// Raw triangulated angles of the last fuse (rest-pose capture source)
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_rawTriAngles{};

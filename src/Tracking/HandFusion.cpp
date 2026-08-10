@@ -643,13 +643,15 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	// candidate's (metric via the calibrated hand scale, and the wire
 	// contract wants a stable skeleton) - only the palm frame and the
 	// angles come from the stereo landmarks.
-	const glm::mat4 palmFrame= HandPoseModel::computePalmFrame(triPoints, side);
+	const glm::mat4 palmFrame=
+		HandPoseModel::computePalmFrame(triPoints, side, &m_triPalmarMemory[(int)side]);
 	outPose.palmPositionWorld= glm::vec3(palmFrame[3]);
 	outPose.palmOrientationWorld= glm::quat_cast(glm::mat3(palmFrame));
 	outPose.hasWorldPose= true;
 
 	std::array<FingerAngles, FINGER_COUNT> rawAngles{};
-	HandPoseModel::computeFingerAngles(triPoints, side, outPose.skeleton.neutralDirInPalm, rawAngles);
+	HandPoseModel::computeFingerAngles(triPoints, side, outPose.skeleton.neutralDirInPalm, rawAngles,
+									   &m_triPalmarMemory[(int)side]);
 	m_rawTriAngles[(int)side]= rawAngles;
 	m_bRawTriAnglesValid[(int)side]= true;
 
@@ -1099,6 +1101,9 @@ void HandFusion::applySmoothing(TrackingFrameResult& ioFused)
 			// fresh acquisition: drop stale filter state
 			if (!m_bSideWasTracked[sideIndex])
 			{
+				// ...including the remembered palmar side, which describes
+				// where the hand WAS
+				m_triPalmarMemory[sideIndex].reset();
 				m_positionFilters[sideIndex].reset();
 				for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
 					filter.reset();

@@ -41,7 +41,8 @@ glm::vec3 pronatedThumbHinge(const glm::vec3& standardHinge, const glm::vec3& bo
 }
 } // namespace
 
-glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side)
+glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points,
+										  eHandSide side, PalmarSideMemory* ioMemory)
 {
 	const glm::vec3& wrist= points[(int)eHandLandmark::WRIST];
 	const glm::vec3& indexMcp= points[(int)eHandLandmark::INDEX_MCP];
@@ -87,18 +88,44 @@ glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDM
 
 	const float palmarScore= curlEvidence + 0.5f * thumbEvidence;
 
+	// A hand's palmar side cannot invert between frames, so CONTINUITY is a
+	// far stronger prior than weak geometry - and much stronger than the
+	// handedness label, which flips whenever the palm turns away from a
+	// camera. Deciding this independently every frame is what let the left
+	// palm frame flip mid-capture and poison the mounting average.
+	constexpr float kDecisiveEvidence= 0.25f; // override the remembered side
+	constexpr float kWeakEvidence= 0.05f;     // better than nothing when new
+
+	const bool bRemembered= ioMemory != nullptr && glm::dot(ioMemory->palmarNormal, ioMemory->palmarNormal) > 0.25f;
+
 	float palmarSign;
-	if (fabsf(palmarScore) > 0.05f)
+	if (fabsf(palmarScore) > kDecisiveEvidence || !bRemembered)
 	{
-		palmarSign= palmarScore > 0.f ? 1.f : -1.f;
+		if (fabsf(palmarScore) > kWeakEvidence)
+		{
+			palmarSign= palmarScore > 0.f ? 1.f : -1.f;
+		}
+		else if (bRemembered)
+		{
+			palmarSign= glm::dot(normal, ioMemory->palmarNormal) >= 0.f ? 1.f : -1.f;
+		}
+		else
+		{
+			// Nothing remembered and no usable geometry (perfectly flat hand,
+			// thumb in-plane): the label is the last resort. For a RIGHT hand
+			// the raw cross points out of the BACK of the hand; for a LEFT
+			// hand out of the palm.
+			palmarSign= side == eHandSide::Right ? -1.f : 1.f;
+		}
 	}
 	else
 	{
-		// Degenerate (perfectly flat hand, thumb in-plane): fall back to the
-		// label-based chirality rule. For a RIGHT hand the raw cross points
-		// out of the BACK of the hand; for a LEFT hand out of the palm.
-		palmarSign= side == eHandSide::Right ? -1.f : 1.f;
+		// Evidence is not decisive - keep the side we already know
+		palmarSign= glm::dot(normal, ioMemory->palmarNormal) >= 0.f ? 1.f : -1.f;
 	}
+
+	if (ioMemory != nullptr)
+		ioMemory->palmarNormal= normal * palmarSign;
 
 	// Orthonormalize: Z out of the palmar surface, Y completes right-handed
 	glm::vec3 zAxis= safeNormalize(normal * palmarSign - xAxis * glm::dot(normal * palmarSign, xAxis));
@@ -143,9 +170,10 @@ void HandPoseModel::captureRestAngles(const std::array<glm::vec3, HAND_LANDMARK_
 
 void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,
 										const NeutralDirections& neutralDirs,
-										std::array<FingerAngles, FINGER_COUNT>& outAngles)
+										std::array<FingerAngles, FINGER_COUNT>& outAngles,
+										PalmarSideMemory* ioMemory)
 {
-	const glm::mat4 palmFrame= computePalmFrame(points, side);
+	const glm::mat4 palmFrame= computePalmFrame(points, side, ioMemory);
 	const glm::mat3 palmRotation= glm::mat3(palmFrame);
 	const glm::vec3 palmY= glm::vec3(palmFrame[1]);
 	const glm::vec3 palmZ= glm::vec3(palmFrame[2]);
@@ -211,9 +239,9 @@ void HandPoseModel::computeFingerAngles(const std::array<glm::vec3, HAND_LANDMAR
 }
 
 void HandPoseModel::computeSkeleton(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, eHandSide side,
-									HandSkeleton& outSkeleton)
+									HandSkeleton& outSkeleton, PalmarSideMemory* ioMemory)
 {
-	const glm::mat4 palmFrame= computePalmFrame(points, side);
+	const glm::mat4 palmFrame= computePalmFrame(points, side, ioMemory);
 	const glm::mat4 palmInverse= glm::inverse(palmFrame);
 
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
