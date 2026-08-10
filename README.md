@@ -45,10 +45,20 @@ client-side with Two-Bone IK from the palm transform.
   depth into metric 3D
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
 - Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanMediaPipe/config.json`
+- **Image quality diagnostics** (Tracking panel): per-camera statistics of
+  each hand's region in the exact image the model consumed - luminance,
+  highlight/shadow clipping, contrast, hand-vs-background separation,
+  sharpness, sensor noise, plus whole-frame flicker/auto-exposure-hunting
+  detection. Landmark jitter is almost always a lighting or camera-settings
+  problem; this readout names the knob (hover each metric for what to
+  adjust). The **hold-still jitter test** (Diagnostics section) turns a few
+  seconds of holding still into one mm number per hand, for A/B-ing exposure,
+  gain, lighting and background changes.
 - **Diagnostic dump (F9)**: writes the last few seconds of tracking/fusion
-  history (per-camera hand states, fusion clusters and the L/R side-assignment
-  scores), the live config and each camera's current frame (raw + annotated
-  PNG) to `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
+  history (per-camera hand states with image-quality statistics, fusion
+  clusters and the L/R side-assignment scores), the live config and each
+  camera's current frame (raw + annotated PNG) to
+  `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
   tracking misbehaves and attach the folder to a bug report
 
 ## Building

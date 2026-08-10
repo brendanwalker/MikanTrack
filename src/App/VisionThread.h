@@ -12,6 +12,7 @@
 #include "ImuService.h"
 #include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
+#include "HandRoiQuality.h" // LumaFlickerTracker
 #include "TrackingTypes.h"
 
 class AppConfig;
@@ -175,6 +176,9 @@ private:
 		std::mutex previewMutex;
 		VisionPreviewFrame previewFrame;
 		bool bPreviewFresh= false;
+
+		// Whole-frame luminance oscillation (flicker / AE hunting) diagnostics
+		LumaFlickerTracker flickerTracker;
 
 		cv::Mat bgrScratch;
 		cv::Mat undistortedScratch;

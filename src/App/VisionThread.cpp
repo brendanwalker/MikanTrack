@@ -619,10 +619,20 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 	result.frameHeight= activeFrame->rows;
 	result.captureFps= context.captureFps;
 
+	// Luminance-oscillation diagnostics run on every processed frame (cheap
+	// decimated mean), so flicker is measurable even before a hand shows up
+	context.flickerTracker.addFrame(*activeFrame, timestampMs);
+	result.lumaInstability= context.flickerTracker.getInstability();
+	result.lumaFlickerHz= context.flickerTracker.getDominantHz();
+
 	bool bProducedTracking= false;
 	if (context.bTrackingEnabled && context.pipeline != nullptr)
 	{
 		context.pipeline->process(*activeFrame, result);
+
+		// Lighting/exposure diagnostics on the exact image the model consumed
+		for (TrackedHand& hand : result.hands)
+			HandRoiQuality::analyzeHand(*activeFrame, hand);
 
 		// Image space -> camera space (needs intrinsics + hand scale)
 		if (context.landmarkTo3D != nullptr)

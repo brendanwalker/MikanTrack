@@ -77,12 +77,25 @@ static json diagImuToJson(const DiagImuState& imu)
 	};
 }
 
+static json imageQualityToJson(const HandImageQuality& quality)
+{
+	return {
+		{"meanLuma", quality.meanLuma},
+		{"shadowClipRatio", quality.shadowClipRatio},
+		{"highlightClipRatio", quality.highlightClipRatio},
+		{"contrast", quality.contrast},
+		{"backgroundSeparation", quality.backgroundSeparation},
+		{"sharpness", quality.sharpness},
+		{"noise", quality.noise},
+	};
+}
+
 static json diagHandToJson(const DiagHandState& hand)
 {
 	if (!hand.tracked)
 		return {{"tracked", false}};
 
-	return {
+	json out= {
 		{"tracked", true},
 		{"slotId", hand.slotId},
 		{"presence", hand.presence},
@@ -101,6 +114,9 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"wristPx", vec2ToJson(hand.wristPx)},
 		{"fingers", fingersToJson(hand.fingers)},
 	};
+	if (hand.imageQuality.valid)
+		out["imageQuality"]= imageQualityToJson(hand.imageQuality);
+	return out;
 }
 
 static json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
@@ -179,6 +195,7 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.forearmOrientationWorld= pose.forearmOrientationWorld;
 	outHand.wristPx= hand.tracked ? glm::vec2(hand.imagePoints[0]) : glm::vec2(0.f);
 	outHand.fingers= pose.fingers;
+	outHand.imageQuality= hand.imageQuality;
 }
 
 void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraResults,
@@ -204,6 +221,8 @@ void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraR
 			cameraState.timestampMs= cameraResult->timestampMs;
 			cameraState.captureFps= cameraResult->result.captureFps;
 			cameraState.inferenceMs= cameraResult->result.inferenceMs;
+			cameraState.lumaInstability= cameraResult->result.lumaInstability;
+			cameraState.lumaFlickerHz= cameraResult->result.lumaFlickerHz;
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 				fillDiagHandFromResult(cameraResult->result, sideIndex, cameraState.sides[sideIndex]);
 		}
@@ -284,6 +303,8 @@ static json handSnapshotToJson(const TrackedHand& hand)
 		{"handednessScore", hand.handednessScore},
 		{"imagePoints", landmarksToJson(hand.imagePoints)},
 	};
+	if (hand.imageQuality.valid)
+		out["imageQuality"]= imageQualityToJson(hand.imageQuality);
 	out["modelPoints"]= landmarksToJson(hand.modelPoints);
 	if (hand.hasCameraSpace)
 		out["cameraPoints"]= landmarksToJson(hand.cameraPoints);
@@ -334,6 +355,8 @@ static json resultSnapshotToJson(const TrackingFrameResult& result)
 		{"frameSize", json::array({result.frameWidth, result.frameHeight})},
 		{"captureFps", result.captureFps},
 		{"inferenceMs", result.inferenceMs},
+		{"lumaInstability", result.lumaInstability},
+		{"lumaFlickerHz", result.lumaFlickerHz},
 		{"hands", json::array({handSnapshotToJson(result.hands[0]), handSnapshotToJson(result.hands[1])})},
 		{"poses", json::array({poseSnapshotToJson(result.poses[0]), poseSnapshotToJson(result.poses[1])})},
 	};
@@ -429,6 +452,8 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 				{"timestampMs", cameraState.timestampMs},
 				{"captureFps", cameraState.captureFps},
 				{"inferenceMs", cameraState.inferenceMs},
+				{"lumaInstability", cameraState.lumaInstability},
+				{"lumaFlickerHz", cameraState.lumaFlickerHz},
 				{"left", diagHandToJson(cameraState.sides[0])},
 				{"right", diagHandToJson(cameraState.sides[1])},
 			});

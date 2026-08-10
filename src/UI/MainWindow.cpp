@@ -223,7 +223,7 @@ void MainWindow::update(float deltaSeconds)
 	// Panels
 	m_devicePanel->draw();
 	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
-									  m_trackingPanelState);
+									  m_trackingPanelState, m_latestPreviews, m_latestFused);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
 
 	if (m_trackingPanelState.bLaunchMountingWizard)

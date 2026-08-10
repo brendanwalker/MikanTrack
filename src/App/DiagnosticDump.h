@@ -40,6 +40,9 @@ struct DiagHandState
 	glm::quat forearmOrientationWorld{1.f, 0.f, 0.f, 0.f};
 	glm::vec2 wristPx{0.f};
 	std::array<FingerAngles, FINGER_COUNT> fingers{};
+	// Lighting/exposure statistics of the hand ROI (camera records only; the
+	// fused pose has no single image behind it)
+	HandImageQuality imageQuality;
 };
 
 // Per-side wrist IMU state. Recorded every frame because the questions it
@@ -90,6 +93,9 @@ struct DiagCameraState
 	double timestampMs= 0.0;
 	float captureFps= 0.f;
 	float inferenceMs= 0.f;
+	// Whole-frame luminance oscillation (flicker beat / AE hunting)
+	float lumaInstability= 0.f;
+	float lumaFlickerHz= 0.f;
 	DiagHandState sides[2];
 };
 

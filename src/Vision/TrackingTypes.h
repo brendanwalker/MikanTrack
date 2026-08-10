@@ -66,6 +66,25 @@ struct DetectionBox
 	float score= 0.f;
 };
 
+// Image statistics of a hand's ROI in the frame the model consumed -
+// diagnostics that explain landmark jitter in terms of the knobs that fix it
+// (exposure, gain, lighting, background). All statistics are computed on a
+// nearest-neighbor decimated grayscale crop with a fixed ~160px working size,
+// so values are comparable across camera resolutions and ROI sizes. Filled by
+// HandRoiQuality on the vision thread.
+struct HandImageQuality
+{
+	bool valid= false;
+	float meanLuma= 0.f;             // mean gray level in the ROI, 0-255
+	float shadowClipRatio= 0.f;      // fraction of ROI pixels stuck at black (<= 2)
+	float highlightClipRatio= 0.f;   // fraction of ROI pixels blown out (>= 253)
+	float contrast= 0.f;             // gray-level stddev inside the ROI (skin texture)
+	float backgroundSeparation= 0.f; // |ROI mean - surrounding ring mean|, gray levels
+	float sharpness= 0.f;            // variance of Laplacian AFTER a 3x3 median, so it
+	                                 // measures blur without rewarding sensor noise
+	float noise= 0.f;                // mean |gray - 3x3 median| residual (sensor noise)
+};
+
 struct TrackedHand
 {
 	bool tracked= false;
@@ -95,6 +114,10 @@ struct TrackedHand
 	// World (marker-anchored) landmarks in meters (valid when hasWorldSpace)
 	bool hasWorldSpace= false;
 	std::array<glm::vec3, HAND_LANDMARK_COUNT> worldPoints;
+
+	// Lighting/exposure diagnostics for this hand's ROI (valid when tracked
+	// and the ROI was large enough to analyze)
+	HandImageQuality imageQuality;
 };
 
 // -- Parametric hand representation -----
@@ -263,6 +286,16 @@ struct TrackingFrameResult
 
 	float captureFps= 0.f;
 	float inferenceMs= 0.f;
+
+	// Whole-frame temporal luminance stability (decimated frame mean tracked
+	// over the last few seconds): detrended AC RMS as a fraction of the mean
+	// level. High = light flicker beating against the shutter, or auto-exposure
+	// hunting - both destabilize landmarks while every static-frame statistic
+	// looks fine.
+	float lumaInstability= 0.f;
+	// Dominant oscillation frequency behind lumaInstability, Hz (0 until one
+	// stands out from the broadband motion background)
+	float lumaFlickerHz= 0.f;
 
 	// Indexed by eHandSide. hands carries the raw landmark data (overlays,
 	// debug, stereo scale); poses is the parametric output that gets fused

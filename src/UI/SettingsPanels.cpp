@@ -1,8 +1,15 @@
 #include "SettingsPanels.h"
 
+#include <algorithm>
+#include <cstring>
+
 #include "imgui.h"
 
+#include "glm/gtc/quaternion.hpp"
+
 #include "AppConfig.h"
+#include "HandPoseModel.h"
+#include "HandRoiQuality.h"
 #include "Scene3dPanel.h"
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
@@ -13,9 +20,235 @@ static constexpr float k_restPoseCountdownSeconds= 3.f;
 // How long the "captured" banner stays up afterwards
 static constexpr float k_restPoseResultSeconds= 4.f;
 
+// Hold-still jitter test: countdown mirrors the rest-pose capture (the mouse
+// hand needs to get back into position), then the sampling window
+static constexpr float k_holdStillCountdownSeconds= 3.f;
+static constexpr float k_holdStillSampleSeconds= 3.f;
+// A side needs at least this many fused samples for its deviation to mean
+// anything (one second at 30fps)
+static constexpr int k_holdStillMinSamples= 30;
+
+// -- Image quality readout ---------------------------------------------------
+
+// Band classification: good inside [goodLo, goodHi], warn inside
+// [warnLo, warnHi] (which contains the good range), bad outside both
+struct MetricBand
+{
+	float goodLo, goodHi;
+	float warnLo, warnHi;
+};
+
+static int classifyBand(float value, const MetricBand& band)
+{
+	if (value >= band.goodLo && value <= band.goodHi)
+		return 0;
+	if (value >= band.warnLo && value <= band.warnHi)
+		return 1;
+	return 2;
+}
+
+static ImVec4 bandColor(int bandClass)
+{
+	switch (bandClass)
+	{
+	case 0: return ImVec4(0.4f, 1.f, 0.5f, 1.f);
+	case 1: return ImVec4(1.f, 0.85f, 0.3f, 1.f);
+	default: return ImVec4(1.f, 0.4f, 0.4f, 1.f);
+	}
+}
+
+// How far outside the good range a value sits (0 inside), used to pick the
+// worst hand when both classify the same
+static float bandSeverity(float value, const MetricBand& band)
+{
+	return std::max(0.f, std::max(band.goodLo - value, value - band.goodHi));
+}
+
+struct QualityRowDesc
+{
+	const char* label;
+	const char* format; // printf format for the value in display units
+	float displayScale; // raw metric -> display units (100 for ratio -> %)
+	MetricBand band;    // in display units
+	float (*extract)(const HandImageQuality&);
+	const char* tooltip;
+};
+
+// Bands live at the analyzer's fixed ~160px working scale, tuned against real
+// captures: a well-lit low-jitter camera reads noise ~2.5 and sharpness in the
+// low thousands, so sharpness only means something when it drops (blur), and
+// high values are just texture/scale
+static const QualityRowDesc k_qualityRows[]= {
+	{"Luminance", "%.0f", 1.f, {90.f, 180.f, 60.f, 220.f},
+	 [](const HandImageQuality& q) { return q.meanLuma; },
+	 "Mean brightness of the hand region, 0-255.\n"
+	 "Low = underexposed: raise exposure or add light.\n"
+	 "High = overexposed: lower exposure before highlights clip."},
+	{"Highlight clip", "%.1f%%", 100.f, {0.f, 1.f, 0.f, 5.f},
+	 [](const HandImageQuality& q) { return q.highlightClipRatio; },
+	 "Blown-out pixels in the hand region. Clipping erases the skin\n"
+	 "texture and joint boundaries the landmark model reads - reduce\n"
+	 "exposure, or diffuse/angle the light to kill specular hot spots."},
+	{"Shadow clip", "%.1f%%", 100.f, {0.f, 5.f, 0.f, 15.f},
+	 [](const HandImageQuality& q) { return q.shadowClipRatio; },
+	 "Pixels stuck at black in the hand region. Some background is\n"
+	 "normal; a high value together with low luminance means real\n"
+	 "underexposure."},
+	{"Contrast", "%.0f", 1.f, {30.f, 1e9f, 15.f, 1e9f},
+	 [](const HandImageQuality& q) { return q.contrast; },
+	 "Gray-level spread inside the hand region - the texture the\n"
+	 "landmark model actually reads. Raise with more (soft) light;\n"
+	 "flat frontal glare and near-clipping both flatten it."},
+	{"Separation", "%.0f", 1.f, {20.f, 1e9f, 8.f, 1e9f},
+	 [](const HandImageQuality& q) { return q.backgroundSeparation; },
+	 "Hand brightness vs the surrounding background. Low = the hand\n"
+	 "blends in, which starves palm DETECTION (internal contrast can\n"
+	 "still be fine). Change the surface under your hands, or light\n"
+	 "the hands rather than the table."},
+	{"Sharpness", "%.0f", 1.f, {1000.f, 1e9f, 300.f, 1e9f},
+	 [](const HandImageQuality& q) { return q.sharpness; },
+	 "Edge strength with sensor noise filtered out first. Low = motion\n"
+	 "blur or defocus - shorten the exposure time (adding light to\n"
+	 "compensate) or refocus the camera."},
+	{"Noise", "%.1f", 1.f, {0.f, 4.f, 0.f, 7.f},
+	 [](const HandImageQuality& q) { return q.noise; },
+	 "Sensor noise (median-filter residual). High = auto-exposure has\n"
+	 "cranked the gain in dim light, which directly destabilizes the\n"
+	 "landmarks - add light so the gain comes back down."},
+};
+// The flicker row is appended after these (per camera, not per hand)
+static constexpr int k_flickerRowIndex= (int)IM_ARRAYSIZE(k_qualityRows);
+
+static void drawImageQualitySection(AppConfig* config, TrackingPanelState& panelState,
+									const std::vector<VisionPreviewFrame>& latestPreviews)
+{
+	const int cameraCount= std::min((int)config->cameraCount(),
+									(int)TrackingPanelState::kQualityMaxCameras);
+	if (cameraCount <= 0)
+		return;
+
+	ImGui::TextDisabled("Worst tracked hand per camera, ~1s average");
+	ImGui::SetItemTooltip(
+		"Diagnoses WHY tracking jitters, in terms of the knobs that fix\n"
+		"it: exposure, gain, lighting, background. Statistics come from\n"
+		"each hand's region in the exact image the model consumed,\n"
+		"at a fixed working scale so values are comparable across\n"
+		"resolutions. Hover a metric name for what to adjust. The\n"
+		"diagnostic dump (F9) records the raw per-frame series.");
+
+	if (!ImGui::BeginTable("imageQuality", 1 + cameraCount,
+						   ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+		return;
+
+	ImGui::TableSetupColumn("Metric");
+	for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+	{
+		char header[32];
+		snprintf(header, sizeof(header), "Camera %d", cameraIndex + 1);
+		ImGui::TableSetupColumn(header);
+	}
+	ImGui::TableHeadersRow();
+
+	// ~1s EMA so the readout is legible at camera rate
+	const float emaAlpha= std::min(1.f, ImGui::GetIO().DeltaTime);
+
+	for (int rowIndex= 0; rowIndex <= k_flickerRowIndex; ++rowIndex)
+	{
+		const bool bFlickerRow= rowIndex == k_flickerRowIndex;
+		ImGui::TableNextRow();
+		ImGui::TableNextColumn();
+		ImGui::Text("%s", bFlickerRow ? "Flicker" : k_qualityRows[rowIndex].label);
+		ImGui::SetItemTooltip("%s", bFlickerRow
+			? "Frame-to-frame brightness oscillation of the whole image.\n"
+			  "A steady frequency = light PWM/mains flicker beating against\n"
+			  "the shutter (change lights, or match the shutter to the mains\n"
+			  "rate). Oscillation with no clear frequency = auto-exposure\n"
+			  "hunting - lock exposure and gain."
+			: k_qualityRows[rowIndex].tooltip);
+
+		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+		{
+			ImGui::TableNextColumn();
+
+			const bool bHavePreview= cameraIndex < (int)latestPreviews.size() &&
+									 latestPreviews[cameraIndex].valid;
+			float& ema= panelState.qualityEma[cameraIndex][rowIndex];
+			bool& bEmaValid= panelState.bQualityEmaValid[cameraIndex][rowIndex];
+
+			float rawValue= 0.f;
+			bool bHaveValue= false;
+			float flickerHz= 0.f;
+			MetricBand band;
+			const char* format;
+			if (bFlickerRow)
+			{
+				band= {0.f, 2.f, 0.f, 5.f};
+				format= "%.1f%%";
+				if (bHavePreview)
+				{
+					rawValue= latestPreviews[cameraIndex].result.lumaInstability * 100.f;
+					flickerHz= latestPreviews[cameraIndex].result.lumaFlickerHz;
+					bHaveValue= true;
+				}
+			}
+			else
+			{
+				const QualityRowDesc& row= k_qualityRows[rowIndex];
+				band= row.band;
+				format= row.format;
+				if (bHavePreview)
+				{
+					// Worst tracked hand: higher band class first, then the
+					// distance outside the good range
+					int worstClass= -1;
+					float worstSeverity= 0.f;
+					for (const TrackedHand& hand : latestPreviews[cameraIndex].result.hands)
+					{
+						if (!hand.tracked || !hand.imageQuality.valid)
+							continue;
+						const float value= row.extract(hand.imageQuality) * row.displayScale;
+						const int bandClass= classifyBand(value, band);
+						const float severity= bandSeverity(value, band);
+						if (bandClass > worstClass ||
+							(bandClass == worstClass && severity > worstSeverity))
+						{
+							worstClass= bandClass;
+							worstSeverity= severity;
+							rawValue= value;
+							bHaveValue= true;
+						}
+					}
+				}
+			}
+
+			if (!bHaveValue)
+			{
+				bEmaValid= false;
+				ImGui::TextDisabled("-");
+				continue;
+			}
+
+			ema= bEmaValid ? ema + (rawValue - ema) * emaAlpha : rawValue;
+			bEmaValid= true;
+
+			char text[48];
+			snprintf(text, sizeof(text), format, ema);
+			if (bFlickerRow && flickerHz > 0.f)
+			{
+				const size_t len= strlen(text);
+				snprintf(text + len, sizeof(text) - len, " @%.1fHz", flickerHz);
+			}
+			ImGui::TextColored(bandColor(classifyBand(ema, band)), "%s", text);
+		}
+	}
+	ImGui::EndTable();
+}
+
 void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionThread,
 									   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel,
-									   TrackingPanelState& panelState)
+									   TrackingPanelState& panelState,
+									   const std::vector<VisionPreviewFrame>& latestPreviews,
+									   const TrackingFrameResult& fusedResult)
 {
 	if (!ImGui::Begin("Tracking"))
 	{
@@ -174,6 +407,9 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"Your wrist->knuckle bone length, measured continuously from\n"
 			"stereo triangulation / depth. Nothing to configure.");
 	}
+
+	ImGui::SeparatorText("Image Quality");
+	drawImageQualitySection(config, panelState, latestPreviews);
 
 	ImGui::SeparatorText("Wrist IMU");
 	{
@@ -502,6 +738,132 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		const std::string lastDump= visionThread->getLastDumpPath();
 		if (!lastDump.empty())
 			ImGui::TextWrapped("Last dump: %s", lastDump.c_str());
+	}
+
+	// Hold-still jitter test: THE repeatable A/B number for camera-settings
+	// and lighting changes. Rebuilds the 21 world-space joints from each fused
+	// pose via forward kinematics (exactly what a client rebuilds) and reports
+	// the mean per-landmark deviation over a still window - with the hand
+	// genuinely still, deviation IS tracking noise.
+	{
+		const float deltaSeconds= ImGui::GetIO().DeltaTime;
+
+		if (panelState.holdStillCountdown > 0.f)
+		{
+			panelState.holdStillCountdown-= deltaSeconds;
+			if (panelState.holdStillCountdown <= 0.f)
+			{
+				panelState.holdStillCountdown= 0.f;
+				panelState.holdStillSecondsLeft= k_holdStillSampleSeconds;
+				panelState.holdStillLastTimestampMs= 0.0;
+				panelState.holdStillAccum[0]= TrackingPanelState::HoldStillAccum();
+				panelState.holdStillAccum[1]= TrackingPanelState::HoldStillAccum();
+			}
+
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Get ready - hold both hands still... %d",
+							   (int)ceilf(panelState.holdStillCountdown));
+			ImGui::ProgressBar(1.f - panelState.holdStillCountdown / k_holdStillCountdownSeconds,
+							   ImVec2(-1, 4), "");
+		}
+		else if (panelState.holdStillSecondsLeft > 0.f)
+		{
+			// Accumulate each NEW fused result (they arrive slower than UI
+			// frames; re-adding a held result would fake stability)
+			if (fusedResult.timestampMs > 0.0 &&
+				fusedResult.timestampMs != panelState.holdStillLastTimestampMs)
+			{
+				panelState.holdStillLastTimestampMs= fusedResult.timestampMs;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					const HandPose& pose= fusedResult.poses[sideIndex];
+					if (!pose.tracked || !pose.hasWorldPose)
+						continue;
+
+					glm::mat4 palmTransform= glm::mat4_cast(pose.palmOrientationWorld);
+					palmTransform[3]= glm::vec4(pose.palmPositionWorld, 1.f);
+					std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+					HandPoseModel::buildFingerJoints(palmTransform, pose.skeleton, pose.fingers, joints);
+
+					TrackingPanelState::HoldStillAccum& accum= panelState.holdStillAccum[sideIndex];
+					int pointIndex= 0;
+					auto addPoint= [&accum, &pointIndex](const glm::vec3& point) {
+						const glm::dvec3 p(point);
+						accum.sum[pointIndex]+= p;
+						accum.sumSq[pointIndex]+= p * p;
+						++pointIndex;
+					};
+					addPoint(pose.palmPositionWorld);
+					for (int fingerIndex= 0; fingerIndex < FINGER_COUNT; ++fingerIndex)
+						for (int jointIndex= 0; jointIndex < 4; ++jointIndex)
+							addPoint(joints[fingerIndex][jointIndex]);
+					++accum.sampleCount;
+				}
+			}
+
+			panelState.holdStillSecondsLeft-= deltaSeconds;
+			if (panelState.holdStillSecondsLeft <= 0.f)
+			{
+				panelState.holdStillSecondsLeft= 0.f;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					const TrackingPanelState::HoldStillAccum& accum= panelState.holdStillAccum[sideIndex];
+					if (accum.sampleCount < k_holdStillMinSamples)
+					{
+						panelState.holdStillDeviationMm[sideIndex]= -1.f;
+						continue;
+					}
+
+					double deviationSum= 0.0;
+					for (int pointIndex= 0; pointIndex < HAND_LANDMARK_COUNT; ++pointIndex)
+					{
+						const glm::dvec3 mean= accum.sum[pointIndex] / (double)accum.sampleCount;
+						const glm::dvec3 variance=
+							accum.sumSq[pointIndex] / (double)accum.sampleCount - mean * mean;
+						deviationSum+= std::sqrt(std::max(0.0, variance.x + variance.y + variance.z));
+					}
+					panelState.holdStillDeviationMm[sideIndex]=
+						(float)(deviationSum / HAND_LANDMARK_COUNT * 1000.0);
+				}
+				panelState.bHoldStillHasResult= true;
+			}
+
+			ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.f, 1.f), "Sampling - keep holding still...");
+			ImGui::ProgressBar(1.f - panelState.holdStillSecondsLeft / k_holdStillSampleSeconds,
+							   ImVec2(-1, 4), "");
+		}
+		else if (ImGui::Button("Hold-Still Jitter Test"))
+		{
+			panelState.holdStillCountdown= k_holdStillCountdownSeconds;
+		}
+		if (panelState.holdStillCountdown <= 0.f && panelState.holdStillSecondsLeft <= 0.f)
+		{
+			ImGui::SetItemTooltip(
+				"Hold both hands still for a few seconds and get ONE number\n"
+				"per hand: the mean per-landmark deviation over the window.\n"
+				"With the hands genuinely still, that deviation IS tracking\n"
+				"noise - so run it once per camera-settings or lighting\n"
+				"change and compare. Uses the fused world-space output\n"
+				"(what clients actually receive).");
+		}
+
+		if (panelState.bHoldStillHasResult)
+		{
+			ImGui::Text("Jitter:");
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				ImGui::SameLine();
+				const float deviationMm= panelState.holdStillDeviationMm[sideIndex];
+				if (deviationMm < 0.f)
+				{
+					ImGui::TextDisabled("%s: too few samples", sideIndex == 0 ? "L" : "R");
+					continue;
+				}
+				const ImVec4 color= deviationMm < 2.f
+					? ImVec4(0.4f, 1.f, 0.5f, 1.f)
+					: (deviationMm < 5.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f));
+				ImGui::TextColored(color, "%s: %.1f mm", sideIndex == 0 ? "L" : "R", deviationMm);
+			}
+		}
 	}
 
 	if (bChanged)
