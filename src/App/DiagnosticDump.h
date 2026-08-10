@@ -64,11 +64,24 @@ struct DiagImuState
 	float armAxisDominance= -1.f;
 	float twistProgress= 0.f;
 	float twistReversal= 0.f;
+	// SIGNED axial residual of the wrist joint, degrees (-999 = not measured).
+	// Anatomically zero, because the wrist has no axial degree of freedom, so
+	// anything else is mounting roll error - and unlike forearmAxisConsistency
+	// it means something during any motion rather than only a twist.
+	float wristAxialTwistDegrees= -999.f;
 	glm::vec3 gyroBiasDegreesPerSecond{0.f};
 	// Bias pinned at its bound = the filter diverged; everything else this
 	// device reported is suspect, so this is the first thing to check
 	bool biasSaturated= false;
 	float yawSigmaRadians= 0.f;
+	// The filter's OWN orientation, separate from the mounting composed onto
+	// it. Without this a frozen filter and a cancelling mounting look the same.
+	glm::quat filterOrientation{1.f, 0.f, 0.f, 0.f};
+	float tiltSigmaRadians= 0.f;
+	// Fraction of accelerometer samples the gravity gate accepted. Near zero
+	// means the filter is running open loop on the gyro.
+	float gravityAcceptRatio= -1.f;
+	float visionYawCorrectionDegrees= 0.f;
 };
 
 struct DiagCameraState
@@ -89,6 +102,45 @@ struct DiagFrameRecord
 	float autoScaleFactor= 1.f;
 	FusionDiagnostics fusion;
 	DiagImuState imu[2];
+};
+
+// Raw IMU samples for the axis-convention diagnostic: exactly what the device
+// sent, before any correction, bias or filtering. Paired with the palm
+// quaternions already in the history, this lets every candidate axis mapping
+// be replayed offline and scored against what the cameras actually saw -
+// which is the only way to settle a sensor frame, since a frame error can be
+// perfectly self-consistent between gyro and accelerometer.
+struct DiagImuRawSample
+{
+	double timestampMs= 0.0;
+	glm::vec3 acceleration{0.f};
+	glm::vec3 angularVelocity{0.f};
+};
+
+// The mounting capture a side is currently running on, and the quality
+// numbers behind it. Written once per dump rather than per frame - it only
+// changes when someone recalibrates - so a bad calibration can be judged
+// after the fact instead of being redone blind.
+struct DiagImuCapture
+{
+	bool present= false;
+	glm::quat forearmToSensor{1.f, 0.f, 0.f, 0.f};
+	bool motionUsable= false;
+	int poseSamples= 0;
+	float poseSpreadDegrees= 0.f;
+	float axisDominance= 0.f;
+	float twistProgress= 0.f;
+	float twistReversal= 0.f;
+	float curlDominance= 0.f;
+	float curlProgress= 0.f;
+	float curlReversal= 0.f;
+	int curlStrokes= 0;
+	float hingeSpreadDegrees= 0.f;
+	float interAxisAngleDegrees= 0.f;
+	bool lengthMeasured= false;
+	float forearmLengthMeters= 0.f;
+	float lengthFitCorrelation= 0.f;
+	int palmarSource= 0;
 };
 
 // Everything write() needs about one camera at dump time
@@ -118,7 +170,9 @@ public:
 	bool write(const std::string& dumpDir,
 			   const std::vector<DiagCameraSnapshot>& cameras,
 			   const TrackingFrameResult& latestFused,
-			   const std::string& configJsonString) const;
+			   const std::string& configJsonString,
+			   const std::vector<DiagImuRawSample> rawImu[2],
+			   const DiagImuCapture lastCapture[2]) const;
 
 private:
 	// ~4-8s of history depending on the fusion rate; records are ~1-2 KB

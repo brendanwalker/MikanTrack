@@ -64,11 +64,16 @@ static json diagImuToJson(const DiagImuState& imu)
 		{"armAxisDominance", imu.armAxisDominance},
 		{"twistProgress", imu.twistProgress},
 		{"twistReversal", imu.twistReversal},
+		{"wristAxialTwistDegrees", imu.wristAxialTwistDegrees},
 		{"biasSaturated", imu.biasSaturated},
 		{"gyroBiasDegPerSec", json::array({imu.gyroBiasDegreesPerSecond.x,
 										   imu.gyroBiasDegreesPerSecond.y,
 										   imu.gyroBiasDegreesPerSecond.z})},
 		{"yawSigmaRadians", imu.yawSigmaRadians},
+		{"filterOrientation", quatToJson(imu.filterOrientation)},
+		{"tiltSigmaRadians", imu.tiltSigmaRadians},
+		{"gravityAcceptRatio", imu.gravityAcceptRatio},
+		{"visionYawCorrectionDegrees", imu.visionYawCorrectionDegrees},
 	};
 }
 
@@ -337,7 +342,9 @@ static json resultSnapshotToJson(const TrackingFrameResult& result)
 bool DiagnosticDump::write(const std::string& dumpDir,
 						   const std::vector<DiagCameraSnapshot>& cameras,
 						   const TrackingFrameResult& latestFused,
-						   const std::string& configJsonString) const
+						   const std::string& configJsonString,
+						   const std::vector<DiagImuRawSample> rawImu[2],
+						   const DiagImuCapture lastCapture[2]) const
 {
 	std::error_code ec;
 	std::filesystem::create_directories(dumpDir, ec);
@@ -446,6 +453,54 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 		});
 	}
 	j["history"]= historyJson;
+	// Raw IMU samples, oldest first. Deliberately uncorrected: the point is to
+	// replay candidate axis mappings against them and score each one on how
+	// well it tracks the palm quaternions in the history above.
+	json rawImuJson= json::object();
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		json samples= json::array();
+		for (const DiagImuRawSample& sample : rawImu[sideIndex])
+		{
+			samples.push_back({
+				{"t", sample.timestampMs},
+				{"accel", json::array({sample.acceleration.x, sample.acceleration.y, sample.acceleration.z})},
+				{"gyro", json::array({sample.angularVelocity.x, sample.angularVelocity.y,
+									  sample.angularVelocity.z})},
+			});
+		}
+		rawImuJson[sideIndex == 0 ? "left" : "right"]= samples;
+	}
+	j["imuRaw"]= rawImuJson;
+
+	// The calibration currently in force, with the evidence it was built from
+	json captureJson= json::object();
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const DiagImuCapture& capture= lastCapture[sideIndex];
+		captureJson[sideIndex == 0 ? "left" : "right"]= capture.present
+			? json({{"present", true},
+					{"forearmToSensor", quatToJson(capture.forearmToSensor)},
+					{"motionUsable", capture.motionUsable},
+					{"poseSamples", capture.poseSamples},
+					{"poseSpreadDegrees", capture.poseSpreadDegrees},
+					{"axisDominance", capture.axisDominance},
+					{"twistProgress", capture.twistProgress},
+					{"twistReversal", capture.twistReversal},
+					{"curlDominance", capture.curlDominance},
+					{"curlProgress", capture.curlProgress},
+					{"curlReversal", capture.curlReversal},
+					{"curlStrokes", capture.curlStrokes},
+					{"hingeSpreadDegrees", capture.hingeSpreadDegrees},
+					{"interAxisAngleDegrees", capture.interAxisAngleDegrees},
+					{"lengthMeasured", capture.lengthMeasured},
+					{"forearmLengthMeters", capture.forearmLengthMeters},
+					{"lengthFitCorrelation", capture.lengthFitCorrelation},
+					{"palmarSource", capture.palmarSource}})
+			: json({{"present", false}});
+	}
+	j["imuLastCapture"]= captureJson;
+
 
 	const std::filesystem::path jsonPath= std::filesystem::path(dumpDir) / "dump.json";
 	std::ofstream file(jsonPath);

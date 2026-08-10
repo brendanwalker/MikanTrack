@@ -13,22 +13,26 @@ struct TrackingFrameResult;
 
 // Wrist IMU mounting calibration wizard.
 //
-// The mounting rotation needs two things measured in two different ways, and
-// they cannot be gathered at the same moment - which is why this is a wizard
-// and not a button:
+// Two motions, and the geometry comes entirely from the IMU:
 //
-//  1. TWIST. Pronating/supinating the forearm rotates it about its long axis
-//     and nothing else, so the dominant axis of the angular-velocity scatter
-//     IS the forearm axis. This is the part the elbow rides on, and it is
-//     measured over seconds of motion rather than one instant.
-//  2. A HELD POSE. Motion cannot observe roll about that axis; a straight
-//     wrist supplies it for free, because the forearm frame is DEFINED as the
-//     palm frame at a neutral wrist.
+//  1. TWIST (pronation/supination) turns the forearm about its long axis and
+//     nothing else, so the dominant axis of that window IS the forearm axis,
+//     measured in the sensor's own frame. This is the only degree of freedom
+//     the elbow estimate consumes.
+//  2. CURL (elbow flexion) turns it about the elbow hinge, near perpendicular
+//     to the long axis. Two independent axes close the frame, which fixes the
+//     roll that a twist alone cannot see.
 //
-// Doing (2) alone is what the earlier single-button flow tried, and it had to
-// land all three degrees of freedom at one instant; in practice it got the
-// arm axis wrong by ~60 deg and the error was invisible until the elbow
-// started sweeping a cone.
+// Vision decides exactly one bit - which side of the hinge axis the palm is
+// on - and nothing else. That is a choice between two candidates 180 degrees
+// apart, so it survives a palm estimate far too noisy to BE a mounting.
+//
+// There is deliberately NO held pose. Earlier versions took the roll, and the
+// arm axis SIGN, from vision: first from a single instant, then from an
+// average over the twist. Both failed the same way, because a wrist that does
+// not hold still during the capture corrupts the average just as thoroughly
+// as it corrupts one frame - measured at 54 degrees of spread on a left arm
+// whose calibration was reliably garbage.
 class MountingWizard
 {
 public:
@@ -37,7 +41,7 @@ public:
 		VerifyDevices,
 		CalibrateBias,
 		TwistForearms,
-		HoldStraight,
+		CurlElbows,
 		Review,
 	};
 
@@ -54,7 +58,12 @@ private:
 	// A side takes part only if its controller is actually usable; a user with
 	// one controller should not be blocked by the other side never arriving
 	bool isSideParticipating(int sideIndex) const;
-	void beginTwistStage();
+	// Starts one motion stage: begins recording it, and waits for the reset to
+	// land before believing anything the status says
+	void beginMotionStage(eState state, eMountingMotion motion);
+	// Shared by both motion stages - they watch the same three numbers, since
+	// "enough back-and-forth rotation about one axis" is the bar either way
+	bool drawMotionStage(const ImuSideStatus status[2], bool bReady[2], const char* elbowHint);
 
 	AppConfig* m_config;
 	VisionThread* m_visionThread;
@@ -64,10 +73,10 @@ private:
 	bool m_bWantsClose= false;
 
 	bool m_bParticipating[2]= {false, false};
-	// Latched once a side's twist clears every bar, so that easing off the
-	// motion (as everyone does when reading the next instruction) doesn't
-	// un-earn it
+	// Latched once a side's motion clears every bar, so that easing off (as
+	// everyone does when reading the next instruction) doesn't un-earn it
 	bool m_bTwistReady[2]= {false, false};
+	bool m_bCurlReady[2]= {false, false};
 
 	// The motion reset is serviced on the vision thread, so the status read
 	// right after requesting one still describes the PREVIOUS session. Latching
@@ -76,7 +85,6 @@ private:
 	uint32_t m_epochAtReset= 0;
 	bool m_bWaitingForMotionReset= false;
 
-	float m_holdCountdown= 0.f;
 	bool m_bCaptureRequested= false;
 
 	// Review-stage outcome

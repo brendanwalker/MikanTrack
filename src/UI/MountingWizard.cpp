@@ -12,7 +12,6 @@
 
 namespace
 {
-constexpr float k_holdCountdownSeconds= 3.f;
 // A margin over ImuService's own capture gate, so a capture is never taken
 // right on the boundary
 constexpr float k_twistReadyDominance= 0.8f;
@@ -48,11 +47,11 @@ void MountingWizard::enter()
 	m_bWantsClose= false;
 	m_state= eState::VerifyDevices;
 	m_bCaptureRequested= false;
-	m_holdCountdown= 0.f;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		m_bParticipating[sideIndex]= false;
 		m_bTwistReady[sideIndex]= false;
+		m_bCurlReady[sideIndex]= false;
 		m_bAccepted[sideIndex]= false;
 		m_captured[sideIndex]= MountingCaptureResult();
 	}
@@ -62,6 +61,7 @@ void MountingWizard::exit()
 {
 	// Leaving mid-measurement must not strand the service collecting forever
 	m_visionThread->cancelImuBiasCalibration();
+	m_visionThread->requestImuMotionRecording(eMountingMotion::None);
 	m_bActive= false;
 }
 
@@ -70,16 +70,82 @@ bool MountingWizard::isSideParticipating(int sideIndex) const
 	return m_bParticipating[sideIndex];
 }
 
-void MountingWizard::beginTwistStage()
+void MountingWizard::beginMotionStage(eState state, eMountingMotion motion)
 {
 	// Start from a clean slate: whatever the arms happened to be doing before
-	// the wizard opened is not part of this measurement
-	m_visionThread->requestImuMotionReset();
+	// this stage is not part of this measurement
+	m_visionThread->requestImuMotionRecording(motion);
 	m_epochAtReset= m_visionThread->getImuSideStatus(eHandSide::Left).motionEpoch;
 	m_bWaitingForMotionReset= true;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-		m_bTwistReady[sideIndex]= false;
-	m_state= eState::TwistForearms;
+	{
+		if (motion == eMountingMotion::Twist)
+			m_bTwistReady[sideIndex]= false;
+		else
+			m_bCurlReady[sideIndex]= false;
+	}
+	m_state= state;
+}
+
+bool MountingWizard::drawMotionStage(const ImuSideStatus status[2], bool bReady[2], const char* elbowHint)
+{
+	// The recording is serviced on the vision thread; until it lands, the
+	// status still describes the previous stage
+	if (m_bWaitingForMotionReset && status[0].motionEpoch != m_epochAtReset &&
+		status[1].motionEpoch != m_epochAtReset)
+	{
+		m_bWaitingForMotionReset= false;
+	}
+
+	bool bAllReady= true;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		if (!isSideParticipating(sideIndex))
+			continue;
+
+		const ImuSideStatus& sideStatus= status[sideIndex];
+		const float dominance= std::max(0.f, sideStatus.armAxisDominance);
+		if (!m_bWaitingForMotionReset && sideStatus.twistProgress >= 1.f &&
+			sideStatus.twistReversal >= k_twistReadyReversal && dominance >= k_twistReadyDominance)
+		{
+			bReady[sideIndex]= true;
+		}
+		bAllReady&= bReady[sideIndex];
+
+		ImGui::Text("%-6s", sideName(sideIndex));
+		ImGui::SameLine();
+		const float shownProgress= m_bWaitingForMotionReset ? 0.f : sideStatus.twistProgress;
+		ImGui::ProgressBar(shownProgress, ImVec2(-90, 0), bReady[sideIndex] ? "ready" : "keep going");
+		ImGui::SameLine();
+		if (bReady[sideIndex])
+		{
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "done");
+		}
+		else
+		{
+			ImGui::TextDisabled("%.0f%%", shownProgress * 100.f);
+			// Once there IS enough motion but it still does not qualify, say
+			// which way it is wrong - the two need opposite fixes
+			if (!m_bWaitingForMotionReset && sideStatus.twistProgress >= 1.f)
+			{
+				if (sideStatus.twistReversal < k_twistReadyReversal)
+					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
+									   "  %s: move back the other way too", sideName(sideIndex));
+				else if (dominance < k_twistReadyDominance)
+					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "  %s: %s", sideName(sideIndex),
+									   elbowHint);
+			}
+		}
+
+		if (sideStatus.biasSaturated)
+		{
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
+							   "  %s: this controller's orientation filter has diverged.\n"
+							   "  Set it down, redo the rest step, and try again.",
+							   sideName(sideIndex));
+		}
+	}
+	return bAllReady;
 }
 
 bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fusedResult)
@@ -105,9 +171,8 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 		{
 			ImGui::TextWrapped(
 				"This measures how each controller is strapped to your wrist, so the app "
-				"can turn a sensor orientation into a FOREARM orientation. It takes two "
-				"steps: twisting your forearms (which measures the arm axis) and then "
-				"holding them straight (which sets the roll about that axis).");
+				"can turn a sensor orientation into a FOREARM orientation. Two motions "
+				"supply it: a twist of the forearms, then a curl at the elbows.");
 			ImGui::Spacing();
 			ImGui::TextWrapped(
 				"Strap each controller to the top of the wrist, pointing along the "
@@ -209,7 +274,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Put the controllers back on your wrists.");
 				ImGui::Spacing();
 				if (ImGui::Button("Continue", ImVec2(180, 0)))
-					beginTwistStage();
+					beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);
 			}
 			else
 			{
@@ -220,7 +285,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 					// The filter estimates the bias online anyway - just not
 					// about the vertical axis, which is the one that drifts
 					m_visionThread->cancelImuBiasCalibration();
-					beginTwistStage();
+					beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);
 				}
 				ImGui::SetItemTooltip(
 					"The mounting calibration still works; yaw will just drift\n"
@@ -235,82 +300,27 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 		case eState::TwistForearms:
 		{
 			ImGui::TextWrapped(
-				"Step 2 of 3: TWIST. Rotate each forearm as if slowly turning a doorknob "
-				"- palm up, palm down, and back again, several times. Keep your elbows "
-				"still and your wrists relaxed; it is the twist that is being measured.");
+				"Step 2 of 3: TWIST. Hold your forearms roughly HORIZONTAL and rotate each "
+				"one as if slowly turning a doorknob - palm up, palm down, and back again, "
+				"several times. Keep your elbows still; it is the twist that is measured.");
 			ImGui::Spacing();
 			ImGui::TextWrapped(
 				"Turning one way only does not count, and neither does waving your arms "
-				"around - the bar needs back-and-forth rotation about the forearm itself. "
-				"Your hands do not need to be visible to the cameras during this step.");
+				"around - the bar needs back-and-forth rotation about the forearm itself.");
+			ImGui::Spacing();
+			ImGui::TextWrapped(
+				"This finds the forearm's long axis, which is what places the elbow.");
 			ImGui::Spacing();
 
-			// The reset is serviced on the vision thread; until it lands, the
-			// status still describes the previous session
-			if (m_bWaitingForMotionReset &&
-				status[0].motionEpoch != m_epochAtReset && status[1].motionEpoch != m_epochAtReset)
-			{
-				m_bWaitingForMotionReset= false;
-			}
+			drawMotionStage(status, m_bTwistReady, "keep the elbow still - twist only");
 
-			bool bAllReady= true;
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				if (!isSideParticipating(sideIndex))
-					continue;
-
-				const ImuSideStatus& sideStatus= status[sideIndex];
-				const float dominance= std::max(0.f, sideStatus.armAxisDominance);
-				if (!m_bWaitingForMotionReset && sideStatus.twistProgress >= 1.f &&
-					sideStatus.twistReversal >= k_twistReadyReversal && dominance >= k_twistReadyDominance)
-				{
-					m_bTwistReady[sideIndex]= true;
-				}
-				bAllReady&= m_bTwistReady[sideIndex];
-
-				ImGui::Text("%-6s", sideName(sideIndex));
-				ImGui::SameLine();
-				const float shownProgress= m_bWaitingForMotionReset ? 0.f : sideStatus.twistProgress;
-				ImGui::ProgressBar(shownProgress, ImVec2(-90, 0),
-								   m_bTwistReady[sideIndex] ? "ready" : "keep twisting");
-				ImGui::SameLine();
-				if (m_bTwistReady[sideIndex])
-				{
-					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "done");
-				}
-				else
-				{
-					ImGui::TextDisabled("%.0f%%", shownProgress * 100.f);
-					// Once there IS enough motion but it still does not qualify,
-					// say which way it is wrong - the two need opposite fixes
-					if (!m_bWaitingForMotionReset && sideStatus.twistProgress >= 1.f)
-					{
-						if (sideStatus.twistReversal < k_twistReadyReversal)
-							ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-											   "  %s: rotate back the other way too", sideName(sideIndex));
-						else if (dominance < k_twistReadyDominance)
-							ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-											   "  %s: keep the elbow still - twist only",
-											   sideName(sideIndex));
-					}
-				}
-
-				if (sideStatus.biasSaturated)
-				{
-					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-									   "  %s: this controller's orientation filter has diverged.\n"
-									   "  Set it down, redo the rest step, and try again.",
-									   sideName(sideIndex));
-				}
-			}
-
-			if (bAllReady)
-				m_state= eState::HoldStraight;
-
+			// Deliberately NOT auto-advanced: the next stage is a different
+			// motion with its own instructions, and dropping the user into it
+			// mid-twist means they perform the first half of it wrong
 			ImGui::Spacing();
 			ImGui::BeginDisabled(!m_bTwistReady[0] && !m_bTwistReady[1]);
 			if (ImGui::Button("Continue", ImVec2(180, 0)))
-				m_state= eState::HoldStraight;
+				beginMotionStage(eState::CurlElbows, eMountingMotion::Curl);
 			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(120, 0)))
@@ -318,67 +328,56 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			break;
 		}
 
-		case eState::HoldStraight:
+		case eState::CurlElbows:
 		{
 			ImGui::TextWrapped(
-				"Step 3 of 3: HOLD STRAIGHT. Hold each hand flat and in line with its "
-				"forearm - no bend at the wrist, as if your hand and forearm were one "
-				"board - where the cameras can see it. Then capture.");
+				"Step 3 of 3: CURL. Keep your PALMS FACING DOWN and your upper arms still, "
+				"then raise and lower each hand at the elbow, several times - a slow bicep "
+				"curl. Do not twist your forearms during this.");
 			ImGui::Spacing();
 			ImGui::TextWrapped(
-				"This pose is what defines a straight wrist as zero, so any bend you hold "
-				"here is baked in as the new neutral.");
+				"The elbow hinge points across the forearm, so this second direction of "
+				"rotation is what fixes the roll that a twist alone cannot see. It also "
+				"measures the distance from your elbow to the controller.");
+			ImGui::Spacing();
+			ImGui::TextWrapped(
+				"KEEP BOTH HANDS VISIBLE to the cameras. The cameras decide only which way "
+				"round your palm faces, so a rough view is enough.");
 			ImGui::Spacing();
 
-			bool bAllTracked= true;
+			const bool bAllReady=
+				drawMotionStage(status, m_bCurlReady, "keep the shoulder still - bend at the elbow only");
+
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
 				if (!isSideParticipating(sideIndex))
 					continue;
 				const HandPose& pose= fusedResult.poses[sideIndex];
-				const bool bTracked= pose.tracked && pose.hasWorldPose;
-				bAllTracked&= bTracked;
+				if (!pose.tracked || !pose.hasWorldPose)
+				{
+					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
+									   "  %s: hand not visible - the cameras must see it",
+									   sideName(sideIndex));
+				}
+			}
 
-				char label[64];
-				snprintf(label, sizeof(label), "%s hand visible to the cameras", sideName(sideIndex));
-				drawStatusLine(bTracked, label);
+			if (bAllReady && !m_bCaptureRequested)
+			{
+				m_visionThread->requestImuMountingCapture();
+				m_bCaptureRequested= true;
 			}
 
 			ImGui::Spacing();
-			if (m_holdCountdown > 0.f)
+			ImGui::BeginDisabled(m_bCaptureRequested || (!m_bCurlReady[0] && !m_bCurlReady[1]));
+			if (ImGui::Button("Finish now", ImVec2(180, 0)))
 			{
-				m_holdCountdown-= deltaSeconds;
-				if (m_holdCountdown <= 0.f)
-				{
-					m_holdCountdown= 0.f;
-					m_visionThread->requestImuMountingCapture();
-					m_bCaptureRequested= true;
-				}
-				else
-				{
-					char countdownText[16];
-					snprintf(countdownText, sizeof(countdownText), "%d", (int)ceilf(m_holdCountdown));
-					ImGui::SetWindowFontScale(3.f);
-					const float textWidth= ImGui::CalcTextSize(countdownText).x;
-					ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
-					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
-					ImGui::SetWindowFontScale(1.f);
-					if (ImGui::Button("Cancel countdown", ImVec2(180, 0)))
-						m_holdCountdown= 0.f;
-				}
+				m_visionThread->requestImuMountingCapture();
+				m_bCaptureRequested= true;
 			}
-			else if (!m_bCaptureRequested)
-			{
-				ImGui::BeginDisabled(!bAllTracked);
-				if (ImGui::Button("Capture", ImVec2(180, 0)))
-					m_holdCountdown= k_holdCountdownSeconds;
-				ImGui::EndDisabled();
-				if (!bAllTracked)
-					ImGui::TextDisabled("Both participating hands must be tracked");
-				ImGui::SameLine();
-				if (ImGui::Button("Back", ImVec2(120, 0)))
-					beginTwistStage();
-			}
+			ImGui::EndDisabled();
+			ImGui::SameLine();
+			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+				m_bWantsClose= true;
 
 			// The capture is serviced on the vision thread; collect the result
 			if (m_bCaptureRequested)
@@ -387,6 +386,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				if (m_visionThread->fetchImuMountingCapture(capture))
 				{
 					m_bCaptureRequested= false;
+					m_visionThread->requestImuMotionRecording(eMountingMotion::None);
 					bool bAnyChange= false;
 					for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 					{
@@ -400,6 +400,28 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 						m_config->imu.mountingPresent[sideIndex]= true;
 						bAnyChange= true;
 					}
+
+					// The curl measured the elbow-to-controller distance as a
+					// by-product. It is the radius the sensor swept, so it runs
+					// slightly short of a true elbow-to-wrist length, but it
+					// beats the fixed default it replaces - and the setting
+					// stays editable either way.
+					float lengthSum= 0.f;
+					int lengthCount= 0;
+					for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+					{
+						if (m_bAccepted[sideIndex] && capture.sides[sideIndex].bLengthMeasured)
+						{
+							lengthSum+= capture.sides[sideIndex].forearmLengthMeters;
+							lengthCount++;
+						}
+					}
+					if (lengthCount > 0)
+					{
+						m_config->imu.forearmLengthMeters= lengthSum / (float)lengthCount;
+						bAnyChange= true;
+					}
+
 					if (bAnyChange)
 					{
 						m_config->markDirty();
@@ -422,23 +444,41 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				ImGui::SeparatorText(sideName(sideIndex));
 				if (m_bAccepted[sideIndex])
 				{
-					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "  Calibrated (arm axis %.2f)",
-									   result.axisDominance);
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f),
+									   "  Calibrated (arm axis %.2f, hinge %.0f deg off it)",
+									   result.axisDominance, result.interAxisAngleDegrees);
+					if (result.bLengthMeasured)
+					{
+						ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f),
+										   "  Elbow to controller: %.0f cm (measured)",
+										   result.forearmLengthMeters * 100.f);
+					}
 				}
 				else if (!result.bCaptured)
 				{
 					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-									   "  Not captured - the hand was not tracked, or the\n"
-									   "  controller stopped streaming");
+									   "  Not captured - the controller stopped streaming");
 				}
 				else
 				{
+					// Name the gate that actually failed: they need different
+					// corrections, and "rejected" alone told the user nothing
+					const char* reason= "the motions were not good enough";
+					if (!imuIsTwistUsable(result.axisDominance, result.twistProgress, result.twistReversal))
+						reason= "the TWIST did not pin the forearm axis - rotate\n  further, and back the other way too";
+					else if (result.curlProgress < 1.f || result.curlReversal < 0.5f)
+						reason= "the CURL was too small - raise and lower your hand\n  further, several times";
+					else if (result.interAxisAngleDegrees < 60.f)
+						reason= "the curl turned about the same axis as the twist -\n  keep the shoulder still and bend only at the elbow";
+					else if (result.curlStrokes < 3 || result.hingeSpreadDegrees > 15.f)
+						reason= "the curl strokes disagreed - keep the palms facing\n  down and do not twist while curling";
+					else if (result.lengthFitCorrelation < 0.5f)
+						reason= "the curl did not show which way the hand points -\n  bend at the elbow rather than moving the whole arm";
+					else if (result.palmarSource == ePalmarSource::None)
+						reason= "the cameras never saw the hand, so which way the\n  palm faces is unknown";
+
 					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-									   "  Rejected - the twist was not good enough to locate\n"
-									   "  the forearm axis (amount %.0f%%, back-and-forth %.2f,\n"
-									   "  single-axis %.2f). Nothing was saved for this side.",
-									   result.twistProgress * 100.f, result.twistReversal,
-									   result.axisDominance);
+									   "  Rejected - %s.\n  Nothing was saved for this side.", reason);
 				}
 			}
 
@@ -473,7 +513,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			if (ImGui::Button("Redo", ImVec2(120, 0)))
 			{
 				m_bCaptureRequested= false;
-				beginTwistStage();
+				beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);
 			}
 			break;
 		}

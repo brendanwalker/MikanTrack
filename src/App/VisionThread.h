@@ -99,20 +99,27 @@ public:
 	// view-dependent - one camera's rest angles do not zero another's.
 	void requestRestPoseCapture() { m_bRestPoseCaptureRequested= true; }
 
-	// Wrist IMU: capture the mounting rotation for both wrists. Hold both
-	// hands STRAIGHT in line with the forearms (that pose defines the
-	// forearm frame as "the palm frame at neutral wrist") and request.
+	// Wrist IMU: solve the mounting rotation for both wrists from the two
+	// recorded calibration motions (see imuSolveMountingFromMotions). Record a
+	// twist and a curl first; there is no pose to hold.
 	void requestImuMountingCapture() { m_bImuMountingCaptureRequested= true; }
 	struct ImuMountingCapture
 	{
 		MountingCaptureResult sides[2];
 	};
 	bool fetchImuMountingCapture(ImuMountingCapture& outCapture);
+
 	// Live per-wrist IMU status for the UI (main thread safe: plain copies)
 	ImuSideStatus getImuSideStatus(eHandSide side) const;
-	// Clears the accumulated twist history so a calibration session measures
-	// only the motion made from here on
-	void requestImuMotionReset() { m_bImuMotionResetRequested= true; }
+	// Starts recording one of the two calibration motions, discarding whatever
+	// that window held before and clearing the live twist history so the
+	// progress readout describes the stage being asked for. Pass
+	// eMountingMotion::None to stop recording.
+	void requestImuMotionRecording(eMountingMotion motion)
+	{
+		m_requestedImuMotionRecording= (int)motion;
+		m_bImuMotionRecordingRequested= true;
+	}
 	// Static gyro bias calibration: measures each resting controller's bias
 	// directly. Progress is reported through getImuSideStatus().
 	void requestImuBiasCalibration() { m_bImuBiasCalibrationRequested= true; }
@@ -212,7 +219,8 @@ private:
 	// the vision thread; the UI reads snapshots through a mutex.
 	ImuService m_imuService;
 	std::atomic_bool m_bImuMountingCaptureRequested{false};
-	std::atomic_bool m_bImuMotionResetRequested{false};
+	std::atomic_bool m_bImuMotionRecordingRequested{false};
+	std::atomic_int m_requestedImuMotionRecording{(int)eMountingMotion::None};
 	std::atomic_bool m_bImuBiasCalibrationRequested{false};
 	std::atomic_bool m_bImuBiasCancelRequested{false};
 	mutable std::mutex m_imuMutex;

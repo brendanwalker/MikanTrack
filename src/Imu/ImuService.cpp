@@ -29,6 +29,45 @@ static constexpr float k_minTwistPathRadians= 5.f;
 static constexpr float k_minTwistReversal= 0.5f;
 static constexpr float k_minTwistDominance= 0.7f;
 
+// -- Curl quality gates (the second calibration motion) -----
+// A curl sweeps the whole forearm rather than spinning it in place, so it
+// carries more soft-tissue wobble than a twist and cannot hold a twist's
+// dominance. Measured at 0.94 on a clean capture against the twist's 0.99.
+static constexpr float k_minCurlDominance= 0.85f;
+// The two motions must be independent for the frame to close. Anatomically
+// this is near 90 degrees (measured 89.3); far below it means the shoulder
+// was turning during the curl and roll is being extrapolated.
+static constexpr float k_minInterAxisAngleDegrees= 60.f;
+// Half-strokes whose individually measured hinge axes disagree by more than
+// this were not made at one settled pronation, so roll is not repeatable.
+// A clean capture holds ~8 degrees once the opening stroke is dropped.
+static constexpr float k_maxHingeSpreadDegrees= 15.f;
+// A half-stroke shorter than this is a direction change, not a stroke
+static constexpr int k_minStrokeSamples= 40;
+// Rate below which a sample is between strokes rather than in one
+static constexpr float k_strokeDeadbandRadiansPerSecond= 0.5f;
+// The centripetal fit's radius is an elbow-to-sensor distance, so it has to
+// come out a forearm length. Outside this the model did not apply and the
+// measurement is discarded rather than believed.
+static constexpr float k_minForearmLengthMeters= 0.10f;
+static constexpr float k_maxForearmLengthMeters= 0.40f;
+static constexpr float k_minLengthFitCorrelation= 0.5f;
+// Recording cap, ~60 s per motion at 200 Hz. A window this long is already
+// far more than any gate needs; the bound only stops a wizard left open
+// overnight from growing without limit.
+static constexpr size_t k_maxMotionRecordingSamples= 12000;
+// The pose average needs a decent run of tracked frames behind it
+static constexpr int k_poseMountingMinSamples= 60;
+static constexpr float k_poseMountingMinConfidence= 0.4f;
+// ~30 seconds of raw samples kept for the axis-convention diagnostic
+static constexpr size_t k_rawHistoryMaxSamples= 6000;
+
+// -- Wrist axial residual (mounting-roll health check) -----
+// The palm estimate has to be worth trusting before it says anything
+static constexpr float k_axialResidualMinConfidence= 0.5f;
+// Enough samples that the average means something before reporting it
+static constexpr int k_axialResidualMinSamples= 60;
+
 // -- Static gyro bias calibration -----
 static constexpr double k_biasCalibrationSeconds= 4.0;
 // A resting controller reads well under this; anything more means it was
@@ -203,6 +242,16 @@ void ImuService::update()
 		m_sampleScratch.clear();
 		entry->device->fetchSamples(m_sampleScratch);
 
+		// Keep the untouched samples first: the axis-convention diagnostic has
+		// to replay candidate mappings against what the device actually sent,
+		// not against whatever correction is currently enabled
+		for (const ImuSample& raw : m_sampleScratch)
+		{
+			entry->rawHistory.push_back(raw);
+			if (entry->rawHistory.size() > k_rawHistoryMaxSamples)
+				entry->rawHistory.pop_front();
+		}
+
 		// Samples arrive in chronological order and carry their own
 		// timestamps, so integrating a whole backlog at once is exact - a
 		// caller running at camera rate loses nothing but output freshness
@@ -259,6 +308,25 @@ void ImuService::update()
 				entry->rotationScatterWeight+= rateMagnitude * rateMagnitude * dtSeconds;
 				entry->rotationPathRadians+= rateMagnitude * dtSeconds;
 				entry->rotationNet+= rate * dtSeconds;
+			}
+
+			// The calibration recording keeps EVERY sample, including the slow
+			// ones the scatter gate above skips: the centripetal fit needs the
+			// near-stationary samples to anchor gravity, and the stroke split
+			// needs the turnarounds to know where one stroke ends.
+			if (m_motionRecording != eMountingMotion::None)
+			{
+				std::vector<MotionSample>& recording= m_motionRecording == eMountingMotion::Twist
+					? entry->twistRecording
+					: entry->curlRecording;
+				if (recording.size() < k_maxMotionRecordingSamples)
+				{
+					MotionSample recorded;
+					recorded.rate= rate;
+					recorded.acceleration= sample.acceleration;
+					recorded.dtSeconds= dtSeconds;
+					recording.push_back(recorded);
+				}
 			}
 		}
 	}
@@ -347,34 +415,305 @@ glm::vec3 imuDominantRotationAxis(const glm::mat3& scatter, float& outDominance)
 	return axis;
 }
 
-glm::quat imuAlignMountingToArmAxis(const glm::quat& poseMounting, glm::vec3 sensorAxis)
+namespace
 {
-	const float sensorAxisLength= glm::length(sensorAxis);
-	if (sensorAxisLength < 1e-6f)
-		return poseMounting;
-	sensorAxis/= sensorAxisLength;
+struct ImuMotionStats
+{
+	glm::mat3 scatter{0.f};
+	float pathRadians= 0.f;
+	glm::vec3 net{0.f};
+};
 
-	// Where the held pose thinks the arm axis is, expressed in sensor frame
-	const glm::vec3 poseAxis= glm::normalize(poseMounting * glm::vec3(1.f, 0.f, 0.f));
+ImuMotionStats imuAccumulateMotionStats(const MotionSample* samples, size_t count)
+{
+	ImuMotionStats stats;
+	for (size_t index= 0; index < count; ++index)
+	{
+		const glm::vec3& rate= samples[index].rate;
+		const float dtSeconds= samples[index].dtSeconds;
+		stats.scatter+= glm::outerProduct(rate, rate) * dtSeconds;
+		stats.pathRadians+= glm::length(rate) * dtSeconds;
+		stats.net+= rate * dtSeconds;
+	}
+	return stats;
+}
+} // namespace
 
-	// The eigenvector's sign is arbitrary; +X must point toward the hand, so
-	// resolve it by agreeing with the pose
-	if (glm::dot(sensorAxis, poseAxis) < 0.f)
-		sensorAxis= -sensorAxis;
+bool imuFitCentripetalRadius(const std::vector<MotionSample>& curl, const glm::vec3& longAxis,
+							 const glm::vec3& hingeAxis, float& outSignedRadius, float& outCorrelation)
+{
+	outSignedRadius= 0.f;
+	outCorrelation= 0.f;
 
-	const float alignment= glm::clamp(glm::dot(poseAxis, sensorAxis), -1.f, 1.f);
-	if (alignment > 0.999999f)
-		return poseMounting;
+	constexpr size_t k_minFitSamples= 100;
+	constexpr float k_gravity= 9.81f;
+	if (curl.size() < k_minFitSamples)
+		return false;
 
-	const glm::vec3 rotationAxis= glm::cross(poseAxis, sensorAxis);
-	const float rotationAxisLength= glm::length(rotationAxis);
-	if (rotationAxisLength < 1e-6f) // exactly antiparallel: the sign flip above rules this out
-		return poseMounting;
+	// Seed the gravity direction from the quietest sample in the opening
+	// stretch, where the accelerometer reads little but gravity
+	size_t seedIndex= 0;
+	float seedRate= glm::length(curl[0].rate);
+	const size_t seedSearch= std::min<size_t>(curl.size(), k_minFitSamples);
+	for (size_t index= 1; index < seedSearch; ++index)
+	{
+		const float rateMagnitude= glm::length(curl[index].rate);
+		if (rateMagnitude < seedRate)
+		{
+			seedRate= rateMagnitude;
+			seedIndex= index;
+		}
+	}
 
-	// Left-multiply: the correction acts in SENSOR frame, which is where both
-	// axes live
-	return glm::normalize(
-		glm::angleAxis(acosf(alignment), rotationAxis / rotationAxisLength) * poseMounting);
+	glm::vec3 up= curl[seedIndex].acceleration;
+	if (glm::length(up) < 1e-3f)
+		return false;
+	up= glm::normalize(up);
+
+	double sumX= 0.0, sumY= 0.0, sumXX= 0.0, sumYY= 0.0, sumXY= 0.0;
+	int count= 0;
+	for (size_t index= seedIndex; index < curl.size(); ++index)
+	{
+		const MotionSample& sample= curl[index];
+
+		// World up carried through the sensor's own rotation. Integrated here
+		// rather than read from the filter so the fit stays a pure function of
+		// the recording, testable with no filter and no device.
+		up-= glm::cross(sample.rate, up) * sample.dtSeconds;
+		const float upLength= glm::length(up);
+		if (upLength < 1e-3f)
+			return false;
+		up/= upLength;
+
+		// Re-anchor whenever a sample looks like near-pure gravity. Integration
+		// alone drifts, and the whole fit rests on the residual being
+		// centripetal rather than accumulated tilt error.
+		const float accelerationMagnitude= glm::length(sample.acceleration);
+		if (glm::length(sample.rate) < 0.5f && fabsf(accelerationMagnitude - k_gravity) < 0.5f)
+			up= glm::normalize(glm::mix(up, sample.acceleration / accelerationMagnitude, 0.02f));
+
+		const float hingeRate= glm::dot(sample.rate, hingeAxis);
+		const double x= (double)(hingeRate * hingeRate);
+		const double y= (double)glm::dot(sample.acceleration - up * k_gravity, longAxis);
+		sumX+= x;
+		sumY+= y;
+		sumXX+= x * x;
+		sumYY+= y * y;
+		sumXY+= x * y;
+		count++;
+	}
+	if ((size_t)count < k_minFitSamples)
+		return false;
+
+	const double n= (double)count;
+	const double varianceX= sumXX - sumX * sumX / n;
+	const double varianceY= sumYY - sumY * sumY / n;
+	const double covariance= sumXY - sumX * sumY / n;
+	if (varianceX < 1e-6 || varianceY < 1e-9)
+		return false;
+
+	// residual . longAxis = -omega^2 * radius when longAxis points at the hand
+	outSignedRadius= (float)(-covariance / varianceX);
+	outCorrelation= (float)(covariance / sqrt(varianceX * varianceY));
+	return true;
+}
+
+void imuSolveMountingFromMotions(const std::vector<MotionSample>& twist,
+								 const std::vector<MotionSample>& curl, const glm::quat* palmarHint,
+								 ePalmarSource hintSource, MountingCaptureResult& outResult)
+{
+	outResult= MountingCaptureResult();
+
+	// -- The twist fixes the forearm's long axis -----
+	const ImuMotionStats twistStats= imuAccumulateMotionStats(twist.data(), twist.size());
+	float twistDominance= -1.f;
+	imuEvaluateTwist(twistStats.scatter, twistStats.pathRadians, twistStats.net, twistDominance,
+					 outResult.twistProgress, outResult.twistReversal);
+	outResult.axisDominance= std::max(0.f, twistDominance);
+	glm::vec3 longAxis= imuDominantRotationAxis(twistStats.scatter, twistDominance);
+
+	// -- The curl fixes the roll about it -----
+	const ImuMotionStats curlStats= imuAccumulateMotionStats(curl.data(), curl.size());
+	float curlDominance= -1.f;
+	imuEvaluateTwist(curlStats.scatter, curlStats.pathRadians, curlStats.net, curlDominance,
+					 outResult.curlProgress, outResult.curlReversal);
+	const glm::vec3 provisionalHinge= imuDominantRotationAxis(curlStats.scatter, curlDominance);
+
+	// Split into half-strokes at reversals about that hinge and DROP THE
+	// FIRST. The elbow hinge belongs to the ulna while the sensor rides the
+	// pronating distal forearm, so the axis it measures only means something
+	// once the pronation has settled - and on the opening stroke it has not,
+	// landing tens of degrees off the strokes that follow it.
+	std::vector<glm::vec3> strokeAxes;
+	glm::mat3 acceptedScatter(0.f);
+	{
+		auto flushStroke= [&](size_t begin, size_t end) {
+			if (end <= begin || end - begin < (size_t)k_minStrokeSamples)
+				return;
+			const ImuMotionStats strokeStats= imuAccumulateMotionStats(curl.data() + begin, end - begin);
+			float strokeDominance= 0.f;
+			glm::vec3 axis= imuDominantRotationAxis(strokeStats.scatter, strokeDominance);
+			if (glm::dot(axis, provisionalHinge) < 0.f)
+				axis= -axis;
+			strokeAxes.push_back(axis);
+			if (strokeAxes.size() > 1)
+				acceptedScatter+= strokeStats.scatter;
+		};
+
+		size_t strokeStart= 0;
+		int strokeSign= 0;
+		for (size_t index= 0; index < curl.size(); ++index)
+		{
+			const float hingeRate= glm::dot(curl[index].rate, provisionalHinge);
+			const int sign= hingeRate > k_strokeDeadbandRadiansPerSecond
+				? 1
+				: (hingeRate < -k_strokeDeadbandRadiansPerSecond ? -1 : 0);
+			if (sign == 0)
+				continue;
+
+			if (strokeSign == 0)
+			{
+				strokeSign= sign;
+				strokeStart= index;
+			}
+			else if (sign != strokeSign)
+			{
+				flushStroke(strokeStart, index);
+				strokeSign= sign;
+				strokeStart= index;
+			}
+		}
+		if (strokeSign != 0)
+			flushStroke(strokeStart, curl.size());
+	}
+	outResult.curlStrokes= (int)strokeAxes.size();
+
+	glm::vec3 hingeAxis= provisionalHinge;
+	if (strokeAxes.size() >= 2)
+	{
+		float acceptedDominance= 0.f;
+		hingeAxis= imuDominantRotationAxis(acceptedScatter, acceptedDominance);
+		if (glm::dot(hingeAxis, provisionalHinge) < 0.f)
+			hingeAxis= -hingeAxis;
+		curlDominance= acceptedDominance;
+
+		for (size_t index= 1; index < strokeAxes.size(); ++index)
+		{
+			const float alignment= glm::clamp(glm::dot(strokeAxes[index], hingeAxis), -1.f, 1.f);
+			outResult.hingeSpreadDegrees=
+				std::max(outResult.hingeSpreadDegrees, glm::degrees(acosf(alignment)));
+		}
+	}
+	outResult.curlDominance= std::max(0.f, curlDominance);
+
+	const float axisAlignment= glm::clamp(fabsf(glm::dot(longAxis, hingeAxis)), 0.f, 1.f);
+	outResult.interAxisAngleDegrees= glm::degrees(acosf(axisAlignment));
+
+	// +X is trusted over the hinge, so the carrying angle lands entirely in +Y
+	glm::vec3 yAxis= hingeAxis - longAxis * glm::dot(longAxis, hingeAxis);
+	const float yLength= glm::length(yAxis);
+	if (yLength < 1e-4f)
+		return; // parallel axes: nothing to orthogonalize, and the gate below refuses it
+	yAxis/= yLength;
+
+	// -- Which end of the long axis is the hand -----
+	bool bLongAxisSignResolved= false;
+	float signedRadius= 0.f;
+	float fitCorrelation= 0.f;
+	if (imuFitCentripetalRadius(curl, longAxis, hingeAxis, signedRadius, fitCorrelation))
+	{
+		if (signedRadius < 0.f)
+		{
+			// The eigenvector came out pointing at the elbow
+			longAxis= -longAxis;
+			yAxis= -yAxis; // keep the triad right-handed
+			signedRadius= -signedRadius;
+			fitCorrelation= -fitCorrelation;
+		}
+		outResult.forearmLengthMeters= signedRadius;
+		outResult.lengthFitCorrelation= fabsf(fitCorrelation);
+		bLongAxisSignResolved= outResult.lengthFitCorrelation >= k_minLengthFitCorrelation;
+		outResult.bLengthMeasured= bLongAxisSignResolved &&
+			signedRadius >= k_minForearmLengthMeters && signedRadius <= k_maxForearmLengthMeters;
+	}
+
+	// -- Which side of the hinge the palm is on -----
+	//
+	// The two candidates differ by a half turn about the long axis, so any
+	// reference that is even roughly right picks correctly. That is the whole
+	// reason a pose average far too noisy to BE the mounting is still a fine
+	// discriminator here.
+	const glm::vec3 zAxis= glm::cross(longAxis, yAxis);
+	const glm::quat candidate= glm::normalize(glm::quat_cast(glm::mat3(longAxis, yAxis, zAxis)));
+	const glm::quat flipped= glm::normalize(glm::quat_cast(glm::mat3(longAxis, -yAxis, -zAxis)));
+
+	outResult.forearmToSensor= candidate;
+	if (palmarHint != nullptr && hintSource != ePalmarSource::None)
+	{
+		const float alignment= fabsf(glm::dot(candidate, *palmarHint));
+		const float flippedAlignment= fabsf(glm::dot(flipped, *palmarHint));
+		outResult.forearmToSensor= alignment >= flippedAlignment ? candidate : flipped;
+		outResult.palmarSource= hintSource;
+	}
+
+	outResult.bMotionUsable=
+		imuIsTwistUsable(outResult.axisDominance, outResult.twistProgress, outResult.twistReversal) &&
+		outResult.curlProgress >= 1.f && outResult.curlReversal >= k_minTwistReversal &&
+		outResult.curlDominance >= k_minCurlDominance && outResult.curlStrokes >= 3 &&
+		outResult.hingeSpreadDegrees <= k_maxHingeSpreadDegrees &&
+		outResult.interAxisAngleDegrees >= k_minInterAxisAngleDegrees && bLongAxisSignResolved &&
+		outResult.palmarSource != ePalmarSource::None;
+}
+
+
+// Signed rotation of `rotation` about the given unit axis, degrees. Used to
+// pull the axial component out of a measured wrist joint.
+static float signedComponentDegrees(const glm::quat& rotation, const glm::vec3& axis)
+{
+	glm::quat q= rotation;
+	if (q.w < 0.f) // shortest arc, or the sign of the whole thing flips
+		q= -q;
+
+	const glm::vec3 axisPart(q.x, q.y, q.z);
+	const float axisLength= glm::length(axisPart);
+	if (axisLength < 1e-6f)
+		return 0.f;
+
+	const float angle= 2.f * asinf(std::min(1.f, axisLength));
+	return glm::degrees(angle * glm::dot(axisPart / axisLength, axis));
+}
+
+void ImuService::updateWristAxialResidual(eHandSide side, const glm::quat& palmOrientationWorld,
+										  float confidence)
+{
+	if (!m_config.enabled || !m_config.mountingPresent[(int)side])
+		return;
+
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return;
+
+	DeviceEntry& entry= *m_devices[deviceIndex];
+	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
+		return;
+
+	// A shaky palm estimate says nothing about a calibration
+	if (confidence < k_axialResidualMinConfidence)
+		return;
+
+	const glm::quat forearm=
+		glm::normalize(entry.filter.getOrientation() * m_config.forearmToSensor[(int)side]);
+	const glm::quat wrist= glm::normalize(glm::inverse(forearm) * glm::normalize(palmOrientationWorld));
+
+	// THE constraint: the wrist has no axial degree of freedom, so whatever
+	// this reads is mounting roll error rather than anatomy
+	const float axialDegrees= signedComponentDegrees(wrist, glm::vec3(1.f, 0.f, 0.f));
+
+	constexpr float kEmaAlpha= 0.02f;
+	entry.twistResidualDegreesEma= entry.twistSamples == 0
+		? axialDegrees
+		: entry.twistResidualDegreesEma * (1.f - kEmaAlpha) + axialDegrees * kEmaAlpha;
+	entry.twistSamples++;
 }
 
 void ImuService::applyVisionPalmOrientation(eHandSide side, const glm::quat& palmOrientationWorld)
@@ -458,8 +797,43 @@ bool imuIsTwistUsable(float dominance, float progress, float reversal)
 	return progress >= 1.f && reversal >= k_minTwistReversal && dominance >= k_minTwistDominance;
 }
 
-bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientationWorld,
-								 MountingCaptureResult& outResult)
+void ImuService::accumulatePoseMounting(eHandSide side, const glm::quat& palmOrientationWorld,
+										float confidence)
+{
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return;
+
+	DeviceEntry& entry= *m_devices[deviceIndex];
+	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
+		return;
+	if (confidence < k_poseMountingMinConfidence)
+		return;
+
+	const glm::quat sample= glm::normalize(glm::inverse(entry.filter.getOrientation()) *
+										   glm::normalize(palmOrientationWorld));
+
+	// Quaternions double-cover rotations, so align each sample to the running
+	// mean's hemisphere before summing - otherwise q and -q cancel and the
+	// average collapses toward zero
+	glm::quat aligned= sample;
+	if (entry.poseMountingSamples > 0)
+	{
+		const glm::quat mean= glm::normalize(glm::quat(entry.poseMountingSum.w, entry.poseMountingSum.x,
+													   entry.poseMountingSum.y, entry.poseMountingSum.z));
+		if (glm::dot(aligned, mean) < 0.f)
+			aligned= -aligned;
+
+		const glm::quat delta= glm::inverse(mean) * aligned;
+		entry.poseSpreadSumDegrees+= glm::degrees(2.f * asinf(std::min(
+			1.f, glm::length(glm::vec3(delta.x, delta.y, delta.z)))));
+	}
+
+	entry.poseMountingSum+= glm::vec4(aligned.x, aligned.y, aligned.z, aligned.w);
+	entry.poseMountingSamples++;
+}
+
+bool ImuService::captureMounting(eHandSide side, MountingCaptureResult& outResult)
 {
 	outResult= MountingCaptureResult();
 
@@ -471,37 +845,44 @@ bool ImuService::captureMounting(eHandSide side, const glm::quat& palmOrientatio
 	if (entry.device == nullptr || !entry.device->isStreaming() || !entry.filter.isTiltConverged())
 		return false;
 
-	// Start from the held pose: with the wrist straight the forearm frame IS
-	// the palm frame, so q_fs = inverse(q_sw) * q_palm. This gets the roll
-	// about the arm right, but its ARM AXIS is only as good as the pose was.
-	glm::quat mounting=
-		glm::normalize(glm::inverse(entry.filter.getOrientation()) * glm::normalize(palmOrientationWorld));
-
-	float dominance= -1.f;
-	imuEvaluateTwist(entry.rotationScatter, entry.rotationPathRadians, entry.rotationNet, dominance,
-					 outResult.twistProgress, outResult.twistReversal);
-	outResult.axisDominance= std::max(0.f, dominance);
-	outResult.bMotionUsable=
-		imuIsTwistUsable(outResult.axisDominance, outResult.twistProgress, outResult.twistReversal);
-
-	// Then let measured motion fix the axis. The dominant rotation axis in
-	// the SENSOR frame is the forearm's long axis; the mounting must map
-	// forearm +X onto it. Rotating the pose-derived mounting by the minimal
-	// rotation that does so corrects the two degrees of freedom motion can
-	// see, and leaves the third (roll) exactly as the pose set it.
-	if (outResult.bMotionUsable)
+	// The pose average is no longer the geometry - a wrist that would not hold
+	// still is exactly what broke that - but it is still the reference that
+	// says which side of the hinge axis the palm is on, a decision with a 180
+	// degree margin that it clears easily.
+	glm::quat palmarHint(1.f, 0.f, 0.f, 0.f);
+	ePalmarSource hintSource= ePalmarSource::None;
+	if (entry.poseMountingSamples >= k_poseMountingMinSamples)
 	{
-		const glm::vec3 sensorAxis= imuDominantRotationAxis(entry.rotationScatter, dominance);
-		mounting= imuAlignMountingToArmAxis(mounting, sensorAxis);
+		palmarHint= glm::normalize(glm::quat(entry.poseMountingSum.w, entry.poseMountingSum.x,
+											 entry.poseMountingSum.y, entry.poseMountingSum.z));
+		hintSource= ePalmarSource::Vision;
+	}
+	else if (m_config.mountingPresent[(int)side])
+	{
+		// Recalibrating without the cameras seeing the hand: the side already
+		// known to be on is a valid reference for a two-way choice, even
+		// though it is useless as a mounting
+		palmarHint= m_config.forearmToSensor[(int)side];
+		hintSource= ePalmarSource::PreviousMounting;
 	}
 
-	outResult.forearmToSensor= mounting;
-	outResult.bCaptured= true;
+	imuSolveMountingFromMotions(entry.twistRecording, entry.curlRecording, &palmarHint, hintSource,
+								outResult);
 
-	// A recapture invalidates the old mounting's quality score
+	outResult.poseSamples= entry.poseMountingSamples;
+	outResult.poseSpreadDegrees= entry.poseMountingSamples > 0
+		? entry.poseSpreadSumDegrees / (float)entry.poseMountingSamples
+		: 0.f;
+	outResult.bCaptured= true;
+	m_lastCapture[(int)side]= outResult;
+
+	// A recapture invalidates the old mounting's quality score, and the axial
+	// residual measured against the OLD mounting says nothing about this one
 	entry.axisConsistencyEma= -1.f;
 	entry.axisConsistencySamples= 0;
 	entry.bHasLastPublishedForearm= false;
+	entry.twistResidualDegreesEma= 0.f;
+	entry.twistSamples= 0;
 	return true;
 }
 
@@ -513,8 +894,45 @@ void ImuService::resetMountingMotion()
 		entry->rotationScatterWeight= 0.f;
 		entry->rotationPathRadians= 0.f;
 		entry->rotationNet= glm::vec3(0.f);
+		entry->poseMountingSum= glm::vec4(0.f);
+		entry->poseMountingSamples= 0;
+		entry->poseSpreadSumDegrees= 0.f;
 	}
 	m_motionEpoch++;
+}
+
+void ImuService::beginMotionRecording(eMountingMotion motion)
+{
+	m_motionRecording= motion;
+	for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+	{
+		if (motion == eMountingMotion::Twist)
+			entry->twistRecording.clear();
+		else if (motion == eMountingMotion::Curl)
+			entry->curlRecording.clear();
+	}
+
+	// The live scatter drives the progress bars, so it has to describe the
+	// stage being asked for rather than the one before it
+	if (motion != eMountingMotion::None)
+		resetMountingMotion();
+}
+
+void ImuService::endMotionRecording()
+{
+	m_motionRecording= eMountingMotion::None;
+}
+
+void ImuService::getRawSampleHistory(eHandSide side, std::vector<ImuSample>& outSamples) const
+{
+	outSamples.clear();
+
+	const int deviceIndex= findDeviceIndexForSide(side);
+	if (deviceIndex < 0)
+		return;
+
+	const DeviceEntry& entry= *m_devices[deviceIndex];
+	outSamples.assign(entry.rawHistory.begin(), entry.rawHistory.end());
 }
 
 ImuSideStatus ImuService::getSideStatus(eHandSide side) const
@@ -553,6 +971,12 @@ ImuSideStatus ImuService::getSideStatus(eHandSide side) const
 			(float)std::clamp(entry.biasSeconds / k_biasCalibrationSeconds, 0.0, 1.0);
 		status.biasCalibrationDisturbed= entry.bBiasDisturbed;
 	}
+	status.wristAxialTwistDegrees=
+		entry.twistSamples >= k_axialResidualMinSamples ? entry.twistResidualDegreesEma : -999.f;
+	status.filterOrientation= entry.filter.getOrientation();
+	status.tiltSigmaRadians= entry.filter.getTiltSigma();
+	status.gravityAcceptRatio= entry.filter.getGravityAcceptRatio();
+	status.visionYawCorrectionDegrees= entry.filter.getVisionYawCorrectionDegrees();
 	status.filterConverged= entry.filter.isTiltConverged();
 	status.orientationValid= status.calibrated && status.streaming && status.filterConverged;
 	return status;

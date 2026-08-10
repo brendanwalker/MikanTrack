@@ -4,6 +4,7 @@
 #include "glm/gtc/quaternion.hpp"
 
 #include "opencv2/calib3d.hpp"
+#include "nlohmann/json.hpp"
 #include "opencv2/core.hpp"
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
@@ -1343,7 +1344,22 @@ static int runApp(int argc, char** argv)
 			std::filesystem::remove_all(dumpDir);
 
 			AppConfig config;
-			bool bOk= dump.write(dumpDir.string(), {snapshot}, frame, config.toJsonString());
+			std::vector<DiagImuRawSample> rawImu[2];
+			DiagImuRawSample rawSample;
+			rawSample.timestampMs= 12.0;
+			rawSample.acceleration= glm::vec3(0.f, 0.f, 9.8f);
+			rawSample.angularVelocity= glm::vec3(0.1f, -0.2f, 0.3f);
+			rawImu[0].push_back(rawSample);
+
+			DiagImuCapture lastCapture[2];
+			lastCapture[0].present= true;
+			lastCapture[0].poseSamples= 240;
+			lastCapture[0].poseSpreadDegrees= 12.5f;
+			lastCapture[0].motionUsable= true;
+			lastCapture[0].axisDominance= 0.93f;
+
+			bool bOk= dump.write(dumpDir.string(), {snapshot}, frame, config.toJsonString(), rawImu,
+								 lastCapture);
 			bOk&= std::filesystem::exists(dumpDir / "dump.json");
 			bOk&= std::filesystem::exists(dumpDir / "cam0_raw.png");
 			bOk&= std::filesystem::exists(dumpDir / "cam0_annotated.png");
@@ -1357,7 +1373,8 @@ static int runApp(int argc, char** argv)
 					(std::istreambuf_iterator<char>(jsonFile)), std::istreambuf_iterator<char>());
 				for (const char* needle :
 					 {"\"config\"", "\"cameras\"", "\"fusedSnapshot\"", "\"history\"", "\"affinity\"",
-					  "\"imagePoints\"", "\"assignedSide\"", "\"imu\"", "\"armAxisDominance\"",
+					  "\"imagePoints\"", "\"assignedSide\"", "\"imu\"", "\"imuRaw\"", "\"imuLastCapture\"", "\"filterOrientation\"",
+					  "\"gravityAcceptRatio\"", "\"armAxisDominance\"",
 					  "\"forearmAxisConsistency\""})
 				{
 					if (content.find(needle) == std::string::npos)
@@ -1793,6 +1810,204 @@ static int runApp(int argc, char** argv)
 
 			if (result == 0)
 				MIKAN_LOG_INFO("test-handpose") << "All hand-pose checks passed";
+
+			log_dispose();
+			return result;
+		}
+
+		// WHAT THIS CANNOT TELL YOU: it compares the gyro against the
+		// accelerometer WITHIN one device, so it is blind to any error in the
+		// sensor frame as a whole. Acceleration is a vector and angular
+		// velocity is a pseudovector, so under a reflection both pick up sign
+		// flips that cancel in dg/dt = -w x g - a mirrored frame satisfies the
+		// correct physical relation and passes cleanly.
+		//
+		// Settling a frame convention needs an EXTERNAL reference. The one
+		// that worked was strapping both controllers rigidly together and
+		// solving for the transform between their raw streams: identical
+		// physical motion, no vision, no mounting, no wrist, and the
+		// determinant answers rotation-vs-reflection outright. Chasing it
+		// through vision instead produced three inconclusive analyses and two
+		// confidently wrong corrections.
+		// Solves the fixed transform between TWO rigidly coupled IMUs from a
+		// dump's raw sample history, and reports whether it is a rotation or a
+		// reflection.
+		//
+		// This is the measurement that settles a sensor frame convention, and
+		// it is here as a tool because the alternative - inferring it from
+		// vision - produced three inconclusive analyses and two confidently
+		// wrong corrections before a five-minute rigid-body capture answered
+		// it outright. Strap both controllers to one object, tumble it through
+		// all three axes for a few seconds, press F9, and run this on the dump.
+		//
+		// det(Q) = +1 : the frames differ by a ROTATION, which the mounting
+		//               calibration absorbs. No correction is needed.
+		// det(Q) = -1 : a REFLECTION, which no quaternion mounting can
+		//               represent, so it must be corrected in the raw samples.
+		//
+		// The scale ratio comes free and is worth reading: on one rigid body
+		// both gyros must report the same rate, so a ratio far from 1 is a
+		// scale-factor problem that no axis remapping would ever fix.
+		if (std::string(argv[i]) == "--test-imupair")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-imupair.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			if (i + 1 >= argc)
+			{
+				MIKAN_LOG_ERROR("test-imupair") << "usage: --test-imupair <path to dump.json>";
+				log_dispose();
+				return 1;
+			}
+
+			int result= 0;
+			try
+			{
+				std::ifstream dumpFile(argv[i + 1]);
+				if (!dumpFile.is_open())
+				{
+					MIKAN_LOG_ERROR("test-imupair") << "Could not open " << argv[i + 1];
+					log_dispose();
+					return 1;
+				}
+				nlohmann::json dump;
+				dumpFile >> dump;
+
+				auto readSide= [&dump](const char* side, std::vector<double>& outTimes,
+									   std::vector<cv::Vec3d>& outGyro, std::vector<cv::Vec3d>& outAccel) {
+					for (const nlohmann::json& sample : dump["imuRaw"][side])
+					{
+						outTimes.push_back(sample["t"].get<double>());
+						outGyro.push_back(cv::Vec3d(sample["gyro"][0], sample["gyro"][1], sample["gyro"][2]));
+						outAccel.push_back(
+							cv::Vec3d(sample["accel"][0], sample["accel"][1], sample["accel"][2]));
+					}
+				};
+
+				std::vector<double> leftTimes, rightTimes;
+				std::vector<cv::Vec3d> leftGyro, rightGyro, leftAccel, rightAccel;
+				readSide("left", leftTimes, leftGyro, leftAccel);
+				readSide("right", rightTimes, rightGyro, rightAccel);
+
+				if (leftTimes.size() < 50 || rightTimes.size() < 50)
+				{
+					MIKAN_LOG_ERROR("test-imupair")
+						<< "Need raw samples from BOTH controllers (left " << leftTimes.size() << ", right "
+						<< rightTimes.size() << ")";
+					log_dispose();
+					return 1;
+				}
+
+				// Resample the right onto the left's clock; both are the same
+				// steady_clock so this is interpolation, not alignment
+				auto sampleAt= [](const std::vector<double>& times, const std::vector<cv::Vec3d>& values,
+								  double t) {
+					const size_t index= std::min(
+						std::max<size_t>(
+							(size_t)(std::lower_bound(times.begin(), times.end(), t) - times.begin()), 1),
+						times.size() - 1);
+					const double span= std::max(1e-9, times[index] - times[index - 1]);
+					const double alpha= std::clamp((t - times[index - 1]) / span, 0.0, 1.0);
+					return values[index - 1] * (1.0 - alpha) + values[index] * alpha;
+				};
+
+				struct PairStats
+				{
+					const char* name;
+					double det= 0.0;
+					double residualDegrees= 0.0;
+					double scaleRatio= 0.0;
+					int samples= 0;
+					cv::Matx33d transform;
+				};
+
+				auto solve= [&](const char* name, const std::vector<cv::Vec3d>& leftValues,
+								const std::vector<cv::Vec3d>& rightValues, double minMagnitude) {
+					PairStats stats;
+					stats.name= name;
+
+					cv::Matx33d covariance= cv::Matx33d::zeros();
+					std::vector<std::pair<cv::Vec3d, cv::Vec3d>> pairs;
+					double ratioSum= 0.0;
+					for (size_t index= 0; index < leftTimes.size(); ++index)
+					{
+						const double t= leftTimes[index];
+						if (t < rightTimes.front() || t > rightTimes.back())
+							continue;
+						const cv::Vec3d a= leftValues[index];
+						const cv::Vec3d b= sampleAt(rightTimes, rightValues, t);
+						const double na= cv::norm(a), nb= cv::norm(b);
+						if (na < minMagnitude || nb < minMagnitude)
+							continue;
+						pairs.emplace_back(a, b);
+						ratioSum+= nb / na;
+						// H = sum b a^T; the transform maps LEFT into RIGHT
+						for (int row= 0; row < 3; ++row)
+							for (int col= 0; col < 3; ++col)
+								covariance(row, col)+= b[row] * a[col];
+					}
+					stats.samples= (int)pairs.size();
+					if (stats.samples < 30)
+						return stats;
+
+					stats.scaleRatio= ratioSum / (double)stats.samples;
+
+					cv::Mat w, u, vt;
+					cv::SVD::compute(cv::Mat(covariance), w, u, vt, cv::SVD::FULL_UV);
+					const cv::Matx33d transform= cv::Matx33d((cv::Mat)(u * vt));
+					stats.transform= transform;
+					stats.det= cv::determinant(transform);
+
+					double errorSum= 0.0;
+					for (const std::pair<cv::Vec3d, cv::Vec3d>& pair : pairs)
+					{
+						const cv::Vec3d mapped= transform * (pair.first / cv::norm(pair.first));
+						const double dot= std::clamp(mapped.dot(pair.second / cv::norm(pair.second)), -1.0, 1.0);
+						errorSum+= std::acos(dot);
+					}
+					stats.residualDegrees= errorSum / (double)pairs.size() * 180.0 / CV_PI;
+					return stats;
+				};
+
+				const PairStats gyro= solve("gyro", leftGyro, rightGyro, 0.5);
+				const PairStats accel= solve("accel", leftAccel, rightAccel, 1.0);
+
+				for (const PairStats& stats : {gyro, accel})
+				{
+					if (stats.samples < 30)
+					{
+						MIKAN_LOG_ERROR("test-imupair")
+							<< stats.name << ": only " << stats.samples
+							<< " usable samples - tumble the pair through more motion";
+						result= 1;
+						continue;
+					}
+					MIKAN_LOG_INFO("test-imupair")
+						<< stats.name << ": det=" << stats.det << " ("
+						<< (stats.det > 0.0 ? "ROTATION - the mounting absorbs it, no correction needed"
+											: "REFLECTION - must be corrected in the raw samples")
+						<< "), residual=" << stats.residualDegrees << " deg, right/left magnitude ratio="
+						<< stats.scaleRatio << ", n=" << stats.samples;
+				}
+
+				// The two sensors must agree about which it is; disagreeing
+				// means one of the two streams is not what it claims to be
+				if (gyro.samples >= 30 && accel.samples >= 30 &&
+					(gyro.det > 0.0) != (accel.det > 0.0))
+				{
+					MIKAN_LOG_ERROR("test-imupair")
+						<< "gyro and accelerometer disagree on handedness - one stream is mislabelled";
+					result= 1;
+				}
+			}
+			catch (const std::exception& e)
+			{
+				MIKAN_LOG_ERROR("test-imupair") << "Failed to analyze the dump: " << e.what();
+				result= 1;
+			}
 
 			log_dispose();
 			return result;
@@ -2409,32 +2624,6 @@ static int runApp(int argc, char** argv)
 				const float axisErrorDegrees= glm::degrees(
 					acosf(std::clamp(fabsf(glm::dot(measuredAxis, trueSensorArmAxis)), 0.f, 1.f)));
 
-				// A pose held with a BENT wrist: the mounting is off by 55 deg
-				// about an axis perpendicular to the arm (exactly the error the
-				// motion can see)
-				const glm::quat poseError=
-					glm::angleAxis(glm::radians(55.f), glm::normalize(glm::cross(trueSensorArmAxis, offAxis)));
-				const glm::quat badPoseMounting= glm::normalize(poseError * trueMounting);
-				const glm::quat corrected= imuAlignMountingToArmAxis(badPoseMounting, measuredAxis);
-				const float correctedArmErrorDegrees= glm::degrees(acosf(std::clamp(
-					glm::dot(glm::normalize(corrected * glm::vec3(1.f, 0.f, 0.f)), trueSensorArmAxis),
-					-1.f, 1.f)));
-
-				// Motion CANNOT see roll about the arm, by construction - a
-				// pure-roll pose error must survive untouched (that is the
-				// held pose's job, and why we still need one)
-				const glm::quat rollError= glm::angleAxis(glm::radians(20.f), trueSensorArmAxis);
-				const glm::quat rolled= imuAlignMountingToArmAxis(
-					glm::normalize(rollError * trueMounting), measuredAxis);
-				// The 20 deg roll must STILL be there afterwards - the correction
-				// may only nudge things by as much as the axis measurement error
-				const glm::quat rollDelta= glm::inverse(glm::normalize(rollError * trueMounting)) * rolled;
-				const float rollMovedDegrees= glm::degrees(2.f * asinf(std::clamp(
-					glm::length(glm::vec3(rollDelta.x, rollDelta.y, rollDelta.z)), 0.f, 1.f)));
-				const glm::quat rollResidual= glm::inverse(trueMounting) * rolled;
-				const float rollSurvivingDegrees= glm::degrees(2.f * asinf(std::clamp(
-					glm::length(glm::vec3(rollResidual.x, rollResidual.y, rollResidual.z)), 0.f, 1.f)));
-
 				// Isotropic motion (waving the arm around, no real twist) must
 				// score as uninformative so the UI can refuse the capture
 				glm::mat3 isotropicScatter(0.f);
@@ -2446,16 +2635,140 @@ static int runApp(int argc, char** argv)
 
 				MIKAN_LOG_INFO("test-imufilter")
 					<< "(f) motion axis: measured axis err=" << axisErrorDegrees
-					<< " deg (dominance=" << twistDominance << "), 55 deg bad pose corrected to "
-					<< correctedArmErrorDegrees << " deg, 20 deg roll error left at "
-					<< rollSurvivingDegrees << " deg (moved " << rollMovedDegrees
-					<< " deg), isotropic dominance=" << isotropicDominance;
-				if (axisErrorDegrees > 2.f || twistDominance < 0.9f || correctedArmErrorDegrees > 2.f ||
-					rollMovedDegrees > 1.f || fabsf(rollSurvivingDegrees - 20.f) > 1.f ||
-					isotropicDominance > 0.4f)
+					<< " deg (dominance=" << twistDominance
+					<< "), isotropic dominance=" << isotropicDominance;
+				if (axisErrorDegrees > 2.f || twistDominance < 0.9f || isotropicDominance > 0.4f)
 				{
 					MIKAN_LOG_ERROR("test-imufilter")
 						<< "(f) FAILED: motion-based arm axis recovery is wrong";
+					result= 1;
+				}
+			}
+
+			// (n) TWO-MOTION MOUNTING SOLVE. A twist fixes the forearm's long
+			// axis, a curl about the elbow hinge fixes the roll that a twist
+			// cannot see, and the accelerometer's centripetal term says which
+			// end of the axis is the hand. No vision enters the geometry at
+			// all, which is the entire point: the vision-averaged mounting it
+			// replaces was corrupted by a wrist that would not hold still, and
+			// averaging harder could not fix that.
+			{
+				const glm::quat trueMounting= glm::normalize(
+					glm::angleAxis(glm::radians(115.f), glm::normalize(glm::vec3(0.3f, -0.7f, 0.6f))));
+				const glm::vec3 armAxisSensor= glm::normalize(trueMounting * glm::vec3(1.f, 0.f, 0.f));
+				const glm::vec3 hingeAxisSensor= glm::normalize(trueMounting * glm::vec3(0.f, 1.f, 0.f));
+				const glm::vec3 wobbleAxis=
+					glm::normalize(glm::cross(armAxisSensor, glm::vec3(0.f, 0.f, 1.f)));
+				constexpr float k_trueRadiusMeters= 0.22f;
+
+				auto mountingErrorDegrees= [](const glm::quat& a, const glm::quat& b) {
+					glm::quat delta= glm::inverse(a) * b;
+					if (delta.w < 0.f) // double cover: measure the short way round
+						delta= -delta;
+					return glm::degrees(2.f * asinf(std::clamp(
+						glm::length(glm::vec3(delta.x, delta.y, delta.z)), 0.f, 1.f)));
+				};
+
+				// TWIST: back-and-forth about the long axis, with the off-axis
+				// wobble nobody actually avoids
+				std::vector<MotionSample> twist;
+				for (int sampleIndex= 0; sampleIndex < 1200; ++sampleIndex)
+				{
+					const float phase= (float)sampleIndex * 0.02f;
+					MotionSample sample;
+					sample.rate= armAxisSensor * (4.f * sinf(phase)) +
+						wobbleAxis * (0.3f * sinf(phase * 2.7f));
+					sample.acceleration= glm::vec3(0.f, 0.f, 9.81f);
+					sample.dtSeconds= 0.005f;
+					twist.push_back(sample);
+				}
+
+				// CURL: back-and-forth about the hinge, with the accelerometer
+				// carrying what a real one would - gravity as seen from a
+				// rotating frame, the centripetal term pointing at the elbow,
+				// and the tangential term perpendicular to both
+				auto buildCurl= [&](const glm::vec3& axis) {
+					std::vector<MotionSample> curl;
+					glm::vec3 up= glm::normalize(glm::vec3(0.2f, 0.3f, 1.f));
+					float previousRate= 0.f;
+					for (int sampleIndex= 0; sampleIndex < 1600; ++sampleIndex)
+					{
+						constexpr float dt= 0.005f;
+						const float phase= (float)sampleIndex * 0.02f;
+						const float hingeRate= 3.5f * sinf(phase);
+						const glm::vec3 rate=
+							axis * hingeRate + wobbleAxis * (0.15f * sinf(phase * 3.3f));
+
+						up= glm::normalize(up - glm::cross(rate, up) * dt);
+						const float angularAcceleration= (hingeRate - previousRate) / dt;
+						previousRate= hingeRate;
+
+						MotionSample sample;
+						sample.rate= rate;
+						sample.acceleration= up * 9.81f -
+							armAxisSensor * (hingeRate * hingeRate * k_trueRadiusMeters) +
+							glm::cross(axis * angularAcceleration, armAxisSensor * k_trueRadiusMeters);
+						sample.dtSeconds= dt;
+						curl.push_back(sample);
+					}
+					return curl;
+				};
+				const std::vector<MotionSample> curl= buildCurl(hingeAxisSensor);
+
+				// A deliberately TERRIBLE palmar hint: 50 degrees off, which is
+				// worse than the 54 degree pose spread that made the old solve
+				// unusable. It only has to choose between two candidates a half
+				// turn apart, so it must still land on the right one.
+				const glm::quat badHint= glm::normalize(
+					glm::angleAxis(glm::radians(50.f), glm::normalize(glm::vec3(0.5f, 0.6f, -0.6f))) *
+					trueMounting);
+
+				MountingCaptureResult solved;
+				imuSolveMountingFromMotions(twist, curl, &badHint, ePalmarSource::Vision, solved);
+				const float solvedErrorDegrees= mountingErrorDegrees(trueMounting, solved.forearmToSensor);
+
+				// The hint decides the palmar bit and nothing else, so a hint on
+				// the OTHER side must move the answer by exactly a half turn -
+				// proving the bit is driven by the reference rather than baked in
+				const glm::quat flippedTruth= glm::normalize(
+					trueMounting * glm::angleAxis(glm::radians(180.f), glm::vec3(1.f, 0.f, 0.f)));
+				MountingCaptureResult flippedSolved;
+				imuSolveMountingFromMotions(twist, curl, &flippedTruth, ePalmarSource::Vision, flippedSolved);
+				const float flippedErrorDegrees=
+					mountingErrorDegrees(flippedTruth, flippedSolved.forearmToSensor);
+
+				// A curl that turns about the SAME axis as the twist (the
+				// shoulder rotating instead of the elbow bending) leaves roll
+				// unobservable, so it has to be refused rather than extrapolated
+				MountingCaptureResult degenerate;
+				imuSolveMountingFromMotions(twist, buildCurl(armAxisSensor), &badHint,
+											ePalmarSource::Vision, degenerate);
+
+				// No reference at all: the palmar side is genuinely unknown, and
+				// guessing it is a coin flip that silently mirrors the hand
+				MountingCaptureResult unhinted;
+				imuSolveMountingFromMotions(twist, curl, nullptr, ePalmarSource::None, unhinted);
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(n) two-motion solve: err=" << solvedErrorDegrees << " deg, inter-axis="
+					<< solved.interAxisAngleDegrees << " deg, hinge spread=" << solved.hingeSpreadDegrees
+					<< " deg over " << solved.curlStrokes << " strokes, radius="
+					<< solved.forearmLengthMeters << " m (r=" << solved.lengthFitCorrelation
+					<< "), flipped-hint err=" << flippedErrorDegrees
+					<< " deg, parallel-curl usable=" << degenerate.bMotionUsable
+					<< " (inter-axis " << degenerate.interAxisAngleDegrees
+					<< " deg), unhinted usable=" << unhinted.bMotionUsable;
+
+				if (!solved.bMotionUsable || solvedErrorDegrees > 3.f ||
+					solved.interAxisAngleDegrees < 85.f || solved.hingeSpreadDegrees > 5.f ||
+					solved.curlStrokes < 3 || !solved.bLengthMeasured ||
+					fabsf(solved.forearmLengthMeters - k_trueRadiusMeters) > 0.02f ||
+					flippedErrorDegrees > 3.f || degenerate.bMotionUsable ||
+					degenerate.interAxisAngleDegrees > 20.f || unhinted.bMotionUsable ||
+					unhinted.palmarSource != ePalmarSource::None)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(n) FAILED: two-motion mounting solve is wrong";
 					result= 1;
 				}
 			}
@@ -2579,6 +2892,146 @@ static int runApp(int argc, char** argv)
 				if (!bClamped || !bKept)
 				{
 					MIKAN_LOG_ERROR("test-imufilter") << "(h) FAILED: gyro bias bound is not enforced";
+					result= 1;
+				}
+			}
+
+			// (i) Wrist axial residual as a mounting-roll health check. The
+			// wrist has no axial degree of freedom, so any axial rotation in
+			// the measured joint is mounting roll error. Nothing acts on this
+			// automatically - the curl measures roll properly now, and an
+			// earlier version that DID correct it was steering a good roll
+			// with the noisiest signal in the system - but it still has to
+			// SEE the error, or a bad roll has no symptom.
+			{
+				const glm::quat trueMounting= glm::normalize(
+					glm::angleAxis(glm::radians(174.f), glm::normalize(glm::vec3(-0.14f, 0.94f, 0.31f))));
+				const glm::quat rollError= glm::angleAxis(glm::radians(45.f), glm::vec3(1.f, 0.f, 0.f));
+				const glm::quat badMounting= glm::normalize(trueMounting * rollError);
+
+				auto axialDegrees= [](const glm::quat& rotation) {
+					glm::quat q= rotation;
+					if (q.w < 0.f)
+						q= -q;
+					const glm::vec3 axisPart(q.x, q.y, q.z);
+					const float axisLength= glm::length(axisPart);
+					if (axisLength < 1e-6f)
+						return 0.f;
+					const float angle= 2.f * asinf(std::min(1.f, axisLength));
+					return glm::degrees(angle * (axisPart.x / axisLength));
+				};
+
+				// The arm moves and the wrist genuinely flexes, but never
+				// twists - so a correct mounting must stay near zero while the
+				// rolled one reads its error, both under real motion.
+				//
+				// "Near zero" rather than zero: composing flexion with
+				// deviation produces a couple of degrees of genuine axial
+				// component, which is the wrist's own slack and is why the UI
+				// only calls this bad above 5 degrees.
+				float worstGoodResidual= 0.f;
+				float meanBadResidual= 0.f;
+				constexpr int k_steps= 4000;
+				for (int step= 0; step < k_steps; ++step)
+				{
+					const float t= (float)step * 0.01f;
+					const glm::quat sensorToWorld= glm::normalize(
+						glm::angleAxis(0.7f * sinf(t), glm::normalize(glm::vec3(0.2f, 0.3f, 0.93f))));
+					// Real wrist motion: flexion and deviation only, no twist
+					const glm::quat trueWrist=
+						glm::normalize(glm::angleAxis(0.4f * sinf(t * 1.7f), glm::vec3(0.f, 1.f, 0.f)) *
+									   glm::angleAxis(0.2f * sinf(t * 2.3f), glm::vec3(0.f, 0.f, 1.f)));
+					const glm::quat palm= glm::normalize(sensorToWorld * trueMounting * trueWrist);
+
+					const glm::quat goodForearm= glm::normalize(sensorToWorld * trueMounting);
+					worstGoodResidual= std::max(worstGoodResidual,
+						fabsf(axialDegrees(glm::normalize(glm::inverse(goodForearm) * palm))));
+
+					const glm::quat badForearm= glm::normalize(sensorToWorld * badMounting);
+					meanBadResidual+=
+						fabsf(axialDegrees(glm::normalize(glm::inverse(badForearm) * palm))) / (float)k_steps;
+				}
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(i) axial residual: correct mounting reads at most " << worstGoodResidual
+					<< " deg, a 45 deg rolled one averages " << meanBadResidual << " deg";
+
+				if (worstGoodResidual > 3.f || meanBadResidual < 40.f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(i) FAILED: the wrist axial residual does not report mounting roll error";
+					result= 1;
+				}
+			}
+
+			// (k) Averaging the pose mounting. inverse(q_sensor) * q_palm is
+			// CONSTANT under the correct model - both terms rotate with the
+			// arm - so wrist bend is the only thing perturbing it, and the
+			// mean recovers the mounting. This is what replaced sampling one
+			// held pose, where a wrist 90+ deg off flipped the arm-axis
+			// eigenvector and locked in a reproducible 180 deg error.
+			{
+				const glm::quat trueMounting= glm::normalize(
+					glm::angleAxis(glm::radians(167.f), glm::normalize(glm::vec3(-0.02f, -0.09f, 0.99f))));
+
+				glm::vec4 sum(0.f);
+				int samples= 0;
+				float worstSingleSampleDegrees= 0.f;
+				for (int step= 0; step < 600; ++step)
+				{
+					const float t= (float)step * 0.02f;
+					// The arm sweeps through many orientations as it twists
+					const glm::quat sensorToWorld= glm::normalize(
+						glm::angleAxis(2.2f * sinf(t), glm::normalize(glm::vec3(0.1f, -0.2f, 0.97f))) *
+						glm::angleAxis(0.5f * sinf(t * 0.7f), glm::vec3(1.f, 0.f, 0.f)));
+					// Wrist bend: bounded, zero-mean, and large enough that a
+					// single unlucky sample is badly wrong
+					const glm::quat wristBend= glm::normalize(
+						glm::angleAxis(0.9f * sinf(t * 1.9f), glm::vec3(0.f, 1.f, 0.f)) *
+						glm::angleAxis(0.6f * sinf(t * 2.6f), glm::vec3(0.f, 0.f, 1.f)));
+					const glm::quat palm= glm::normalize(sensorToWorld * trueMounting * wristBend);
+
+					const glm::quat sample= glm::normalize(glm::inverse(sensorToWorld) * palm);
+					const glm::quat singleError= glm::inverse(trueMounting) * sample;
+					worstSingleSampleDegrees= std::max(worstSingleSampleDegrees,
+						glm::degrees(2.f * asinf(std::clamp(
+							glm::length(glm::vec3(singleError.x, singleError.y, singleError.z)), 0.f, 1.f))));
+
+					// Same hemisphere alignment the service applies
+					glm::quat aligned= sample;
+					if (samples > 0)
+					{
+						const glm::quat mean= glm::normalize(glm::quat(sum.w, sum.x, sum.y, sum.z));
+						if (glm::dot(aligned, mean) < 0.f)
+							aligned= -aligned;
+					}
+					sum+= glm::vec4(aligned.x, aligned.y, aligned.z, aligned.w);
+					samples++;
+				}
+
+				const glm::quat mean= glm::normalize(glm::quat(sum.w, sum.x, sum.y, sum.z));
+				const glm::quat meanError= glm::inverse(trueMounting) * mean;
+				const float meanErrorDegrees= glm::degrees(2.f * asinf(std::clamp(
+					glm::length(glm::vec3(meanError.x, meanError.y, meanError.z)), 0.f, 1.f)));
+
+				// The arm axis sign is resolved against the pose mounting, so
+				// the mean's +X must agree with the truth's - that is the
+				// specific failure this replaced
+				const glm::vec3 trueAxis= glm::normalize(trueMounting * glm::vec3(1.f, 0.f, 0.f));
+				const glm::vec3 meanAxis= glm::normalize(mean * glm::vec3(1.f, 0.f, 0.f));
+				const float axisAgreement= glm::dot(trueAxis, meanAxis);
+
+				MIKAN_LOG_INFO("test-imufilter")
+					<< "(k) pose averaging: worst single sample " << worstSingleSampleDegrees
+					<< " deg off, mean " << meanErrorDegrees << " deg off, arm-axis agreement "
+					<< axisAgreement;
+
+				// The point of the test: single samples are badly wrong, the
+				// mean is not, and the sign never flips
+				if (worstSingleSampleDegrees < 45.f || meanErrorDegrees > 15.f || axisAgreement < 0.9f)
+				{
+					MIKAN_LOG_ERROR("test-imufilter")
+						<< "(k) FAILED: averaging did not recover the mounting from noisy samples";
 					result= 1;
 				}
 			}

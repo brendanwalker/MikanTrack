@@ -196,7 +196,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			ImGui::TableSetupColumn("Device");
 			ImGui::TableSetupColumn("Rate");
 			ImGui::TableSetupColumn("Yaw drift");
-			ImGui::TableSetupColumn("Mounting");
+			ImGui::TableSetupColumn("Roll error");
 			ImGui::TableHeadersRow();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -242,27 +242,30 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				else
 					ImGui::TextDisabled("-");
 
-				// Mounting quality, scored against real forearm twist
+				// Mounting error, measured against anatomy. Preferred over the
+				// twist-axis score because it is SIGNED and means something
+				// during any motion, not only a deliberate twist.
 				ImGui::TableNextColumn();
-				if (status.forearmAxisConsistency < 0.f)
+				if (status.wristAxialTwistDegrees < -900.f)
 				{
-					ImGui::TextDisabled("twist to test");
+					ImGui::TextDisabled("measuring");
 				}
 				else
 				{
-					const ImVec4 color= status.forearmAxisConsistency > 0.8f
+					const float residual= fabsf(status.wristAxialTwistDegrees);
+					const ImVec4 color= residual < 5.f
 						? ImVec4(0.4f, 1.f, 0.5f, 1.f)
-						: (status.forearmAxisConsistency > 0.5f ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
-																: ImVec4(1.f, 0.4f, 0.4f, 1.f));
-					ImGui::TextColored(color, "%.2f", status.forearmAxisConsistency);
+						: (residual < 15.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f));
+					ImGui::TextColored(color, "%+.0f deg", status.wristAxialTwistDegrees);
 				}
 				ImGui::SetItemTooltip(
-					"Mounting quality, measured from your own motion. Twisting a\n"
-					"forearm about its long axis must leave the forearm frame's\n"
-					"forward axis fixed - so this scores how well it does.\n"
-					">0.8 = good. Low means the calibration pose was not a\n"
-					"straight wrist, and the elbow will sweep a cone as you\n"
-					"twist. Rotate your forearms for a few seconds to fill it in.");
+					"Mounting roll error, read straight off anatomy: the wrist\n"
+					"cannot rotate about the forearm's long axis, so any twist\n"
+					"measured in the wrist joint is calibration error.\n"
+					"Near 0 = good. A large value rolls the forearm frame, which\n"
+					"makes the elbow bend along a rotated arc and shows up as\n"
+					"phantom wrist bend when you pronate.\n"
+					"Recalibrate the mounting if this stays large.");
 			}
 			ImGui::EndTable();
 		}
@@ -270,13 +273,16 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		bChanged|= ImGui::Checkbox("Swap wrists", &imu.swapSides);
 		ImGui::SetItemTooltip("If the Joy-Con L is strapped to your RIGHT wrist");
 
-		bChanged|= ImGui::SliderFloat("Forearm length", &imu.forearmLengthMeters, 0.15f, 0.40f, "%.2f m");
+		bChanged|= ImGui::SliderFloat("Forearm length", &imu.forearmLengthMeters, 0.10f, 0.40f, "%.2f m");
 		ImGui::SetItemTooltip(
 			"Wrist-to-elbow distance, used to place the elbow back along the\n"
-			"MEASURED forearm direction. Only the length is assumed - the\n"
-			"direction comes from the IMU - so an error here slides the elbow\n"
-			"along the forearm axis without rotating it. Tune it by watching\n"
-			"the elbow marker against your actual elbow in the camera view.");
+			"MEASURED forearm direction. An error here slides the elbow along\n"
+			"the forearm axis without rotating it.\n\n"
+			"The mounting wizard's curl stage measures this from the arc the\n"
+			"controller sweeps, and overwrites this value. That reads slightly\n"
+			"SHORT of a true elbow-to-wrist length, because it is the radius to\n"
+			"the controller rather than to the wrist - nudge it up if the elbow\n"
+			"marker sits inside your actual elbow in the camera view.");
 
 		// No "vision yaw anchor" slider: the value is settled, and it is still
 		// in the config file for anyone who needs to retune it
@@ -285,8 +291,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			panelState.bLaunchMountingWizard= true;
 		ImGui::SetItemTooltip(
 			"Opens a guided calibration: twist your forearms (which measures\n"
-			"each arm's axis from the motion itself), then hold them straight\n"
-			"(which sets the roll about that axis).");
+			"each arm's long axis), then curl at the elbows (which measures\n"
+			"the roll about that axis, and your forearm length).");
 
 		ImGui::EndDisabled();
 	}

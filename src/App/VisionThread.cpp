@@ -190,7 +190,51 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 		snapshots.push_back(snapshot);
 	}
 
-	const bool bOk= m_diagnostics.write(dumpDir, snapshots, latestOutput, m_config->toJsonString());
+	// Raw IMU samples ride along so the sensor axis convention can be settled
+	// by replaying candidate mappings against a real capture
+	std::vector<DiagImuRawSample> rawImu[2];
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		std::vector<ImuSample> samples;
+		m_imuService.getRawSampleHistory((eHandSide)sideIndex, samples);
+		rawImu[sideIndex].reserve(samples.size());
+		for (const ImuSample& sample : samples)
+		{
+			DiagImuRawSample raw;
+			raw.timestampMs= sample.timestampMs;
+			raw.acceleration= sample.acceleration;
+			raw.angularVelocity= sample.angularVelocity;
+			rawImu[sideIndex].push_back(raw);
+		}
+	}
+
+	DiagImuCapture lastCapture[2];
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const MountingCaptureResult& capture= m_imuService.getLastCapture((eHandSide)sideIndex);
+		DiagImuCapture& out= lastCapture[sideIndex];
+		out.present= capture.bCaptured;
+		out.forearmToSensor= capture.forearmToSensor;
+		out.motionUsable= capture.bMotionUsable;
+		out.poseSamples= capture.poseSamples;
+		out.poseSpreadDegrees= capture.poseSpreadDegrees;
+		out.axisDominance= capture.axisDominance;
+		out.twistProgress= capture.twistProgress;
+		out.twistReversal= capture.twistReversal;
+		out.curlDominance= capture.curlDominance;
+		out.curlProgress= capture.curlProgress;
+		out.curlReversal= capture.curlReversal;
+		out.curlStrokes= capture.curlStrokes;
+		out.hingeSpreadDegrees= capture.hingeSpreadDegrees;
+		out.interAxisAngleDegrees= capture.interAxisAngleDegrees;
+		out.lengthMeasured= capture.bLengthMeasured;
+		out.forearmLengthMeters= capture.forearmLengthMeters;
+		out.lengthFitCorrelation= capture.lengthFitCorrelation;
+		out.palmarSource= (int)capture.palmarSource;
+	}
+
+	const bool bOk= m_diagnostics.write(dumpDir, snapshots, latestOutput, m_config->toJsonString(),
+										rawImu, lastCapture);
 	if (bOk)
 	{
 		std::lock_guard<std::mutex> lock(m_dumpMutex);
@@ -690,6 +734,7 @@ void VisionThread::threadLoop()
 	// Previous iteration's fused world result, used to seed cross-camera
 	// search hints (vision-thread-local; the published copy is mutex-guarded)
 	TrackingFrameResult lastFusedForHints;
+	// Previous fuse timestamp, for the anatomical roll trim's step size
 
 	// Latest published output (world OR camera space) for diagnostic dumps
 	TrackingFrameResult lastOutputResult;
@@ -749,8 +794,14 @@ void VisionThread::threadLoop()
 			// timestamps, so running at camera rate loses no information),
 			// then let the fused palm orientation anchor yaw, then publish
 			// the forearm orientation onto the pose.
-			if (m_bImuMotionResetRequested.exchange(false))
-				m_imuService.resetMountingMotion();
+			if (m_bImuMotionRecordingRequested.exchange(false))
+			{
+				const eMountingMotion motion= (eMountingMotion)m_requestedImuMotionRecording.load();
+				if (motion == eMountingMotion::None)
+					m_imuService.endMotionRecording();
+				else
+					m_imuService.beginMotionRecording(motion);
+			}
 			if (m_bImuBiasCalibrationRequested.exchange(false))
 				m_imuService.beginBiasCalibration();
 			if (m_bImuBiasCancelRequested.exchange(false))
@@ -761,7 +812,21 @@ void VisionThread::threadLoop()
 			{
 				const HandPose& pose= outputResult.poses[sideIndex];
 				if (pose.tracked && pose.hasWorldPose)
+				{
 					m_imuService.applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
+
+					// Feeds the mounting average. Runs every tracked frame
+					// rather than only during the wizard, so a capture always
+					// has a populated window behind it.
+					m_imuService.accumulatePoseMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
+													   pose.confidence);
+
+					// Health check on the mounting's roll: the wrist cannot
+					// rotate about the forearm's long axis, so any axial
+					// component of the measured joint is calibration error
+					m_imuService.updateWristAxialResidual((eHandSide)sideIndex,
+														  pose.palmOrientationWorld, pose.confidence);
+				}
 			}
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
@@ -794,15 +859,12 @@ void VisionThread::threadLoop()
 			// Mounting capture: needs a tracked palm AND a converged filter
 			if (m_bImuMountingCaptureRequested.exchange(false))
 			{
+				// No pose argument and no "is the hand tracked right now"
+				// test: the capture consumes the averaged window, so what
+				// matters is what was seen during the twist, not this instant
 				ImuMountingCapture capture;
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					const HandPose& pose= outputResult.poses[sideIndex];
-					if (!pose.tracked || !pose.hasWorldPose)
-						continue;
-					m_imuService.captureMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
-												 capture.sides[sideIndex]);
-				}
+					m_imuService.captureMounting((eHandSide)sideIndex, capture.sides[sideIndex]);
 
 				std::lock_guard<std::mutex> lock(m_imuMutex);
 				m_capturedImuMounting= capture;
@@ -926,9 +988,14 @@ void VisionThread::threadLoop()
 				imuState.armAxisDominance= status.armAxisDominance;
 				imuState.twistProgress= status.twistProgress;
 				imuState.twistReversal= status.twistReversal;
+				imuState.wristAxialTwistDegrees= status.wristAxialTwistDegrees;
 				imuState.gyroBiasDegreesPerSecond= status.gyroBiasDegreesPerSecond;
 				imuState.biasSaturated= status.biasSaturated;
 				imuState.yawSigmaRadians= status.yawSigmaRadians;
+				imuState.filterOrientation= status.filterOrientation;
+				imuState.tiltSigmaRadians= status.tiltSigmaRadians;
+				imuState.gravityAcceptRatio= status.gravityAcceptRatio;
+				imuState.visionYawCorrectionDegrees= status.visionYawCorrectionDegrees;
 			}
 
 			m_diagnostics.record(fusionCandidates, outputResult,
