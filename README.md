@@ -95,7 +95,12 @@ cmake --build build --config Release
 build\Release\MikanMediaPipe.exe
 ```
 
-`MikanMediaPipe.exe --selftest` runs the OSC encoder golden-byte tests.
+`MikanMediaPipe.exe --list-tests` lists every self-test and headless
+diagnostic tool, grouped by whether it needs hardware or an input file. Each
+one lives in its own file under `src/Tests` and registers itself, so adding a
+test means adding a file. Run one by passing its flag (for example
+`--test-fusion`); it logs to `<flag>.log` next to the exe and exits non-zero on
+failure.
 
 ## Calibration workflow
 
