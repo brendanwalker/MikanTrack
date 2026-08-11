@@ -274,6 +274,11 @@ private:
 	// mono articulation carries pose-dependent per-camera bias; switching to
 	// it and back snaps the fingers)
 	void applyTriAngleHold(eHandSide side, HandPose& outPose) const;
+	// Keep the last triangulated palm depth through a brief mono fallback:
+	// pins the along-ray component of the mono position (where its error
+	// lives) to the last triangulated palm, keeping lateral motion. source
+	// provides the observing camera for the ray.
+	void applyTriPositionHold(eHandSide side, const HandCandidate& source, HandPose& outPose) const;
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
 	void applySmoothing(TrackingFrameResult& ioFused);
 
@@ -310,6 +315,14 @@ private:
 	// instead; only a sustained mono stretch adopts the mono articulation.
 	std::array<FingerAngles, FINGER_COUNT> m_lastTriAngles[2]{};
 	HandSkeleton m_lastTriSkeleton[2];
+	// Position twin of the angle hold: the mono palm position's error
+	// concentrates ALONG THE VIEW RAY (measured 15-25cm on this rig), so a
+	// brief tri->mono fallback pins the along-ray component to the last
+	// triangulated position while keeping the (trustworthy) lateral motion.
+	// Measured trigger: a 90ms frame stutter pushed one camera past the
+	// staleness window for a single fuse and the mono position popped the
+	// fused palm by 160-212mm (recording 2026-08-10_00-57-02 frame 348).
+	glm::vec3 m_lastTriPalmWorld[2]= {glm::vec3(0.f), glm::vec3(0.f)};
 	double m_lastTriTimestampMs[2]= {-1e12, -1e12};
 	double m_fuseTimestampMs= 0.0;
 

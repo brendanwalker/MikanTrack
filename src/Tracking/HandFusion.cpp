@@ -40,7 +40,8 @@ static constexpr float kSoloSideStickiness= 0.75f;
 // many consecutive fuses before the orientation/angle source switches
 static constexpr float kArticulationSwitchMargin= 1.2f;
 static constexpr int kArticulationSwitchFrames= 5;
-// Triangulated-angle hold across brief mono fallbacks (see m_lastTriAngles)
+// Triangulated angle + palm-depth hold across brief mono fallbacks (see
+// m_lastTriAngles / m_lastTriPalmWorld)
 static constexpr double kTriAngleHoldMs= 300.0;
 // Rescue-pool floor: a low-presence hand may still contribute usable 2D
 // landmarks as the second triangulation view (the residual is the judge),
@@ -96,6 +97,7 @@ void HandFusion::resetTransientState()
 		m_bRawTriAnglesValid[sideIndex]= false;
 		m_lastTriAngles[sideIndex]= {};
 		m_lastTriSkeleton[sideIndex]= HandSkeleton();
+		m_lastTriPalmWorld[sideIndex]= glm::vec3(0.f);
 		m_lastFusedPalm[sideIndex]= glm::vec3(0.f);
 		m_dominantCamera[sideIndex]= -1;
 	}
@@ -743,10 +745,11 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 		}
 	}
 
-	// Arm the angle hold for brief tri->mono fallbacks (streamed convention:
-	// post rest-offset)
+	// Arm the angle + palm-depth holds for brief tri->mono fallbacks
+	// (streamed convention: post rest-offset)
 	m_lastTriAngles[(int)side]= outPose.fingers;
 	m_lastTriSkeleton[(int)side]= outPose.skeleton;
+	m_lastTriPalmWorld[(int)side]= outPose.palmPositionWorld;
 	m_lastTriTimestampMs[(int)side]= m_fuseTimestampMs;
 
 	cluster.triangulated= true;
@@ -1002,6 +1005,7 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 	if (cluster.triVetoed)
 	{
 		applyTriAngleHold(side, outPose);
+		applyTriPositionHold(side, best, outPose);
 		outPose.tracked= true;
 		outPose.hasWorldPose= true;
 		return;
@@ -1088,8 +1092,11 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 	}
 
 	// Any non-triangulated outcome: bridge brief tri dropouts with the last
-	// triangulated angles instead of snapping to the mono articulation
+	// triangulated angles and palm depth instead of snapping to the mono
+	// estimate. (For the blended multi-camera position, best's view ray is an
+	// approximation - it dominated the blend weight.)
 	applyTriAngleHold(side, outPose);
+	applyTriPositionHold(side, best, outPose);
 
 	outPose.tracked= true;
 	outPose.hasWorldPose= true;
@@ -1103,6 +1110,30 @@ void HandFusion::applyTriAngleHold(eHandSide side, HandPose& outPose) const
 
 	outPose.fingers= m_lastTriAngles[(int)side];
 	outPose.skeleton= m_lastTriSkeleton[(int)side];
+}
+
+void HandFusion::applyTriPositionHold(eHandSide side, const HandCandidate& source, HandPose& outPose) const
+{
+	const double sinceTriMs= m_fuseTimestampMs - m_lastTriTimestampMs[(int)side];
+	if (sinceTriMs < 0.0 || sinceTriMs > kTriAngleHoldMs)
+		return;
+	if (!outPose.hasWorldPose)
+		return;
+
+	// Mono depth error lives along the observing camera's view ray while the
+	// lateral measurement stays good, so remove exactly the along-ray
+	// innovation against the last triangulated palm. A sustained mono
+	// stretch adopts the mono depth when the hold window expires, mirroring
+	// the angle hold above.
+	const glm::vec3 cameraPosWorld= glm::vec3(source.camera->markerFromCamera[3]);
+	const glm::vec3 toPalm= outPose.palmPositionWorld - cameraPosWorld;
+	const float rayLength= glm::length(toPalm);
+	if (rayLength < 1e-4f)
+		return;
+	const glm::vec3 ray= toPalm / rayLength;
+	const float alongRayInnovation=
+		glm::dot(outPose.palmPositionWorld - m_lastTriPalmWorld[(int)side], ray);
+	outPose.palmPositionWorld-= ray * alongRayInnovation;
 }
 
 void HandFusion::applySmoothing(TrackingFrameResult& ioFused)

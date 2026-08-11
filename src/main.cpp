@@ -1199,6 +1199,42 @@ static int runApp(int argc, char** argv)
 						result= 1;
 					}
 				}
+
+				// (q) Triangulated palm-depth hold: the mono pose carries a
+				// 30mm along-ray depth error; a brief single-camera fallback
+				// must pin the along-ray component to the last triangulated
+				// palm (the mono lateral is exact here, so the held position
+				// is exact), and a sustained fallback adopts the mono depth
+				{
+					HandFusion holdFusion;
+					holdFusion.configure(fusionConfig);
+
+					TrackingFrameResult holdFused;
+					holdFusion.fuse({&camA, &camB}, now, holdFused);
+					const glm::vec3 triPalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
+
+					auto camASolo= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
+					camASolo.timestampMs= now + 100.0;
+					holdFusion.fuse({&camASolo}, now + 100.0, holdFused);
+					const glm::vec3 heldPalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
+					const float heldErrMm= glm::length(heldPalm - triPalm) * 1000.f;
+
+					auto camALate= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
+					camALate.timestampMs= now + 500.0;
+					holdFusion.fuse({&camALate}, now + 500.0, holdFused);
+					const glm::vec3 latePalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
+					const glm::vec3 monoPalm= camALate.result.poses[(int)eHandSide::Right].palmPositionWorld;
+					const float lateErrMm= glm::length(latePalm - monoPalm) * 1000.f;
+
+					MIKAN_LOG_INFO("test-fusion") << "(q) palm hold: held err mm=" << heldErrMm
+						<< " (mono depth error was 30), late-vs-mono mm=" << lateErrMm;
+					if (heldErrMm > 1.f || lateErrMm > 0.01f)
+					{
+						MIKAN_LOG_ERROR("test-fusion")
+							<< "(q) FAILED: brief fallback must hold the tri palm depth; sustained goes mono";
+						result= 1;
+					}
+				}
 			}
 
 			// (n) Articulation-source hysteresis (non-triangulated path): the
