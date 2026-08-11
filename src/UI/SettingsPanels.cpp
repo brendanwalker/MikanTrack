@@ -726,6 +726,28 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		ImGui::Text("Camera %d EP: %s", cameraIndex + 1, visionThread->getActiveExecutionProvider(cameraIndex));
 	ImGui::Text("Inference (all cameras): %.1f ms", visionThread->getLastInferenceMs());
 
+	// Frame-loop hitches: one thread serves every camera, so a long phase
+	// starves all of them at once and reads downstream as a camera fault
+	{
+		const int hitchCount= visionThread->getHitchCount();
+		if (hitchCount == 0)
+		{
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Frame loop: no hitches");
+		}
+		else
+		{
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Frame loop hitches: %d (worst %s %.0f ms)",
+							   hitchCount,
+							   VisionThread::getPhaseName(visionThread->getLastHitchPhase()),
+							   visionThread->getLastHitchMs());
+		}
+		ImGui::SetItemTooltip(
+			"Loop iterations over 50 ms. Every camera shares this thread, so a\n"
+			"hitch drops frames on ALL of them at once and shows up as a\n"
+			"synchronized tracking gap. The named phase is where the time\n"
+			"went; the log line carries the full breakdown.");
+	}
+
 	ImGui::SeparatorText("Diagnostics");
 	if (ImGui::Button("Dump tracking state (F9)"))
 		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());

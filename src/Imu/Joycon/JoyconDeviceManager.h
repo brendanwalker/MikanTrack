@@ -19,11 +19,11 @@ public:
 	virtual void shutdown() override;
 	virtual void refreshConnectedDevices() override;
 	virtual size_t getDeviceCount() const override { return m_devices.size(); }
-	virtual IImuDevice* getDeviceByIndex(size_t index) override
+	virtual std::shared_ptr<IImuDevice> getDeviceByIndex(size_t index) override
 	{
-		return index < m_devices.size() ? m_devices[index].get() : nullptr;
+		return index < m_devices.size() ? m_devices[index] : nullptr;
 	}
 
 private:
-	std::vector<std::unique_ptr<JoyconDevice>> m_devices;
+	std::vector<std::shared_ptr<JoyconDevice>> m_devices;
 };

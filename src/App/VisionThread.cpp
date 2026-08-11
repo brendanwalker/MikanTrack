@@ -17,6 +17,62 @@
 #include "VideoCaptureSystem.h"
 #include "VideoFrame.h"
 
+// A loop iteration longer than this starves every camera at once (frames keep
+// arriving, find no free block, and are dropped). Well above a healthy
+// iteration - two cameras of inference plus fusion runs in the low tens of ms.
+static constexpr double k_hitchThresholdMs= 50.0;
+
+static double steadyNowMs()
+{
+	return std::chrono::duration<double, std::milli>(
+			   std::chrono::steady_clock::now().time_since_epoch())
+		.count();
+}
+
+const char* VisionThread::getPhaseName(eVisionPhase phase)
+{
+	switch (phase)
+	{
+	case eVisionPhase::ConfigRefresh: return "config";
+	case eVisionPhase::Capture: return "capture+inference";
+	case eVisionPhase::Imu: return "imu";
+	case eVisionPhase::Fusion: return "fusion";
+	case eVisionPhase::Osc: return "osc";
+	case eVisionPhase::Diagnostics: return "diagnostics";
+	default: return "none";
+	}
+}
+
+void VisionThread::reportHitchIfSlow(double totalMs, const double* phaseMs)
+{
+	if (totalMs < k_hitchThresholdMs)
+		return;
+
+	eVisionPhase worstPhase= eVisionPhase::None;
+	double worstMs= 0.0;
+	for (int phaseIndex= 1; phaseIndex < (int)eVisionPhase::Count; ++phaseIndex)
+	{
+		if (phaseMs[phaseIndex] > worstMs)
+		{
+			worstMs= phaseMs[phaseIndex];
+			worstPhase= (eVisionPhase)phaseIndex;
+		}
+	}
+
+	m_hitchCount.fetch_add(1, std::memory_order_relaxed);
+	m_lastHitchMs= (float)totalMs;
+	m_lastHitchPhase= (int)worstPhase;
+
+	MIKAN_MT_LOG_WARNING("VisionThread")
+		<< "Frame loop hitch " << (int)totalMs << " ms (all cameras drop frames for this long) - worst: "
+		<< getPhaseName(worstPhase) << " " << (int)worstMs << " ms [config "
+		<< (int)phaseMs[(int)eVisionPhase::ConfigRefresh] << " capture "
+		<< (int)phaseMs[(int)eVisionPhase::Capture] << " imu " << (int)phaseMs[(int)eVisionPhase::Imu]
+		<< " fusion " << (int)phaseMs[(int)eVisionPhase::Fusion] << " osc "
+		<< (int)phaseMs[(int)eVisionPhase::Osc] << " diag "
+		<< (int)phaseMs[(int)eVisionPhase::Diagnostics] << "]";
+}
+
 VisionThread::VisionThread(VideoCaptureSystem* videoCapture, AppConfig* config)
 	: m_videoCapture(videoCapture)
 	, m_config(config)
@@ -874,8 +930,16 @@ void VisionThread::threadLoop()
 	// Latest published output (world OR camera space) for diagnostic dumps
 	TrackingFrameResult lastOutputResult;
 
+	// Per-phase timing for the hitch watchdog, reset each iteration
+	double phaseMs[(int)eVisionPhase::Count]= {};
+
 	while (m_bRunning)
 	{
+		const double iterationStartMs= steadyNowMs();
+		for (double& phase : phaseMs)
+			phase= 0.0;
+		double phaseMarkMs= iterationStartMs;
+
 		if (m_bConfigRefreshRequested.exchange(false))
 		{
 			// A refresh wipes fusion inputs and resets fusion state - a hard
@@ -888,6 +952,9 @@ void VisionThread::threadLoop()
 		// Start AFTER any refresh so the header snapshot reflects it
 		if (m_bRecordingStartRequested.exchange(false))
 			handleRecordingStartOnThread();
+
+		phaseMs[(int)eVisionPhase::ConfigRefresh]= steadyNowMs() - phaseMarkMs;
+		phaseMarkMs= steadyNowMs();
 
 		// Process whichever cameras have a new frame (sequential; DirectML
 		// serializes on one GPU queue anyway)
@@ -907,11 +974,19 @@ void VisionThread::threadLoop()
 			newestTimestampMs= std::max(newestTimestampMs, context->lastResult.timestampMs);
 		}
 
+		phaseMs[(int)eVisionPhase::Capture]= steadyNowMs() - phaseMarkMs;
+		phaseMarkMs= steadyNowMs();
+
 		if (!bAnyNewResult)
 		{
 			// Still service dump requests while idle (cameras may be stopped)
 			if (m_bDumpRequested.exchange(false))
 				performDiagnosticDump(lastOutputResult);
+			phaseMs[(int)eVisionPhase::Diagnostics]= steadyNowMs() - phaseMarkMs;
+
+			// The idle sleep below is not a hitch, but a slow config refresh or
+			// dump write on this path still starves the cameras
+			reportHitchIfSlow(steadyNowMs() - iterationStartMs, phaseMs);
 
 			std::this_thread::sleep_for(std::chrono::milliseconds(2));
 			continue;
@@ -945,6 +1020,9 @@ void VisionThread::threadLoop()
 				TrackingRecording::snapshotFusedOutput(outputResult, recordFrame.outPoses);
 				recordFrame.checksum= TrackingRecording::computeFusedChecksum(outputResult);
 			}
+
+			phaseMs[(int)eVisionPhase::Fusion]= steadyNowMs() - phaseMarkMs;
+			phaseMarkMs= steadyNowMs();
 
 			// -- Wrist IMU ---------------------------------------------
 			// Integrate every buffered inertial sample (they carry their own
@@ -1047,6 +1125,10 @@ void VisionThread::threadLoop()
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 					m_imuStatus[sideIndex]= m_imuService.getSideStatus((eHandSide)sideIndex);
 			}
+
+			phaseMs[(int)eVisionPhase::Imu]= steadyNowMs() - phaseMarkMs;
+			phaseMarkMs= steadyNowMs();
+
 			lastFusedForHints= outputResult;
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
 			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
@@ -1103,8 +1185,16 @@ void VisionThread::threadLoop()
 			}
 		}
 
+		// Fusion bookkeeping after the IMU section (dominant camera, per-camera
+		// confidence publish, auto hand-scale) belongs to the fusion phase
+		phaseMs[(int)eVisionPhase::Fusion]+= steadyNowMs() - phaseMarkMs;
+		phaseMarkMs= steadyNowMs();
+
 		if (m_oscStreamer != nullptr)
 			m_oscStreamer->sendFrame(outputResult);
+
+		phaseMs[(int)eVisionPhase::Osc]= steadyNowMs() - phaseMarkMs;
+		phaseMarkMs= steadyNowMs();
 
 		// Publish the fused result (latest-wins)
 		{
@@ -1204,6 +1294,9 @@ void VisionThread::threadLoop()
 
 		if (m_bDumpRequested.exchange(false))
 			performDiagnosticDump(lastOutputResult);
+
+		phaseMs[(int)eVisionPhase::Diagnostics]= steadyNowMs() - phaseMarkMs;
+		reportHitchIfSlow(steadyNowMs() - iterationStartMs, phaseMs);
 	}
 
 	// Finalize an in-flight recording before the contexts are torn down

@@ -60,6 +60,12 @@ client-side with Two-Bone IK from the palm transform.
   camera's current frame (raw + annotated PNG) to
   `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
   tracking misbehaves and attach the folder to a bug report
+- **Frame-loop hitch watchdog**: every camera is served by one vision thread,
+  so any phase that overruns the frame budget drops frames on all of them at
+  once and reads downstream as a camera or USB fault. Iterations over 50 ms are
+  logged with a per-phase breakdown (capture/inference, IMU, fusion, OSC,
+  diagnostics) and counted in the Tracking panel. Device discovery, which used
+  to block that thread for ~200 ms at a time, runs on its own worker.
 - **Tracking recording + deterministic replay (F10 / Timeline panel)**:
   records every input to the post-MediaPipe stages (per-camera landmarks,
   depth samples, timestamps - no video, ~1 MB/s) as JSONL under

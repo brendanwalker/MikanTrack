@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -44,6 +45,13 @@ public:
 };
 
 // Enumerates and owns the IMU devices for one backend.
+//
+// DISCOVERY BLOCKS. Enumerating a HID/Bluetooth bus and opening a device take
+// hundreds of milliseconds on Windows (measured ~200 ms), so refreshing must
+// never happen on a thread with a frame deadline - ImuService owns a discovery
+// worker for exactly this reason. Any future backend (hidraw/BlueZ, IOKit)
+// inherits that contract, and may replace the polling with a native
+// device-arrival notification behind this same interface.
 class IImuDeviceManager
 {
 public:
@@ -52,9 +60,13 @@ public:
 	virtual bool startup()= 0;
 	virtual void shutdown()= 0;
 	// Re-scans for connected devices (safe to call while streaming; already
-	// known devices keep their state)
+	// known devices keep their state). BLOCKS - see the note above.
 	virtual void refreshConnectedDevices()= 0;
 
 	virtual size_t getDeviceCount() const= 0;
-	virtual IImuDevice* getDeviceByIndex(size_t index)= 0;
+	// Shared ownership so discovery can never free a device another thread is
+	// still draining: a consumer that keeps its reference across a refresh
+	// which dropped that device keeps a valid object, and the device closes
+	// when the last reference goes.
+	virtual std::shared_ptr<IImuDevice> getDeviceByIndex(size_t index)= 0;
 };

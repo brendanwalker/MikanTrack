@@ -89,15 +89,39 @@ bool ImuService::startup()
 		return true;
 
 	m_deviceManager= std::make_unique<JoyconDeviceManager>();
-	m_deviceManager->startup();
 	m_bStarted= true;
 
-	refreshDevices();
+	// The manager's own startup() enumerates, so it runs on the worker too -
+	// this keeps the vision thread's first iteration free of HID work
+	m_bDiscoveryExit= false;
+	m_discoveryThread= std::thread([this]() { discoveryLoop(); });
+	requestDiscovery();
 	return true;
 }
 
 void ImuService::shutdown()
 {
+	// Stop the worker before touching anything it owns
+	if (m_discoveryThread.joinable())
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_discoveryMutex);
+			m_bDiscoveryExit= true;
+		}
+		m_discoveryCondition.notify_all();
+		m_discoveryThread.join();
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(m_discoveryMutex);
+		m_bDiscoveryExit= false;
+		m_bDiscoveryRequested= false;
+		m_bDiscoveryResultReady= false;
+		m_discoveredDevices.clear();
+		m_reopenRequests.clear();
+		m_reopenCompletedPaths.clear();
+	}
+
 	m_devices.clear();
 	if (m_deviceManager != nullptr)
 	{
@@ -127,22 +151,126 @@ void ImuService::setConfig(const ImuServiceConfig& config)
 	}
 }
 
-void ImuService::refreshDevices()
+void ImuService::requestDiscovery()
 {
-	if (!m_bStarted || m_deviceManager == nullptr)
+	{
+		std::lock_guard<std::mutex> lock(m_discoveryMutex);
+		m_bDiscoveryRequested= true;
+	}
+	m_discoveryCondition.notify_one();
+}
+
+void ImuService::requestReopen(const std::shared_ptr<IImuDevice>& device)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_discoveryMutex);
+		m_reopenRequests.push_back(device);
+	}
+	m_discoveryCondition.notify_one();
+}
+
+void ImuService::discoveryLoop()
+{
+	// Sole owner of m_deviceManager while this thread runs (created before the
+	// thread starts, destroyed after it joins), so the blocking HID calls here
+	// never contend with the frame loop
+	if (m_deviceManager != nullptr)
+		m_deviceManager->startup();
+
+	while (true)
+	{
+		bool bDiscover= false;
+		std::vector<std::shared_ptr<IImuDevice>> reopenBatch;
+		{
+			std::unique_lock<std::mutex> lock(m_discoveryMutex);
+			m_discoveryCondition.wait(lock, [this]() {
+				return m_bDiscoveryExit || m_bDiscoveryRequested || !m_reopenRequests.empty();
+			});
+			if (m_bDiscoveryExit)
+				return;
+
+			bDiscover= m_bDiscoveryRequested;
+			m_bDiscoveryRequested= false;
+			reopenBatch.swap(m_reopenRequests);
+		}
+
+		// Reopens first: a controller that went silent matters more than
+		// finding a new one, and the service has already stopped draining it
+		for (const std::shared_ptr<IImuDevice>& device : reopenBatch)
+		{
+			MIKAN_MT_LOG_WARNING("ImuService") << device->getFriendlyName() << " silent - reopening";
+			device->close();
+			device->open();
+
+			std::lock_guard<std::mutex> lock(m_discoveryMutex);
+			m_reopenCompletedPaths.push_back(device->getDevicePath());
+		}
+
+		if (bDiscover && m_deviceManager != nullptr)
+		{
+			m_deviceManager->refreshConnectedDevices();
+
+			std::vector<std::shared_ptr<IImuDevice>> devices;
+			for (size_t deviceIndex= 0; deviceIndex < m_deviceManager->getDeviceCount(); ++deviceIndex)
+			{
+				std::shared_ptr<IImuDevice> device= m_deviceManager->getDeviceByIndex(deviceIndex);
+				if (device == nullptr)
+					continue;
+
+				if (!device->isOpen())
+					device->open();
+
+				devices.push_back(std::move(device));
+			}
+
+			std::lock_guard<std::mutex> lock(m_discoveryMutex);
+			m_discoveredDevices= std::move(devices);
+			m_bDiscoveryResultReady= true;
+		}
+	}
+}
+
+void ImuService::adoptDiscoveryResults()
+{
+	std::vector<std::shared_ptr<IImuDevice>> discovered;
+	std::vector<std::string> reopenedPaths;
+	bool bHaveResult= false;
+	{
+		std::lock_guard<std::mutex> lock(m_discoveryMutex);
+		if (m_bDiscoveryResultReady)
+		{
+			discovered= std::move(m_discoveredDevices);
+			m_discoveredDevices.clear();
+			m_bDiscoveryResultReady= false;
+			bHaveResult= true;
+		}
+		reopenedPaths.swap(m_reopenCompletedPaths);
+	}
+
+	// A completed reopen restarts that device's sample clock: the nominal
+	// orientation survives, but integrating across the gap must not happen
+	for (const std::string& path : reopenedPaths)
+	{
+		for (std::unique_ptr<DeviceEntry>& entry : m_devices)
+		{
+			if (entry != nullptr && entry->device != nullptr && path == entry->device->getDevicePath())
+			{
+				entry->bAwaitingReopen= false;
+				entry->lastSampleTimestampMs= -1.0;
+			}
+		}
+	}
+
+	if (!bHaveResult)
 		return;
 
-	m_deviceManager->refreshConnectedDevices();
-
+	// Rebuild the list, carrying over each known device's entry (and its
+	// converged filter). A device that vanished falls out here, and the last
+	// reference dropping closes it on THIS thread, where nothing is draining
+	// it.
 	std::vector<std::unique_ptr<DeviceEntry>> devices;
-	for (size_t deviceIndex= 0; deviceIndex < m_deviceManager->getDeviceCount(); ++deviceIndex)
+	for (const std::shared_ptr<IImuDevice>& device : discovered)
 	{
-		IImuDevice* device= m_deviceManager->getDeviceByIndex(deviceIndex);
-		if (device == nullptr)
-			continue;
-
-		// Carry over the existing entry (and its converged filter) when this
-		// device was already known
 		std::unique_ptr<DeviceEntry> entry;
 		for (std::unique_ptr<DeviceEntry>& existing : m_devices)
 		{
@@ -158,9 +286,6 @@ void ImuService::refreshDevices()
 			entry->device= device;
 			entry->filter.configure(m_config.filter);
 		}
-
-		if (!device->isOpen())
-			device->open();
 
 		devices.push_back(std::move(entry));
 	}
@@ -187,14 +312,21 @@ void ImuService::update()
 	if (!m_config.enabled)
 		return;
 
+	// Pick up whatever the discovery worker finished (new devices, completed
+	// reopens). Cheap: a mutexed swap of already-built results.
+	adoptDiscoveryResults();
+
 	// Look for controllers we do not have yet, so pairing one mid-session just
 	// starts working instead of needing the user to know to press a button.
-	// Throttled, and skipped entirely once both wrists are covered.
+	// Throttled, and skipped entirely once both wrists are covered. Only the
+	// REQUEST happens here - the enumeration runs on the discovery worker,
+	// because doing it inline stalled this thread for ~200 ms every 150 frames
+	// and starved both cameras (measured: recording 2026-08-10_00-57-02).
 	if (m_devices.size() < 2)
 	{
 		if (m_rescanCooldownFrames <= 0)
 		{
-			refreshDevices();
+			requestDiscovery();
 			m_rescanCooldownFrames= k_rescanCooldownFrames;
 		}
 		else
@@ -215,21 +347,17 @@ void ImuService::update()
 		const double silentMs= entry->device->getMillisecondsSinceLastSample();
 		if (silentMs > k_deviceSilentTimeoutMs)
 		{
-			if (entry->reopenCooldownFrames <= 0)
+			if (!entry->bAwaitingReopen && entry->reopenCooldownFrames <= 0)
 			{
-				MIKAN_LOG_WARNING("ImuService")
-					<< entry->device->getFriendlyName() << " silent for " << (int)silentMs
-					<< " ms - reopening";
-				entry->device->close();
-				if (entry->device->open())
-				{
-					// The nominal orientation survives, but the sample clock
-					// restarts: don't integrate across the gap
-					entry->lastSampleTimestampMs= -1.0;
-				}
+				// Hand it to the discovery worker: close+open runs a Bluetooth
+				// handshake, far too slow for this thread. The entry (and its
+				// converged filter) stays here; only the device is off-limits
+				// until the worker reports the reopen complete.
+				entry->bAwaitingReopen= true;
 				entry->reopenCooldownFrames= k_reopenCooldownFrames;
+				requestReopen(entry->device);
 			}
-			else
+			else if (entry->reopenCooldownFrames > 0)
 			{
 				entry->reopenCooldownFrames--;
 			}
@@ -238,6 +366,10 @@ void ImuService::update()
 		{
 			entry->reopenCooldownFrames= 0;
 		}
+
+		// The worker owns this device right now - do not touch it
+		if (entry->bAwaitingReopen)
+			continue;
 
 		m_sampleScratch.clear();
 		entry->device->fetchSamples(m_sampleScratch);

@@ -2126,7 +2126,7 @@ static int runApp(int argc, char** argv)
 			int result= 0;
 			for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
 			{
-				IImuDevice* device= manager.getDeviceByIndex(deviceIndex);
+				std::shared_ptr<IImuDevice> device= manager.getDeviceByIndex(deviceIndex);
 				const std::vector<ImuSample>& samples= collected[deviceIndex];
 				if (samples.size() < 200)
 				{
@@ -3224,6 +3224,101 @@ static int runApp(int argc, char** argv)
 			return result;
 		}
 
+		if (std::string(argv[i]) == "--test-imudiscovery")
+		{
+			LoggerSettings loggerSettings= {};
+			loggerSettings.min_log_level= LogSeverityLevel::info;
+			loggerSettings.log_filename= "test-imudiscovery.log";
+			loggerSettings.enable_console= true;
+			log_init(loggerSettings);
+
+			int result= 0;
+
+			// Device discovery (HID enumeration + the Bluetooth open handshake)
+			// must never run on the caller's thread: ImuService::update() is
+			// called from the vision thread's frame loop, and doing it inline
+			// stalled that loop ~200 ms every 150 frames, starving EVERY camera
+			// at once (diagnosed from recording 2026-08-10_00-57-02).
+			//
+			// Hardware-independent: enumeration runs whether or not a controller
+			// is paired, so what is asserted is the invariant - startup and
+			// update return promptly no matter what discovery is doing.
+			auto elapsedMs= [](const std::chrono::steady_clock::time_point& start) {
+				return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+					.count();
+			};
+
+			ImuService service;
+			ImuServiceConfig serviceConfig;
+			serviceConfig.enabled= true;
+			service.setConfig(serviceConfig);
+
+			const auto startupBegin= std::chrono::steady_clock::now();
+			service.startup();
+			const double startupMs= elapsedMs(startupBegin);
+
+			// Well past the 150-frame rescan cooldown, so the periodic scan
+			// request fires several times during this loop
+			double worstUpdateMs= 0.0;
+			const auto updatesBegin= std::chrono::steady_clock::now();
+			for (int frameIndex= 0; frameIndex < 400; ++frameIndex)
+			{
+				const auto updateBegin= std::chrono::steady_clock::now();
+				service.update();
+				worstUpdateMs= std::max(worstUpdateMs, elapsedMs(updateBegin));
+			}
+			const double updatesMs= elapsedMs(updatesBegin);
+
+			const auto shutdownBegin= std::chrono::steady_clock::now();
+			service.shutdown();
+			const double shutdownMs= elapsedMs(shutdownBegin);
+
+			MIKAN_LOG_INFO("test-imudiscovery")
+				<< "(a) startup=" << startupMs << " ms, 400 updates=" << updatesMs
+				<< " ms (worst single " << worstUpdateMs << " ms), shutdown=" << shutdownMs << " ms";
+
+			// startup() spawns the worker and returns; update() only swaps
+			// already-built results. Thresholds are generous - the point is that
+			// neither absorbs a multi-hundred-ms enumeration.
+			if (startupMs > 50.0 || worstUpdateMs > 20.0)
+			{
+				MIKAN_LOG_ERROR("test-imudiscovery")
+					<< "(a) FAILED: discovery must not block the caller";
+				result= 1;
+			}
+			// shutdown() joins a worker that may be mid-enumeration, so it can
+			// legitimately wait out one scan - but it must not hang
+			if (shutdownMs > 3000.0)
+			{
+				MIKAN_LOG_ERROR("test-imudiscovery") << "(a) FAILED: shutdown must join promptly";
+				result= 1;
+			}
+
+			// (b) Restartable: the worker's exit flag has to reset, or a second
+			// session would spawn a thread already told to quit
+			{
+				const auto restartBegin= std::chrono::steady_clock::now();
+				service.startup();
+				for (int frameIndex= 0; frameIndex < 10; ++frameIndex)
+					service.update();
+				service.shutdown();
+				const double restartMs= elapsedMs(restartBegin);
+
+				MIKAN_LOG_INFO("test-imudiscovery") << "(b) restart cycle=" << restartMs << " ms";
+				if (restartMs > 3000.0)
+				{
+					MIKAN_LOG_ERROR("test-imudiscovery") << "(b) FAILED: restart must work and not hang";
+					result= 1;
+				}
+			}
+
+			if (result == 0)
+				MIKAN_LOG_INFO("test-imudiscovery") << "All IMU discovery checks passed";
+
+			log_dispose();
+			return result;
+		}
+
 		if (std::string(argv[i]) == "--test-joycon")
 		{
 			LoggerSettings loggerSettings= {};
@@ -3286,7 +3381,7 @@ static int runApp(int argc, char** argv)
 
 				for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
 				{
-					IImuDevice* device= manager.getDeviceByIndex(deviceIndex);
+					std::shared_ptr<IImuDevice> device= manager.getDeviceByIndex(deviceIndex);
 					MIKAN_LOG_INFO("test-joycon")
 						<< "  [" << deviceIndex << "] " << device->getFriendlyName() << " side="
 						<< (device->getSide() == eImuSide::Left ? "Left"
@@ -3306,7 +3401,7 @@ static int runApp(int argc, char** argv)
 					std::this_thread::sleep_for(std::chrono::seconds(1));
 					for (size_t deviceIndex= 0; deviceIndex < deviceCount; ++deviceIndex)
 					{
-						IImuDevice* device= manager.getDeviceByIndex(deviceIndex);
+						std::shared_ptr<IImuDevice> device= manager.getDeviceByIndex(deviceIndex);
 						samples.clear();
 						device->fetchSamples(samples);
 						if (samples.empty())

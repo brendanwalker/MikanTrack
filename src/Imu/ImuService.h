@@ -1,10 +1,13 @@
 #pragma once
 
 #include <array>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "glm/ext/quaternion_float.hpp"
@@ -284,8 +287,12 @@ public:
 	void setConfig(const ImuServiceConfig& config);
 	const ImuServiceConfig& getConfig() const { return m_config; }
 
-	// Re-scans for controllers and opens any that aren't streaming yet
-	void refreshDevices();
+	// Asks the discovery worker to re-scan for controllers and open any that
+	// aren't streaming yet. Returns immediately: enumeration and the Bluetooth
+	// open handshake block for hundreds of milliseconds, and update() runs on
+	// the vision thread's frame loop, where that would starve every camera.
+	// Results are adopted by the next update().
+	void requestDiscovery();
 
 	// Drains every device's buffered samples and advances its filter.
 	// Call once per pipeline tick (the samples carry their own timestamps,
@@ -395,10 +402,16 @@ public:
 private:
 	struct DeviceEntry
 	{
-		IImuDevice* device= nullptr;
+		// Shared with the device manager: discovery runs on its own thread and
+		// must never free a device this entry is still draining
+		std::shared_ptr<IImuDevice> device;
 		ImuOrientationFilter filter;
 		double lastSampleTimestampMs= -1.0;
 		int reopenCooldownFrames= 0;
+		// The discovery worker is close()/open()ing this device right now, so
+		// nothing here touches it until the worker reports back. The filter
+		// state stays put, so a reconnect keeps its converged orientation.
+		bool bAwaitingReopen= false;
 
 		// Mounting-quality tracking (see ImuSideStatus::forearmAxisConsistency)
 		glm::quat lastPublishedForearm{1.f, 0.f, 0.f, 0.f};
@@ -457,8 +470,20 @@ private:
 	// Index into m_devices for a wrist, honoring swapSides; -1 when none
 	int findDeviceIndexForSide(eHandSide side) const;
 
+	// -- Discovery worker ---------------------------------------------------
+	// HID enumeration and the Bluetooth open handshake both block for
+	// hundreds of milliseconds. They run here so update() never does.
+	void discoveryLoop();
+	// Hands a silent device to the worker for a close/open cycle
+	void requestReopen(const std::shared_ptr<IImuDevice>& device);
+	// Adopts published discovery results + completed reopens (vision thread)
+	void adoptDiscoveryResults();
+
 	ImuServiceConfig m_config;
+	// Touched ONLY by the discovery worker once started (created before the
+	// worker starts, destroyed after it joins)
 	std::unique_ptr<class JoyconDeviceManager> m_deviceManager;
+	// Vision-thread state
 	std::vector<std::unique_ptr<DeviceEntry>> m_devices;
 	std::vector<ImuSample> m_sampleScratch;
 	bool m_bStarted= false;
@@ -466,4 +491,16 @@ private:
 	uint32_t m_motionEpoch= 0;
 	MountingCaptureResult m_lastCapture[2];
 	int m_rescanCooldownFrames= 0;
+
+	std::thread m_discoveryThread;
+	mutable std::mutex m_discoveryMutex;
+	std::condition_variable m_discoveryCondition;
+	bool m_bDiscoveryRequested= false;
+	bool m_bDiscoveryExit= false;
+	// Worker -> vision thread handoff (guarded by m_discoveryMutex; the lock
+	// is only ever held for the swap, never across the blocking calls)
+	std::vector<std::shared_ptr<IImuDevice>> m_discoveredDevices;
+	bool m_bDiscoveryResultReady= false;
+	std::vector<std::shared_ptr<IImuDevice>> m_reopenRequests;
+	std::vector<std::string> m_reopenCompletedPaths;
 };

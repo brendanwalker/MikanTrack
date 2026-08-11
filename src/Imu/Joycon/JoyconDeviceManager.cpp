@@ -26,7 +26,7 @@ bool JoyconDeviceManager::startup()
 
 void JoyconDeviceManager::shutdown()
 {
-	for (std::unique_ptr<JoyconDevice>& device : m_devices)
+	for (std::shared_ptr<JoyconDevice>& device : m_devices)
 		device->close();
 	m_devices.clear();
 }
@@ -44,7 +44,7 @@ void JoyconDeviceManager::refreshConnectedDevices()
 		return;
 	}
 
-	std::vector<std::unique_ptr<JoyconDevice>> devices;
+	std::vector<std::shared_ptr<JoyconDevice>> devices;
 
 	SP_DEVICE_INTERFACE_DATA interfaceData= {};
 	interfaceData.cbSize= sizeof(interfaceData);
@@ -87,7 +87,7 @@ void JoyconDeviceManager::refreshConnectedDevices()
 
 		// Keep an already-open device object (and its stream) across refreshes
 		bool bReused= false;
-		for (std::unique_ptr<JoyconDevice>& existing : m_devices)
+		for (std::shared_ptr<JoyconDevice>& existing : m_devices)
 		{
 			if (existing != nullptr && devicePath == existing->getDevicePath())
 			{
@@ -97,18 +97,16 @@ void JoyconDeviceManager::refreshConnectedDevices()
 			}
 		}
 		if (!bReused)
-			devices.push_back(std::make_unique<JoyconDevice>(devicePath, attributes.ProductID));
+			devices.push_back(std::make_shared<JoyconDevice>(devicePath, attributes.ProductID));
 	}
 
 	SetupDiDestroyDeviceInfoList(deviceInfoSet);
 
-	// Anything not carried over is gone - close it
-	for (std::unique_ptr<JoyconDevice>& stale : m_devices)
-	{
-		if (stale != nullptr)
-			stale->close();
-	}
-
+	// Anything not carried over is gone. Dropping the reference closes it
+	// through the destructor unless a consumer still holds one - deliberately
+	// NOT an explicit close here: this runs on the discovery worker, and
+	// closing a device out from under the thread draining its samples is what
+	// shared ownership exists to prevent. The last holder closes it.
 	m_devices= std::move(devices);
 
 	MIKAN_LOG_INFO("JoyconDeviceManager") << m_devices.size() << " Joy-Con device(s) found";

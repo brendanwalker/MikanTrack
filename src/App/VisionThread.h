@@ -166,6 +166,29 @@ public:
 	const char* getActiveExecutionProvider(int cameraIndex= 0) const;
 	float getLastInferenceMs() const { return m_lastInferenceMs; } // summed across cameras
 
+	// -- Frame-loop hitch watchdog ------------------------------------------
+	// Every camera shares this one thread, so any phase that overruns the
+	// frame budget starves ALL of them at once: frames keep arriving from the
+	// driver, find no free block, and are dropped. The symptom downstream is a
+	// synchronized multi-frame tracking gap that looks like a camera or USB
+	// fault, so the loop measures itself and names the phase responsible.
+	enum class eVisionPhase : int
+	{
+		None= 0,
+		ConfigRefresh, // config refresh / recording start-stop
+		Capture,       // frame pop, undistort, ML inference, 3D projection
+		Imu,           // wrist IMU sample drain, discovery, forearm publish
+		Fusion,        // cross-camera fusion + smoothing
+		Osc,
+		Diagnostics, // dump history, recording enqueue, dump writes
+		Count
+	};
+	static const char* getPhaseName(eVisionPhase phase);
+
+	int getHitchCount() const { return m_hitchCount; }
+	float getLastHitchMs() const { return m_lastHitchMs; }
+	eVisionPhase getLastHitchPhase() const { return (eVisionPhase)m_lastHitchPhase.load(); }
+
 private:
 	// Everything one camera needs on the vision thread. No shared mutable
 	// state between contexts (the fusion step is the only join point).
@@ -261,6 +284,9 @@ private:
 	std::atomic_bool m_bRunning{false};
 	std::atomic_bool m_bConfigRefreshRequested{true};
 	std::atomic<float> m_lastInferenceMs{0.f};
+	std::atomic_int m_hitchCount{0};
+	std::atomic<float> m_lastHitchMs{0.f};
+	std::atomic_int m_lastHitchPhase{(int)eVisionPhase::None};
 	std::atomic<int> m_dominantCamera[2]= {-1, -1};
 	std::atomic<float> m_autoScaleFactor{1.f};
 
@@ -281,6 +307,10 @@ private:
 	std::vector<RestPoseCapture> m_capturedRestPose;
 	RestPoseCapture m_capturedFusedRest;
 	bool m_bRestPoseReady= false;
+
+	// Logs and publishes a loop iteration that overran the hitch threshold,
+	// attributing it to the phase that consumed the most time
+	void reportHitchIfSlow(double totalMs, const double* phaseMs);
 
 	// Consumes a pending recording start request on the vision thread (state
 	// reset + header snapshot + recorder start)
