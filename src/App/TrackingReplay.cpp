@@ -313,6 +313,9 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 		{
 			replayFrame.whatIfFused= fused;
 			replayFrame.bHasWhatIf= true;
+			replayFrame.whatIfPerCamera.resize(cameraCount);
+			for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+				replayFrame.whatIfPerCamera[cameraIndex]= m_mirrors[cameraIndex].result;
 			continue;
 		}
 

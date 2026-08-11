@@ -42,6 +42,10 @@ public:
 
 		// What-if pass output (valid when bHasWhatIf)
 		TrackingFrameResult whatIfFused;
+		// The what-if pass's own per-camera results, the twin of perCamera.
+		// Kept so a tool can ask what a single camera made of the frame under
+		// each set of parameters, not just what fusion did with them.
+		std::vector<TrackingFrameResult> whatIfPerCamera;
 		bool bHasWhatIf= false;
 
 		// Regenerated fusion diagnostics (populated only inside the
