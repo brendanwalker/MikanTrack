@@ -31,8 +31,38 @@ struct ExtrinsicsConfig
 {
 	bool present= false;
 	glm::dmat4 markerFromCamera{1.0};
+	// Quality of this camera's own pose solve: mean reprojection error of the
+	// averaged board corners it was solved from. Low here only means the pose
+	// fits THIS camera's detections - see ExtrinsicsQualityConfig for whether
+	// the cameras agree with each other.
+	double patternReprojectionErrorPx= 0.0;
+	int patternCornerCount= 0;
+	// Origin aruco marker this camera was calibrated against. A charuco board
+	// was tried and rejected: at the 60-70 cm working distance its 24 mm
+	// squares (the largest that fits on letter paper) do not resolve enough
+	// corner detail to detect, while one large aruco square does.
 	int markerId= 0;
 	double markerLengthMM= 100.0;
+};
+
+// Cross-camera extrinsics quality from the last calibration, measured by
+// triangulating the calibration board's corners and comparing the
+// reconstruction against the board's known geometry. Reports the WORST camera
+// pair, because that pair is what limits fused tracking.
+struct ExtrinsicsQualityConfig
+{
+	bool present= false;
+	int pairCount= 0;
+	int worstPairCameraA= -1;
+	int worstPairCameraB= -1;
+	int worstPairSharedCorners= 0;
+	// Comparable to the hand pipeline's triResidualRmsPx
+	double worstPairReprojectionRmsPx= 0.0;
+	// Mean absolute error of triangulated inter-corner distances
+	double worstPairSpacingErrorMm= 0.0;
+	// Reconstruction scale (1.0 = correct); catches a wrong baseline
+	double worstPairSpacingScale= 1.0;
+	double worstPairPlanarityRmsMm= 0.0;
 };
 
 struct HandScaleConfig
@@ -145,10 +175,6 @@ struct FusionConfig
 	// Two cameras' world wrists further apart than this can't be the same
 	// physical hand (cross-camera handedness-conflict gate)
 	float wristMatchMaxDistM= 0.25f;
-	// Spatial side prior for users who never cross their hands: world axis
-	// (marker frame) pointing toward the RIGHT hand's side of the desk.
-	// 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y
-	int spatialSidePriorAxis= 0;
 	// Drop a camera's observation outright below this confidence
 	// (presence x measured stability). 0 = rely on soft weighting only.
 	float minCameraConfidence= 0.f;
@@ -181,6 +207,9 @@ public:
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.
 	RestAnglesConfig fusedRestAngles;
+
+	// Cross-camera extrinsics quality from the last calibration session
+	ExtrinsicsQualityConfig extrinsicsQuality;
 
 	CameraProfile& camera(size_t index)
 	{

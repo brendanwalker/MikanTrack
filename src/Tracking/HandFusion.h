@@ -32,6 +32,13 @@ struct CameraFrameResult
 	TrackingFrameResult result;
 };
 
+// World-frame convention, fixed by the printed calibration board (whose sheet
+// is labelled FORWARD and RIGHT): world +X is forward, +Z is up out of the
+// table, and the user's RIGHT hand lives toward -Y. Deliberately not
+// configurable - the board defines the frame, so a rig laid out as labelled
+// always agrees, and left/right assignment can rely on it.
+constexpr glm::vec3 k_worldRightAxis(0.f, -1.f, 0.f);
+
 struct HandFusionConfig
 {
 	double stalenessWindowMs= 66.0;
@@ -47,10 +54,6 @@ struct HandFusionConfig
 	// also of genuinely fast motion, which produces real residuals.
 	float jitterReferenceM= 0.015f;
 
-	// Spatial side prior for users who never cross their hands: which world
-	// axis (marker frame, origin = marker center) points toward where the
-	// RIGHT hand lives. 0=off, 1=+X, 2=-X, 3=+Y, 4=-Y.
-	int spatialSidePriorAxis= 0;
 
 	// Split smoothing: palm transform (position + quaternion) vs finger
 	// angles. Palm latency is user-visible, angle latency isn't.

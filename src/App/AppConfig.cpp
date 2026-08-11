@@ -134,6 +134,8 @@ static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 
 	const json& ex= j.value("extrinsics", json::object());
 	profile.extrinsics.present= ex.value("present", false);
+	profile.extrinsics.patternReprojectionErrorPx= ex.value("patternReprojectionErrorPx", 0.0);
+	profile.extrinsics.patternCornerCount= ex.value("patternCornerCount", 0);
 	profile.extrinsics.markerId= ex.value("markerId", 0);
 	profile.extrinsics.markerLengthMM= ex.value("markerLengthMm", 100.0);
 	if (ex.contains("markerFromCamera"))
@@ -169,6 +171,8 @@ static json cameraProfileToJson(const CameraProfile& profile)
 		{"extrinsics",
 		 {
 			 {"present", profile.extrinsics.present},
+			 {"patternReprojectionErrorPx", profile.extrinsics.patternReprojectionErrorPx},
+			 {"patternCornerCount", profile.extrinsics.patternCornerCount},
 			 {"markerId", profile.extrinsics.markerId},
 			 {"markerLengthMm", profile.extrinsics.markerLengthMM},
 			 {"markerFromCamera", dmat4ToJson(profile.extrinsics.markerFromCamera)},
@@ -307,7 +311,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	const json& fu= j.value("fusion", json::object());
 	config.fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
 	config.fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
-	config.fusion.spatialSidePriorAxis= fu.value("spatialSidePriorAxis", 0);
 	config.fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
 	config.fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
 	config.fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
@@ -315,6 +318,17 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
 
 	restAnglesFromJson(j.value("fusedRestAngles", json::object()), config.fusedRestAngles);
+
+	const json& eq= j.value("extrinsicsQuality", json::object());
+	config.extrinsicsQuality.present= eq.value("present", false);
+	config.extrinsicsQuality.pairCount= eq.value("pairCount", 0);
+	config.extrinsicsQuality.worstPairCameraA= eq.value("worstPairCameraA", -1);
+	config.extrinsicsQuality.worstPairCameraB= eq.value("worstPairCameraB", -1);
+	config.extrinsicsQuality.worstPairSharedCorners= eq.value("worstPairSharedCorners", 0);
+	config.extrinsicsQuality.worstPairReprojectionRmsPx= eq.value("worstPairReprojectionRmsPx", 0.0);
+	config.extrinsicsQuality.worstPairSpacingErrorMm= eq.value("worstPairSpacingErrorMm", 0.0);
+	config.extrinsicsQuality.worstPairSpacingScale= eq.value("worstPairSpacingScale", 1.0);
+	config.extrinsicsQuality.worstPairPlanarityRmsMm= eq.value("worstPairPlanarityRmsMm", 0.0);
 
 	const json& im= j.value("imu", json::object());
 	config.imu.enabled= im.value("enabled", true);
@@ -378,7 +392,6 @@ std::string AppConfig::toJsonString() const
 	j["fusion"]= {
 		{"stalenessWindowMs", fusion.stalenessWindowMs},
 		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
-		{"spatialSidePriorAxis", fusion.spatialSidePriorAxis},
 		{"minCameraConfidence", fusion.minCameraConfidence},
 		{"jitterReferenceMm", fusion.jitterReferenceMm},
 		{"triangulationEnabled", fusion.triangulationEnabled},
@@ -387,6 +400,18 @@ std::string AppConfig::toJsonString() const
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
+
+	j["extrinsicsQuality"]= {
+		{"present", extrinsicsQuality.present},
+		{"pairCount", extrinsicsQuality.pairCount},
+		{"worstPairCameraA", extrinsicsQuality.worstPairCameraA},
+		{"worstPairCameraB", extrinsicsQuality.worstPairCameraB},
+		{"worstPairSharedCorners", extrinsicsQuality.worstPairSharedCorners},
+		{"worstPairReprojectionRmsPx", extrinsicsQuality.worstPairReprojectionRmsPx},
+		{"worstPairSpacingErrorMm", extrinsicsQuality.worstPairSpacingErrorMm},
+		{"worstPairSpacingScale", extrinsicsQuality.worstPairSpacingScale},
+		{"worstPairPlanarityRmsMm", extrinsicsQuality.worstPairPlanarityRmsMm},
+	};
 
 	{
 		json imuJson= {

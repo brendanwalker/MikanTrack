@@ -392,14 +392,13 @@ HandFusion::AffinityBreakdown HandFusion::sideAffinity(const HandCluster& cluste
 			std::clamp(1.f - (dist - kTemporalFullDistM) / kTemporalFullDistM, -1.f, 1.f);
 	}
 
-	// Spatial prior (opt-in): hands that never cross stay on their own side of
-	// the marker, so position along the configured axis is side evidence
-	if (m_config.spatialSidePriorAxis != 0)
+	// Spatial prior: hands that never cross stay on their own side of the
+	// board, so position across the world's lateral axis is side evidence.
+	// The axis is a FIXED CONVENTION, not a setting: the calibration board is
+	// printed with FORWARD/RIGHT labels and defines the world frame, so the
+	// right hand is always toward -Y (see k_worldRightAxis).
 	{
-		static const glm::vec3 kRightAxes[]= {
-			{0.f, 0.f, 0.f}, {1.f, 0.f, 0.f}, {-1.f, 0.f, 0.f}, {0.f, 1.f, 0.f}, {0.f, -1.f, 0.f}};
-		const glm::vec3 rightAxis= kRightAxes[std::clamp(m_config.spatialSidePriorAxis, 0, 4)];
-		const float along= glm::dot(cluster.palmWorld, rightAxis);
+		const float along= glm::dot(cluster.palmWorld, k_worldRightAxis);
 		const float prior= std::clamp(along / kSpatialPriorFullDistM, -1.f, 1.f);
 		affinity.spatial= kSpatialPriorWeight * (side == eHandSide::Right ? prior : -prior);
 	}

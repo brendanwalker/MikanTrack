@@ -115,7 +115,6 @@ static int runReplayTest(const TestArgs& args)
 		HandFusionConfig fusionConfig;
 		fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
 		fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
-		fusionConfig.spatialSidePriorAxis= config.fusion.spatialSidePriorAxis;
 		fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
 		fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
 		fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;

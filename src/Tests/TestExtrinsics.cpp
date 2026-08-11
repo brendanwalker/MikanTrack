@@ -49,16 +49,16 @@ static int runExtrinsicsTest(const TestArgs& args)
 							cv::BORDER_TRANSPARENT);
 
 		// Run the real sampler on the synthetic image
-		ArucoMarkerPoseSampler sampler(intrinsics, 1280, 720, 100.f, 0, eCharucoDictionaryType::DICT_6X6, 12);
-		sampler.setGrayscaleFrame(&cameraImage);
-		for (int sample= 0; sample < 12; ++sample)
-		{
-			if (sampler.computeApertureRelativeMarkerXform())
-				sampler.sampleLastApertureRelativeMarkerXform();
-		}
-
-		glm::dmat4 cameraFromMarker;
-		if (!sampler.hasFinishedSampling() || !sampler.computeCalibratedMarkerPose(cameraFromMarker))
+		auto arucoFinder= std::make_shared<CalibrationPatternFinder_Aruco>(
+			1280, 720, 100.f, 0, eCharucoDictionaryType::DICT_6X6);
+		PatternPoseSampler sampler(intrinsics, arucoFinder, 12);
+		sampler.setGrayscaleFrame(&cameraImage);
+		for (int sampleIndex= 0; sampleIndex < 12; ++sampleIndex)
+			sampler.captureSample();
+
+		glm::dmat4 cameraFromMarker;
+
+		if (!sampler.hasFinishedSampling() || !sampler.computeCalibratedPatternPose(cameraFromMarker))
 		{
 			MIKAN_LOG_ERROR("test-extrinsics") << "Sampler failed to detect the synthetic marker";
 			result= 1;
@@ -156,6 +156,96 @@ static int runExtrinsicsTest(const TestArgs& args)
 			}
 		}
 
+		// (pair) Cross-camera validation math: perfect synthetic
+		// observations must score near-zero error, and a 1-degree rotation
+		// error on one camera must be flagged
+		{
+			const int gridCols= 10, gridRows= 7;
+			const float spacingMM= 16.f;
+
+			// A camera pose in CV convention (maps CV camera space -> world)
+			auto makeLookAtCv= [](const glm::dvec3& eye, const glm::dvec3& target) {
+				const glm::dvec3 zAxis= glm::normalize(target - eye); // CV +Z = forward
+				const glm::dvec3 xAxis= glm::normalize(glm::cross(zAxis, glm::dvec3(0, 0, 1)));
+				const glm::dvec3 yAxis= glm::cross(zAxis, xAxis);
+				glm::dmat4 markerFromCamera(1.0);
+				markerFromCamera[0]= glm::dvec4(xAxis, 0.0);
+				markerFromCamera[1]= glm::dvec4(yAxis, 0.0);
+				markerFromCamera[2]= glm::dvec4(zAxis, 0.0);
+				markerFromCamera[3]= glm::dvec4(eye, 1.0);
+				return markerFromCamera;
+			};
+
+			auto makeObservations= [&](int cameraIndex, const glm::dmat4& markerFromCamera) {
+				CameraBoardObservations observations;
+				observations.cameraIndex= cameraIndex;
+				observations.intrinsics= intrinsics;
+				observations.markerFromCamera= markerFromCamera;
+				for (int row= 0; row < gridRows; ++row)
+				{
+					for (int col= 0; col < gridCols; ++col)
+					{
+						// Flat grid on the table, centered on the origin
+						const glm::dvec3 pointWorld(
+							(col - (gridCols - 1) * 0.5) * spacingMM * 0.001,
+							(row - (gridRows - 1) * 0.5) * spacingMM * 0.001, 0.0);
+						cv::Point2f imagePoint;
+						if (!projectWorldPoint(intrinsics, markerFromCamera, pointWorld, imagePoint))
+							continue;
+						observations.pointIDs.push_back(row * gridCols + col);
+						observations.imagePoints.push_back(imagePoint);
+						observations.objectPointsMM.push_back(
+							cv::Point3f(col * spacingMM, 0.f, -row * spacingMM));
+					}
+				}
+				return observations;
+			};
+
+			const glm::dmat4 cameraA= makeLookAtCv(glm::dvec3(0.02, 0.01, 0.5), glm::dvec3(0, 0, 0));
+			const glm::dmat4 cameraB= makeLookAtCv(glm::dvec3(0.4, -0.05, 0.45), glm::dvec3(0, 0, 0));
+
+			ExtrinsicsPairQuality cleanQuality;
+			evaluateExtrinsicsPair(makeObservations(0, cameraA), makeObservations(1, cameraB),
+								   cleanQuality);
+
+			// The same observations judged against a camera-B pose whose
+			// ORIENTATION is off by 1 degree (rotated about its own center -
+			// a world-side rotation through the origin would nearly fix every
+			// ray through the board and hide the error)
+			const glm::dmat4 cameraBBad=
+				cameraB * glm::rotate(glm::dmat4(1.0), glm::radians(1.0), glm::dvec3(1, 0, 0));
+			CameraBoardObservations observationsBBad= makeObservations(1, cameraB);
+			observationsBBad.markerFromCamera= cameraBBad;
+			ExtrinsicsPairQuality badQuality;
+			evaluateExtrinsicsPair(makeObservations(0, cameraA), observationsBBad, badQuality);
+
+			MIKAN_LOG_INFO("test-extrinsics")
+				<< "(pair) clean: rms px=" << cleanQuality.reprojectionRmsPx
+				<< " spacing mm=" << cleanQuality.spacingErrorMm << " scale=" << cleanQuality.spacingScale
+				<< " flat mm=" << cleanQuality.planarityRmsMm << " | 1-deg error: rms px="
+				<< badQuality.reprojectionRmsPx << " spacing mm=" << badQuality.spacingErrorMm;
+			if (!cleanQuality.valid || cleanQuality.reprojectionRmsPx > 0.05f ||
+				cleanQuality.spacingErrorMm > 0.05f || fabs(cleanQuality.spacingScale - 1.f) > 0.001f ||
+				cleanQuality.planarityRmsMm > 0.05f)
+			{
+				MIKAN_LOG_ERROR("test-extrinsics")
+					<< "(pair) FAILED: perfect observations must validate cleanly";
+				result= 1;
+			}
+			// The signature of a small orientation error with only two views:
+			// the rays still nearly intersect (modest reprojection growth) but
+			// the RECONSTRUCTION warps - the spacing check exists precisely
+			// because reprojection alone can hide this
+			if (!badQuality.valid || badQuality.spacingErrorMm < 1.f ||
+				badQuality.reprojectionRmsPx < 0.1f)
+			{
+				MIKAN_LOG_ERROR("test-extrinsics")
+					<< "(pair) FAILED: a 1-degree extrinsics error must be flagged";
+				result= 1;
+			}
+		}
+
+
 		if (result == 0)
 			MIKAN_LOG_INFO("test-extrinsics") << "All extrinsics checks passed";
 	}

@@ -7,6 +7,7 @@
 
 #if defined WIN32 || defined _WIN32 || defined WINCE
 #include <windows.h>
+#include <shellapi.h> // ShellExecuteA (WIN32_LEAN_AND_MEAN strips it from windows.h)
 #else
 #include <sys/time.h>
 #include <sys/types.h>
@@ -37,6 +38,21 @@ void addDllSearchDirectory(const std::filesystem::path& dllPath)
 			addDllDirectory(wideDllPath.c_str());
 		}
 	}
+#endif
+}
+
+bool openFileWithDefaultApplication(const std::filesystem::path& filePath)
+{
+#if defined WIN32 || defined _WIN32 || defined WINCE
+	// ShellExecute returns a value greater than 32 on success
+	HINSTANCE result= ShellExecuteA(NULL, "open", filePath.string().c_str(), NULL, NULL, SW_SHOWNORMAL);
+	return reinterpret_cast<intptr_t>(result) > 32;
+#elif defined(__APPLE__)
+	const std::string command= "open \"" + filePath.string() + "\"";
+	return system(command.c_str()) == 0;
+#else
+	const std::string command= "xdg-open \"" + filePath.string() + "\"";
+	return system(command.c_str()) == 0;
 #endif
 }
 

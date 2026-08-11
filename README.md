@@ -30,8 +30,8 @@ client-side with Two-Bone IK from the palm transform.
   visibility-weighted pose/angle blend rides through hand poses that defeat
   a single view (e.g. clapping edge-on to an overhead camera). Left/right is
   resolved at the fusion level (view-ray-aware world-space clustering + votes +
-  an optional "right hand toward +X" spatial prior for users who don't cross
-  their hands), the two views continuously refine the hand scale by stereo
+  a fixed "right hand toward -Y" spatial prior, guaranteed by the labelled
+  calibration board), the two views continuously refine the hand scale by stereo
   triangulation, and a hand tracked by one camera but lost by another is
   projected into the lost camera's image to re-seed its search directly.
   Prefer 720p per camera and separate USB controllers for two streams.
@@ -39,10 +39,16 @@ client-side with Two-Bone IK from the palm transform.
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)
-- **Aruco extrinsics + hand-scale** wizard: a printed marker on the table
-  defines the world origin; laying your hand flat next to it measures your
-  real wrist→knuckle length, which is what converts 2D landmarks + relative
-  depth into metric 3D
+- **Charuco extrinsics** wizard: the SAME printed charuco board defines the
+  tracking world - its center is the origin, and the FORWARD/RIGHT labels on
+  the sheet pin the axes (+X forward, +Y left, +Z up; the right hand is
+  always toward -Y, a fixed convention the L/R hand assignment relies on).
+  All cameras calibrate in one session against one placement, and the wizard
+  validates the result by triangulating the board's corners across each
+  camera pair and checking the reconstruction against the board's known
+  geometry (reprojection px, corner-spacing error in mm, scale, flatness) -
+  the numbers are saved with the config as a baseline. Hand scale is
+  measured continuously from stereo/depth while tracking runs.
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
 - Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanMediaPipe/config.json`
 - **Image quality diagnostics** (Tracking panel): per-camera statistics of
@@ -107,11 +113,14 @@ failure.
 1. **Intrinsics** (Calibration menu → Intrinsics Wizard): export the charuco
    board PNG, print at 100% scale (verify a square with a ruler), capture it
    from 12 poses. Target reprojection error < 0.5 px.
-2. **Extrinsics + hand scale** (requires intrinsics): print the aruco marker
-   (default 100 mm, ID 0), tape it flat on the table where the world origin
-   should be, capture the camera pose, then lay a hand flat next to the marker
-   to measure hand scale. The marker can be removed afterwards (but re-run the
-   wizard if the camera moves).
+2. **Extrinsics** (requires intrinsics on every camera): lay the SAME charuco
+   board flat where the tracking origin should be, FORWARD label pointing away
+   from you (the board center becomes the world origin), and capture - every
+   camera samples the one placement together. Review shows per-camera
+   reprojection plus the cross-camera agreement metrics; accept saves all
+   cameras atomically. The board can be removed afterwards (but re-run the
+   wizard if a camera moves). `--replay-extrinsics <recording> <config.json>`
+   A/Bs a new calibration against a recorded session offline.
 
 Without calibration the app still tracks and streams, but only image-space
 data is meaningful (no metric 3D / world space).

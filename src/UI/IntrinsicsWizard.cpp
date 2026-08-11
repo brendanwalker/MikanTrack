@@ -218,23 +218,17 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
 
 			ImGui::BeginDisabled(!bParamsValid);
-			if (ImGui::Button("Export board PNG..."))
+			if (ImGui::Button("Export + open board PNG for printing..."))
 			{
-				const std::filesystem::path exportPath=
-					PathUtils::getResourceDirectory() / "calibration" / "charuco_board.png";
-				try
-				{
-					if (generateCharucoBoardPng(exportPath, m_boardCols, m_boardRows, m_squareLengthMM,
-												m_markerLengthMM, eCharucoDictionaryType::DICT_6X6, 10.f))
-					{
-						MIKAN_LOG_INFO("IntrinsicsWizard") << "Exported charuco board to " << exportPath;
-					}
-				}
-				catch (const cv::Exception& e)
-				{
-					MIKAN_LOG_ERROR("IntrinsicsWizard") << "OpenCV error exporting board: " << e.what();
-				}
+				exportAndOpenCharucoBoard(m_boardCols, m_boardRows, m_squareLengthMM, m_markerLengthMM,
+										  eCharucoDictionaryType::DICT_6X6);
 			}
+			ImGui::SetItemTooltip(
+				"Writes the board to resources/calibration and opens it in your image\n"
+				"viewer. Print at 100% scale and check a square with a ruler - a\n"
+				"rescaled print silently rescales the whole tracking world. The same\n"
+				"board is the extrinsics target, so its FORWARD label sets the world\n"
+				"axes.");
 			ImGui::EndDisabled();
 
 			ImGui::Separator();

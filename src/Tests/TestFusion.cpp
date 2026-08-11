@@ -238,17 +238,16 @@ static int runFusionTest(const TestArgs& args)
 		}
 	}
 
-	// (g) Spatial side prior: two hands, both (mis)labeled Left - the
-	// one on the +X side even decisively so. With the prior configured
-	// (+X = right side), assignment must follow geometry, not the votes.
-	{
-		HandFusionConfig priorConfig= fusionConfig;
-		priorConfig.spatialSidePriorAxis= 1; // +X toward the right hand
-		HandFusion freshFusion;
-		freshFusion.configure(priorConfig);
-
-		const glm::vec3 leftPalm(-0.15f, 0.05f, 0.1f);
-		const glm::vec3 rightPalm(0.15f, 0.05f, 0.1f);
+	// (g) Spatial side prior: two hands, both (mis)labeled Left - the one on
+	// the right side of the desk even decisively so. The prior is a FIXED
+	// convention (right hand toward world -Y, set by the printed board), so
+	// assignment must follow geometry rather than the votes.
+	{
+		HandFusion freshFusion;
+		freshFusion.configure(fusionConfig);
+
+		const glm::vec3 leftPalm(0.05f, 0.15f, 0.1f);
+		const glm::vec3 rightPalm(0.05f, -0.15f, 0.1f);
 		const auto camA= makeCameraResult(
 			0, cam1Pos, now, makeObservation(leftPalm, faceUpToCam1, 0.9f, eHandSide::Left, 0.45f, 0.f));
 		const auto camB= makeCameraResult(

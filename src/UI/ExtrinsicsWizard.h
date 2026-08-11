@@ -7,11 +7,12 @@
 #include "glm/ext/matrix_double4x4.hpp"
 #include "opencv2/core/mat.hpp"
 
+#include "ExtrinsicsValidation.h"
 #include "HandOverlay.h"
 #include "TrackingTypes.h"
 
 class AppConfig;
-class ArucoMarkerPoseSampler;
+class PatternPoseSampler;
 class VideoPreviewPanel;
 class VisionThread;
 struct VisionPreviewFrame;
@@ -65,7 +66,7 @@ private:
 	// One camera's calibration-in-progress
 	struct CameraCapture
 	{
-		std::unique_ptr<ArucoMarkerPoseSampler> sampler;
+		std::unique_ptr<PatternPoseSampler> sampler;
 		cv::Mat grayFrame;
 		glm::dmat4 cameraFromMarker{1.0};
 		bool bHasPose= false;
@@ -77,6 +78,10 @@ private:
 	bool areMarkerParamsValid(std::string& outError) const;
 	// True when every configured camera has calibrated intrinsics
 	bool allCamerasHaveIntrinsics() const;
+	// Cross-camera validation for the Review stage: triangulates the marker
+	// corners each pair of cameras both saw and checks the reconstruction
+	// against the marker's known geometry (fills m_pairQuality)
+	void evaluateCalibrationQuality();
 
 	AppConfig* m_config;
 	VisionThread* m_visionThread;
@@ -90,4 +95,8 @@ private:
 	// Marker params being edited
 	int m_markerId= 0;
 	float m_markerLengthMM= 100.f;
+
+	// Review-stage validation results (one entry per camera pair)
+	std::vector<ExtrinsicsPairQuality> m_pairQuality;
+	int m_worstPairIndex= -1;
 };

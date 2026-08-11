@@ -7,13 +7,23 @@
 #include "glm/gtc/matrix_inverse.hpp"
 
 #include "AppConfig.h"
-#include "ArucoMarkerPoseSampler.h"
 #include "CalibrationPatternFinder_Aruco.h"
 #include "Logger.h"
 #include "PatternExport.h"
+#include "PatternPoseSampler.h"
 #include "PathUtils.h"
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
+
+// The wizard computes world-from-camera in GL convention, but
+// SpaceTransforms/LandmarkTo3D work in OpenCV camera convention (+Y down,
+// +Z forward). Right-multiplying this flip makes the stored transform map
+// CV-convention camera points to world.
+static const glm::dmat4 k_cvFromGlFlip(
+	glm::dvec4(1, 0, 0, 0),
+	glm::dvec4(0, -1, 0, 0),
+	glm::dvec4(0, 0, -1, 0),
+	glm::dvec4(0, 0, 0, 1));
 
 ExtrinsicsWizard::ExtrinsicsWizard(AppConfig* config, VisionThread* visionThread)
 	: m_config(config)
@@ -34,6 +44,8 @@ void ExtrinsicsWizard::enter()
 
 	m_captures.clear();
 	m_captures.resize(m_config->cameraCount());
+	m_pairQuality.clear();
+	m_worstPairIndex= -1;
 
 	// Marker detection wants undistorted frames; tracking isn't needed while
 	// calibrating - every camera participates in the same session
@@ -74,13 +86,12 @@ bool ExtrinsicsWizard::beginPoseCapture(const std::vector<VisionPreviewFrame>& p
 		{
 			const cv::Mat& bgr= previews[cameraIndex].bgr;
 			m_captures[cameraIndex].bHasPose= false;
-			m_captures[cameraIndex].sampler= std::make_unique<ArucoMarkerPoseSampler>(
-				m_config->camera(cameraIndex).intrinsics.intrinsics,
-				bgr.cols, bgr.rows,
-				m_markerLengthMM,
-				m_markerId,
-				eCharucoDictionaryType::DICT_6X6,
-				12);
+
+			CalibrationPatternFinderPtr finder= std::make_shared<CalibrationPatternFinder_Aruco>(
+				bgr.cols, bgr.rows, m_markerLengthMM, m_markerId, eCharucoDictionaryType::DICT_6X6);
+
+			m_captures[cameraIndex].sampler= std::make_unique<PatternPoseSampler>(
+				m_config->camera(cameraIndex).intrinsics.intrinsics, finder, 12);
 		}
 		m_state= eState::CaptureCameraPose;
 		return true;
@@ -163,6 +174,55 @@ bool ExtrinsicsWizard::raycastPixelOntoPlane(const MikanMonoIntrinsics& intrinsi
 	return true;
 }
 
+void ExtrinsicsWizard::evaluateCalibrationQuality()
+{
+	m_pairQuality.clear();
+	m_worstPairIndex= -1;
+
+	// Each camera's averaged marker corners + its just-solved extrinsics.
+	// The aruco marker only carries FOUR corners, so these numbers catch a
+	// grossly wrong relative pose rather than finely grading a good one -
+	// which is exactly the failure worth catching before tracking runs.
+	std::vector<CameraBoardObservations> observations(m_captures.size());
+	for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
+	{
+		const CameraCapture& capture= m_captures[cameraIndex];
+		CameraBoardObservations& cameraObservations= observations[cameraIndex];
+		cameraObservations.cameraIndex= (int)cameraIndex;
+		cameraObservations.intrinsics= m_config->camera(cameraIndex).intrinsics.intrinsics;
+		cameraObservations.markerFromCamera=
+			computeWorldFromCameraPose(capture.cameraFromMarker) * k_cvFromGlFlip;
+
+		if (capture.sampler == nullptr)
+			continue;
+		capture.sampler->getAveragedObservations(cameraObservations.pointIDs,
+												 cameraObservations.imagePoints);
+		for (const int pointID : cameraObservations.pointIDs)
+		{
+			cv::Point3f objectPointMM;
+			capture.sampler->getObjectPoint(pointID, objectPointMM);
+			cameraObservations.objectPointsMM.push_back(objectPointMM);
+		}
+	}
+
+	for (size_t cameraA= 0; cameraA < observations.size(); ++cameraA)
+	{
+		for (size_t cameraB= cameraA + 1; cameraB < observations.size(); ++cameraB)
+		{
+			ExtrinsicsPairQuality quality;
+			evaluateExtrinsicsPair(observations[cameraA], observations[cameraB], quality);
+			m_pairQuality.push_back(quality);
+
+			if (quality.valid &&
+				(m_worstPairIndex < 0 ||
+				 quality.reprojectionRmsPx > m_pairQuality[m_worstPairIndex].reprojectionRmsPx))
+			{
+				m_worstPairIndex= (int)(m_pairQuality.size() - 1);
+			}
+		}
+	}
+}
+
 bool ExtrinsicsWizard::update(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
 							  VideoPreviewPanel* previewPanel)
 {
@@ -193,19 +253,20 @@ bool ExtrinsicsWizard::update(float deltaSeconds, const std::vector<VisionPrevie
 			capture.sampler->setGrayscaleFrame(&capture.grayFrame);
 
 			if (!capture.sampler->hasFinishedSampling())
-			{
-				if (capture.sampler->computeApertureRelativeMarkerXform())
-					capture.sampler->sampleLastApertureRelativeMarkerXform();
-			}
+				capture.sampler->captureSample();
+
 			if (capture.sampler->hasFinishedSampling() &&
-				capture.sampler->computeCalibratedMarkerPose(capture.cameraFromMarker))
+				capture.sampler->computeCalibratedPatternPose(capture.cameraFromMarker))
 			{
 				capture.bHasPose= true;
 			}
 		}
 
 		if (bAllHavePose && !m_captures.empty())
+		{
+			evaluateCalibrationQuality();
 			m_state= eState::Review;
+		}
 
 		if (previewPanel != nullptr)
 			drawMarkerOverlays(previewPanel);
@@ -224,7 +285,7 @@ void ExtrinsicsWizard::drawMarkerOverlays(VideoPreviewPanel* previewPanel)
 
 	for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 	{
-		CalibrationPatternFinder_Aruco* finder=
+		CalibrationPatternFinder* finder=
 			m_captures[cameraIndex].sampler != nullptr ? m_captures[cameraIndex].sampler->getPatternFinder() : nullptr;
 		if (finder == nullptr)
 			continue;
@@ -297,23 +358,17 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
 
 			ImGui::BeginDisabled(!bParamsValid);
-			if (ImGui::Button("Export marker PNG..."))
+			if (ImGui::Button("Export + open marker PNG for printing..."))
 			{
-				const std::filesystem::path exportPath=
-					PathUtils::getResourceDirectory() / "calibration" / "aruco_marker.png";
-				try
-				{
-					if (generateArucoMarkerPng(exportPath, m_markerId, eCharucoDictionaryType::DICT_6X6, 1000,
-											   m_markerLengthMM))
-					{
-						MIKAN_LOG_INFO("ExtrinsicsWizard") << "Exported aruco marker to " << exportPath;
-					}
-				}
-				catch (const cv::Exception& e)
-				{
-					MIKAN_LOG_ERROR("ExtrinsicsWizard") << "OpenCV error exporting marker: " << e.what();
-				}
+				exportAndOpenArucoMarker(m_markerId, eCharucoDictionaryType::DICT_6X6,
+										 m_markerLengthMM);
 			}
+			ImGui::SetItemTooltip(
+				"Writes the marker to resources/calibration and opens it in your\n"
+				"image viewer. Print at 100%% scale and check the square with a\n"
+				"ruler - a rescaled print silently rescales the whole tracking\n"
+				"world. The sheet also carries the axis labels this world frame\n"
+				"depends on.");
 			ImGui::EndDisabled();
 
 			ImGui::Separator();
@@ -347,7 +402,7 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 					ImGui::Text("%s:", label);
 					ImGui::SameLine();
 					ImGui::ProgressBar(capture.sampler->getCalibrationProgress(), ImVec2(-1, 0));
-					if (!capture.sampler->hasValidApertureRelativeMarkerXform())
+					if (!capture.sampler->hasValidDetection())
 						ImGui::TextDisabled("  marker not visible to this camera");
 				}
 			}
@@ -371,11 +426,37 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 			{
 				const CameraCapture& capture= m_captures[cameraIndex];
 				const glm::dmat4 worldFromCamera= computeWorldFromCameraPose(capture.cameraFromMarker);
-				ImGui::Text("Camera %d: marker distance %.2f m, height over table %.2f m",
+				ImGui::Text("Camera %d: %.2f m from marker, height %.2f m, reproj %.2f px",
 							(int)cameraIndex + 1,
 							glm::length(glm::dvec3(capture.cameraFromMarker[3])),
-							worldFromCamera[3].z);
+							worldFromCamera[3].z,
+							capture.sampler != nullptr ? capture.sampler->getMeanReprojectionErrorPx() : 0.f);
 			}
+
+			// Cross-camera agreement: the number fused tracking depends on.
+			// Same triangulate-and-reproject operation the hand pipeline runs,
+			// so the px values compare directly to its residuals.
+			for (const ExtrinsicsPairQuality& quality : m_pairQuality)
+			{
+				if (!quality.valid)
+				{
+					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f),
+									   "Cameras %d+%d: not enough shared corners to validate",
+									   quality.cameraA + 1, quality.cameraB + 1);
+					continue;
+				}
+				const bool bGood= quality.reprojectionRmsPx < 2.f && quality.spacingErrorMm < 3.f;
+				ImGui::TextColored(bGood ? ImVec4(0.4f, 1.f, 0.5f, 1.f) : ImVec4(1.f, 0.85f, 0.3f, 1.f),
+								   "Cameras %d+%d agree to %.2f px rms, marker size err %.2f mm, scale %.3f",
+								   quality.cameraA + 1, quality.cameraB + 1, quality.reprojectionRmsPx,
+								   quality.spacingErrorMm, quality.spacingScale);
+			}
+			ImGui::SetItemTooltip(
+				"The marker corners both cameras saw, triangulated with the new\n"
+				"extrinsics and checked against the marker's known size. rms px is\n"
+				"comparable to the tracking pipeline's triangulation residual; the\n"
+				"size error and scale catch a wrong baseline that reprojection\n"
+				"alone can hide. Only four corners, so read it as pass/fail.");
 			ImGui::TextWrapped(
 				"Sanity check these numbers against your physical setup. Hand scale is "
 				"measured automatically from stereo/depth while tracking runs "
@@ -384,25 +465,38 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 
 			if (ImGui::Button("Accept & Save All", ImVec2(-1, 0)))
 			{
-				// worldFromCamera maps GL camera space to the Z-up world, but
-				// SpaceTransforms/LandmarkTo3D work in OpenCV camera convention
-				// (+Y down, +Z forward). Right-multiply the GL->CV axis flip so
-				// the stored transform maps CV-convention camera points to world.
-				const glm::dmat4 cvFromGlFlip(
-					glm::dvec4(1, 0, 0, 0),
-					glm::dvec4(0, -1, 0, 0),
-					glm::dvec4(0, 0, -1, 0),
-					glm::dvec4(0, 0, 0, 1));
 
 				for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 				{
-					const glm::dmat4 worldFromCamera=
-						computeWorldFromCameraPose(m_captures[cameraIndex].cameraFromMarker);
+					const CameraCapture& capture= m_captures[cameraIndex];
+					const glm::dmat4 worldFromCamera= computeWorldFromCameraPose(capture.cameraFromMarker);
 					ExtrinsicsConfig& extrinsics= m_config->camera(cameraIndex).extrinsics;
 					extrinsics.present= true;
-					extrinsics.markerFromCamera= worldFromCamera * cvFromGlFlip;
+					extrinsics.markerFromCamera= worldFromCamera * k_cvFromGlFlip;
 					extrinsics.markerId= m_markerId;
 					extrinsics.markerLengthMM= m_markerLengthMM;
+					extrinsics.patternReprojectionErrorPx=
+						capture.sampler != nullptr ? capture.sampler->getMeanReprojectionErrorPx() : 0.0;
+					extrinsics.patternCornerCount=
+						capture.sampler != nullptr ? capture.sampler->getObservedCornerCount() : 0;
+				}
+
+				// Persist the worst pair's agreement so a later "is my calibration
+				// still good?" question has a baseline to compare against
+				ExtrinsicsQualityConfig& quality= m_config->extrinsicsQuality;
+				quality= ExtrinsicsQualityConfig();
+				quality.pairCount= (int)m_pairQuality.size();
+				if (m_worstPairIndex >= 0)
+				{
+					const ExtrinsicsPairQuality& worst= m_pairQuality[m_worstPairIndex];
+					quality.present= true;
+					quality.worstPairCameraA= worst.cameraA;
+					quality.worstPairCameraB= worst.cameraB;
+					quality.worstPairSharedCorners= worst.sharedCornerCount;
+					quality.worstPairReprojectionRmsPx= worst.reprojectionRmsPx;
+					quality.worstPairSpacingErrorMm= worst.spacingErrorMm;
+					quality.worstPairSpacingScale= worst.spacingScale;
+					quality.worstPairPlanarityRmsMm= worst.planarityRmsMm;
 				}
 				m_config->markDirty();
 				m_config->save();

@@ -11,6 +11,18 @@ bool generateCharucoBoardPng(const std::filesystem::path& pngPath, int charucoCo
 							 float charucoSquareLengthMM, float charucoMarkerLengthMM,
 							 eCharucoDictionaryType charucoDictionaryType, float pixelsPerMM);
 
+// Writes a printable pattern to the standard calibration resource path and
+// opens it in the OS's default image viewer, ready to print. Returns the
+// written path, or an empty path on failure (logged).
+//
+// Wrapped rather than left to each caller because "wrote a file, logged a
+// path" is not a usable prompt to go print something.
+std::filesystem::path exportAndOpenCharucoBoard(int charucoCols, int charucoRows,
+												float charucoSquareLengthMM, float charucoMarkerLengthMM,
+												eCharucoDictionaryType charucoDictionaryType);
+std::filesystem::path exportAndOpenArucoMarker(int arucoId, eCharucoDictionaryType arucoDictionaryType,
+											   float markerLengthMM);
+
 // Renders a printable ArUco origin marker and writes it to a PNG file.
 // Adapted from MikanXR's MarkerComponent::printMarker (minus the libharu PDF output).
 //

@@ -60,6 +60,13 @@ public:
 		bool bUseRecordedDepth= true;
 		// Off = clear the per-camera rest angle offsets
 		bool bApplyRestAngles= true;
+		// Replace each camera's extrinsics with these (indexed by camera).
+		// Sound to override offline: recorded landmarks live in each camera's
+		// own undistorted image space, and extrinsics apply strictly after
+		// camera-space projection - so two calibrations can be A/B'd against
+		// the same recorded hands (--replay-extrinsics).
+		bool bOverrideExtrinsics= false;
+		std::vector<ExtrinsicsConfig> extrinsicsOverride;
 	};
 
 	// Loads and parses the whole file (header + frames; a missing footer is

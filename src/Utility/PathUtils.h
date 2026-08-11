@@ -26,6 +26,10 @@ MIKAN_UTILITY_FUNC(std::filesystem::path) makeAbsoluteResourceFilePath(const std
 /// Get the "home" location where config files can be stored
 MIKAN_UTILITY_FUNC(std::filesystem::path) getHomeDirectory();
 
+/// Open a file with the OS's default application for its type (e.g. a freshly
+/// exported calibration-board PNG in the image viewer, ready to print)
+MIKAN_UTILITY_FUNC(bool) openFileWithDefaultApplication(const std::filesystem::path& filePath);
+
 /// Get the directory of the currently loaded project (empty if no project is loaded)
 MIKAN_UTILITY_FUNC(std::filesystem::path) getProjectDirectory();
 

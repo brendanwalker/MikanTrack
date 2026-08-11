@@ -493,7 +493,6 @@ void VisionThread::refreshConfigOnThread()
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
 	fusionConfig.wristMatchMaxDistM= m_config->fusion.wristMatchMaxDistM;
-	fusionConfig.spatialSidePriorAxis= m_config->fusion.spatialSidePriorAxis;
 	fusionConfig.minCameraConfidence= m_config->fusion.minCameraConfidence;
 	fusionConfig.jitterReferenceM= m_config->fusion.jitterReferenceMm * 0.001f;
 	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;

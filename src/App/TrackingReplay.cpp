@@ -108,7 +108,6 @@ HandFusionConfig TrackingReplay::buildFusionConfig() const
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
 	fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
-	fusionConfig.spatialSidePriorAxis= config.fusion.spatialSidePriorAxis;
 	fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
 	fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
 	fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;
@@ -197,6 +196,18 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 	if (!bWhatIf)
 		m_divergentFrames.clear();
 
+	// Extrinsics may be overridden by the what-if pass (two calibrations
+	// A/B'd against the same recorded hands). Intrinsics are always the
+	// recording's own: the landmarks were detected through them.
+	auto effectiveExtrinsics= [&](int cameraIndex) -> const ExtrinsicsConfig& {
+		if (bWhatIf && whatIfParams->bOverrideExtrinsics &&
+			cameraIndex < (int)whatIfParams->extrinsicsOverride.size())
+		{
+			return whatIfParams->extrinsicsOverride[cameraIndex];
+		}
+		return m_recordedConfig.camera(cameraIndex).extrinsics;
+	};
+
 	std::vector<const CameraFrameResult*> candidates;
 	for (size_t frameIndex= 0; frameIndex < m_recordedFrames.size(); ++frameIndex)
 	{
@@ -257,16 +268,18 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 						fresh.bHaveDepth && (!bWhatIf || whatIfParams->bUseRecordedDepth);
 					landmarkTo3D->process(result, bUseDepth ? &fresh.depth : nullptr);
 
-					if (profile.extrinsics.present)
-						applyWorldTransform(result, profile.extrinsics.markerFromCamera);
+					const ExtrinsicsConfig& extrinsics= effectiveExtrinsics(cameraIndex);
+					if (extrinsics.present)
+						applyWorldTransform(result, extrinsics.markerFromCamera);
 				}
 			}
 
 			// Mirror update, matching the live lastResult assignments
+			const ExtrinsicsConfig& extrinsics= effectiveExtrinsics(cameraIndex);
 			mirror.valid= fresh.valid;
 			mirror.timestampMs= fresh.timestampMs;
-			mirror.hasExtrinsics= profile.extrinsics.present;
-			mirror.markerFromCamera= profile.extrinsics.markerFromCamera;
+			mirror.hasExtrinsics= extrinsics.present;
+			mirror.markerFromCamera= extrinsics.markerFromCamera;
 			mirror.hasIntrinsics= profile.intrinsics.present;
 			if (profile.intrinsics.present)
 			{
