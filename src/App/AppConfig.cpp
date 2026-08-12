@@ -413,7 +413,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.tracking.flipHandedness= tr.value("flipHandedness", true);
 	config.tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 	config.tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
-	config.tracking.crossCameraSeeding= tr.value("crossCameraSeeding", true);
 	config.tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
 	config.tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
 	config.tracking.palmBeta= tr.value("palmBeta", 0.1f);
@@ -500,7 +499,6 @@ std::string AppConfig::toJsonString() const
 		{"flipHandedness", tracking.flipHandedness},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
-		{"crossCameraSeeding", tracking.crossCameraSeeding},
 		{"useRealSenseDepth", tracking.useRealSenseDepth},
 		{"palmMinCutoff", tracking.palmMinCutoff},
 		{"palmBeta", tracking.palmBeta},

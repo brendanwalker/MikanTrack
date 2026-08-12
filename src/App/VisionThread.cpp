@@ -321,6 +321,8 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 		snapshot.droppedFrames= m_videoCapture->getDroppedFrameCount(context.cameraIndex);
 		snapshot.activeEp= context.activeEp.load();
 		snapshot.trackingEnabled= context.bTrackingEnabled;
+		if (context.pipeline != nullptr)
+			snapshot.seedStats= &context.pipeline->getSeedStats();
 		snapshots.push_back(snapshot);
 	}
 
@@ -620,15 +622,21 @@ void VisionThread::seedSearchHints(CameraContext& context, const TrackingFrameRe
 		if (!fusedPose.tracked || !fusedPose.hasWorldPose)
 			continue;
 
-		// Only seed hands THIS camera is missing (some other camera sees it)
-		if (context.lastResult.valid && context.lastResult.result.poses[sideIndex].tracked)
-			continue;
-
+		// Whether this camera already has the hand is decided POSITIONALLY,
+		// downstream in applySearchHints. It used to be decided here by
+		// comparing side LABELS, which fails exactly when it matters: labels
+		// get displaced when hands leave and re-enter, and a camera holding
+		// one hand under the wrong label then had one side skipped here and
+		// the other suppressed there, so neither was seeded and reacquisition
+		// waited a full palm-detector interval.
 		glm::vec2 centerPx;
 		double depth= 0.0;
-		if (!projectPoint(fusedPose.palmPositionWorld, centerPx, depth))
-			continue;
-		if (centerPx.x < 0.f || centerPx.x >= (float)width || centerPx.y < 0.f || centerPx.y >= (float)height)
+		const bool bProjected=
+			projectPoint(fusedPose.palmPositionWorld, centerPx, depth) &&
+			centerPx.x >= 0.f && centerPx.x < (float)width &&
+			centerPx.y >= 0.f && centerPx.y < (float)height;
+		context.pipeline->noteSeedCandidate(bProjected);
+		if (!bProjected)
 			continue;
 
 		// Palm +X points toward the fingers; its projection orients the crop
@@ -726,7 +734,7 @@ bool VisionThread::sampleHandDepth(CameraContext& context, const CameraProfile& 
 	return bAnyResolved;
 }
 
-bool VisionThread::processCameraFrame(CameraContext& context)
+bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused)
 {
 	VideoFrameBlock* block= m_videoCapture->tryPopFrame(context.cameraIndex);
 	if (block == nullptr)
@@ -779,6 +787,14 @@ bool VisionThread::processCameraFrame(CameraContext& context)
 	bool bProducedTracking= false;
 	if (context.bTrackingEnabled && context.pipeline != nullptr)
 	{
+		// Seed here rather than once per vision-thread iteration: the pipeline
+		// only consumes hints inside process(), and setSearchHints REPLACES the
+		// queue, so hints handed over on an iteration where this camera had no
+		// frame were overwritten unseen. Measured before this moved: 4425
+		// offered against 1659 that ever reached a decision.
+		if (m_cameras.size() > 1)
+			seedSearchHints(context, lastFused);
+
 		context.pipeline->process(*activeFrame, result);
 
 		// Lighting/exposure diagnostics on the exact image the model consumed
@@ -991,10 +1007,7 @@ void VisionThread::threadLoop()
 		double newestTimestampMs= 0.0;
 		for (std::unique_ptr<CameraContext>& context : m_cameras)
 		{
-			if (m_cameras.size() > 1 && m_config->tracking.crossCameraSeeding)
-				seedSearchHints(*context, lastFusedForHints);
-
-			if (processCameraFrame(*context))
+			if (processCameraFrame(*context, lastFusedForHints))
 			{
 				bAnyNewResult= true;
 				inferenceMsSum+= context->lastResult.result.inferenceMs;

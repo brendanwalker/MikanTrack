@@ -314,12 +314,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 		ImGui::SetItemTooltip("A camera's last result older than this is\nexcluded from fusion");
 
-		bChanged|= ImGui::Checkbox("Cross-camera search seeding", &tracking.crossCameraSeeding);
-		ImGui::SetItemTooltip(
-			"When one camera tracks a hand another camera lost, project it\n"
-			"into the lost camera's image and try the landmark model there\n"
-			"directly - much faster reacquisition after claps/occlusion.");
-
 		bChanged|= ImGui::Checkbox("Stereo landmark triangulation", &fusion.triangulationEnabled);
 		ImGui::SetItemTooltip(
 			"When two cameras see the same hand, triangulate all 21\n"

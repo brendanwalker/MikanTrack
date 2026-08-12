@@ -104,7 +104,6 @@ struct TrackingConfig
 	float palmScoreThresholdRelaxed= 0.25f;
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
-	bool crossCameraSeeding= true;
 	// RealSense cameras: use the hardware depth stream for the palm transform
 	// (metric measurement replaces the monocular PnP estimate)
 	bool useRealSenseDepth= true;

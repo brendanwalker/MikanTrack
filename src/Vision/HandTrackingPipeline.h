@@ -59,6 +59,30 @@ struct HandSearchHint
 	float palmSizePx= 0.f;     // projected wrist->middle-MCP distance
 };
 
+// One camera's landmark ROI box, for the seed redundancy test
+struct HandBox
+{
+	glm::vec2 min{0.f};
+	glm::vec2 max{0.f};
+};
+
+// Where cross-camera seeds go, cumulative since startup. Seeding runs UPSTREAM
+// of the tracking recording (recordings capture post-model results), so it
+// cannot be replayed offline and a counter is the only way to see which gate
+// is consuming the hints.
+struct HandSeedStats
+{
+	int candidates= 0;        // fused hands the vision thread tried to seed here
+	int skippedProjection= 0; // behind the camera or outside the image
+	int offered= 0;           // hints handed to the pipeline
+	int skippedTooSmall= 0;   // projected palm too small to crop around
+	int skippedRedundant= 0;  // landed on a hand this camera already tracks
+	int skippedNoFreeSlot= 0;
+	int applied= 0;           // a slot was seeded
+	int rejectedByModel= 0;   // first landmark pass found no confident hand
+	int accepted= 0;          // survived that pass and became a tracked hand
+};
+
 // Orchestrates the MediaPipe-style tracking graph on the inference thread:
 //   - two hand slots with landmark-driven ROI reuse (palm detector only runs
 //     when a slot is free or every detectorIntervalFrames as a drift guard)
@@ -101,7 +125,32 @@ public:
 
 	// Queues cross-camera search hints for the next process() call (same
 	// thread as process; hints landing on an already-tracked hand are ignored)
-	void setSearchHints(const std::vector<HandSearchHint>& hints) { m_searchHints= hints; }
+	void setSearchHints(const std::vector<HandSearchHint>& hints)
+	{
+		m_searchHints= hints;
+		m_seedStats.offered+= (int)hints.size();
+	}
+
+	// Whether a hint duplicates a hand this camera already tracks. POSITIONAL
+	// on purpose: a camera can track the right physical hand under the wrong
+	// side label, which is exactly what happens after a hand leaves and
+	// re-enters, so a label comparison would both miss real duplicates and
+	// suppress real seeds. Boxes are inflated about their centre first, since
+	// the projected centre carries the OTHER camera's depth error - a range
+	// error along its view ray arrives here as a lateral offset.
+	// Exposed for the --test-seeding self test.
+	static bool isSeedRedundant(const glm::vec2& centerPx, const std::vector<HandBox>& activeBoxes);
+
+	// Cross-camera seeding accounting. The vision thread owns the two counters
+	// that describe hints it never handed over; everything after that is
+	// counted here, so consumers read one struct.
+	const HandSeedStats& getSeedStats() const { return m_seedStats; }
+	void noteSeedCandidate(bool bProjectedIntoFrame)
+	{
+		m_seedStats.candidates++;
+		if (!bProjectedIntoFrame)
+			m_seedStats.skippedProjection++;
+	}
 
 private:
 	struct HandSlot
@@ -171,6 +220,9 @@ private:
 	int64_t m_lastSlotLossFrame= -1;
 
 	std::vector<HandSearchHint> m_searchHints;
+	HandSeedStats m_seedStats;
+	// scratch for isSeedRedundant, so the per-frame path allocates nothing
+	std::vector<HandBox> m_activeBoxes;
 
 	// scratch
 	std::vector<PalmDetection> m_palmDetections;

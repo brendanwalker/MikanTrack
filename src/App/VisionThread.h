@@ -273,7 +273,10 @@ private:
 	void refreshConfigOnThread();
 	// Processes one newly popped frame for a context; returns true if a new
 	// result was produced
-	bool processCameraFrame(CameraContext& context);
+	// lastFused: the previous iteration's fused output, used to seed this
+	// camera's search hints (see seedSearchHints) immediately before the
+	// pipeline runs, which is the only point at which hints are consumed
+	bool processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused);
 	// RealSense depth: samples metric depth at each tracked hand's 2D
 	// landmarks (mapping undistorted pipeline pixels back to raw sensor
 	// pixels first). Returns false when the camera has no depth stream.

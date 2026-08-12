@@ -307,6 +307,25 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 			{"droppedFrames", camera.droppedFrames},
 		};
 
+		// Cross-camera seeding cannot be replayed (it runs before the stages a
+		// recording captures), so these counters are the only record of which
+		// gate consumed the hints
+		if (camera.seedStats != nullptr)
+		{
+			const HandSeedStats& seed= *camera.seedStats;
+			cameraJson["seedStats"]= {
+				{"candidates", seed.candidates},
+				{"skippedProjection", seed.skippedProjection},
+				{"offered", seed.offered},
+				{"skippedTooSmall", seed.skippedTooSmall},
+				{"skippedRedundant", seed.skippedRedundant},
+				{"skippedNoFreeSlot", seed.skippedNoFreeSlot},
+				{"applied", seed.applied},
+				{"rejectedByModel", seed.rejectedByModel},
+				{"accepted", seed.accepted},
+			};
+		}
+
 		if (camera.lastResult != nullptr)
 		{
 			cameraJson["hasExtrinsics"]= camera.lastResult->hasExtrinsics;

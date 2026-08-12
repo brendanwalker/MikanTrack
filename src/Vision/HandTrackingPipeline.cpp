@@ -111,16 +111,26 @@ void HandTrackingPipeline::process(const cv::Mat& bgrFrame, TrackingFrameResult&
 	m_palmDetector.setScoreThreshold(
 		bReacquiring ? m_config.palmScoreThresholdRelaxed : m_config.palmScoreThreshold);
 
-	// Palm detector: only when a slot is free, or periodically as drift guard
+	// Cross-camera seeds go BEFORE the detector: another camera's tracked hand
+	// projected into this image is better evidence than a blind detection, and
+	// running second meant the detector claimed the free slot first - usually
+	// with a false positive that died two frames later - leaving the seed with
+	// nowhere to go (measured: 74 of 75 seeds during real gaps hit
+	// skippedNoFreeSlot). A wrong seed costs one frame: runHandLandmarkStage
+	// drops a speculative seed the same frame it fails the presence threshold.
+	applySearchHints();
+
+	// Recount AFTER seeding so a slot a seed just claimed suppresses the
+	// detector run it would have made redundant. The count above stays where
+	// it is: a slot LOSS still has to arm the relaxed reacquisition window,
+	// whether or not a seed refills it in the same frame.
 	const bool runDetector=
-		activeSlots < 2 ||
+		countActiveSlots() < 2 ||
 		m_framesSinceDetector >= std::max(m_config.detectorIntervalFrames, 1);
 	if (runDetector)
 		runPalmDetectionStage(bgrFrame, outResult);
 	else
 		m_framesSinceDetector++;
-
-	applySearchHints();
 
 	runHandLandmarkStage(bgrFrame);
 
@@ -214,25 +224,47 @@ static PalmDetection synthesizeDetectionFromHint(const HandSearchHint& hint)
 	return detection;
 }
 
+bool HandTrackingPipeline::isSeedRedundant(const glm::vec2& centerPx, const std::vector<HandBox>& activeBoxes)
+{
+	// Margin for the projection error the hint carries in from the other
+	// camera. Wide enough to cover it, narrow enough that a genuine second
+	// hand still gets seeded; a duplicate that slips through is caught by the
+	// slotDuplicate guard downstream.
+	constexpr float k_inflation= 1.25f;
+
+	for (const HandBox& box : activeBoxes)
+	{
+		const glm::vec2 center= (box.min + box.max) * 0.5f;
+		const glm::vec2 halfExtent= (box.max - box.min) * (0.5f * k_inflation);
+		if (pointInBox(centerPx, center - halfExtent, center + halfExtent))
+			return true;
+	}
+	return false;
+}
+
 void HandTrackingPipeline::applySearchHints()
 {
 	for (const HandSearchHint& hint : m_searchHints)
 	{
 		if (hint.palmSizePx < 8.f)
+		{
+			m_seedStats.skippedTooSmall++;
 			continue;
+		}
 
-		// A hint landing on an already-tracked hand is redundant (this also
-		// covers the camera tracking the right physical hand under the wrong
-		// side label - the guard is positional, not label-based)
-		bool bOverlapsActiveSlot= false;
+		m_activeBoxes.clear();
 		for (const HandSlot& slot : m_slots)
 		{
-			if (slot.active && pointInBox(hint.centerPx, slot.roiBoxMin, slot.roiBoxMax))
-				bOverlapsActiveSlot= true;
+			if (slot.active)
+				m_activeBoxes.push_back({slot.roiBoxMin, slot.roiBoxMax});
 		}
-		if (bOverlapsActiveSlot)
+		if (isSeedRedundant(hint.centerPx, m_activeBoxes))
+		{
+			m_seedStats.skippedRedundant++;
 			continue;
+		}
 
+		bool bSeeded= false;
 		for (HandSlot& slot : m_slots)
 		{
 			if (slot.active)
@@ -245,8 +277,14 @@ void HandTrackingPipeline::applySearchHints()
 			slot.pendingDetection= synthesizeDetectionFromHint(hint);
 			slot.roiBoxMin= slot.pendingDetection.boxMin;
 			slot.roiBoxMax= slot.pendingDetection.boxMax;
+			bSeeded= true;
 			break;
 		}
+
+		if (bSeeded)
+			m_seedStats.applied++;
+		else
+			m_seedStats.skippedNoFreeSlot++;
 	}
 	m_searchHints.clear();
 }
@@ -271,9 +309,13 @@ void HandTrackingPipeline::runHandLandmarkStage(const cv::Mat& bgrFrame)
 		if (!m_handResult.valid ||
 			(bSpeculativeSeed && m_handResult.confidence < m_config.handPresenceThreshold))
 		{
+			if (bSpeculativeSeed)
+				m_seedStats.rejectedByModel++;
 			slot.deactivate();
 			continue;
 		}
+		if (bSpeculativeSeed)
+			m_seedStats.accepted++;
 		slot.bSeededFromHint= false;
 
 		slot.hasPendingDetection= false;

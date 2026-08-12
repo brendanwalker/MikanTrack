@@ -8,6 +8,7 @@
 #include "opencv2/core/mat.hpp"
 
 #include "HandFusion.h" // CameraFrameResult, FusionDiagnostics
+#include "HandTrackingPipeline.h" // HandSeedStats
 #include "TrackingTypes.h"
 
 // Diagnostic dump system (F9): a rolling history of compact tracking state
@@ -158,6 +159,9 @@ struct DiagCameraSnapshot
 	uint64_t droppedFrames= 0;
 	const char* activeEp= "none";
 	bool trackingEnabled= false;
+	// Cross-camera seed accounting (cumulative, so it belongs in the snapshot
+	// rather than the per-frame history). Null when the camera has no pipeline.
+	const HandSeedStats* seedStats= nullptr;
 };
 
 class DiagnosticDump
