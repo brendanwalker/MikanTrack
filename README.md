@@ -1,5 +1,10 @@
 # MikanMediaPipe
 
+<!-- AI_USAGE_BADGES:BEGIN -->
+![AI tokens](https://img.shields.io/badge/AI_tokens-3.8M_out_%2F_1.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~67_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~202_L-blue)
+(estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
+<!-- AI_USAGE_BADGES:END -->
+
 Standalone Windows app for GPU hand tracking from one or more webcams,
 streaming a parametric hand model (palm transform + finger bend angles) over
 OSC (built for consumption by Unreal Engine's OSC plugin).
