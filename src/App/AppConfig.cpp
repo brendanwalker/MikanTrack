@@ -9,6 +9,7 @@
 
 #include "nlohmann/json.hpp"
 
+#include "HandPoseModel.h"
 #include "Logger.h"
 
 using json= nlohmann::json;
@@ -82,6 +83,57 @@ static json restAnglesToJson(const RestAnglesConfig& restAngles)
 		out[sideIndex == 0 ? "left" : "right"]= values;
 	}
 	return out;
+}
+
+// Per side: 5 finger bases (xyz) then 5 phalanx triples, so 30 floats.
+// neutralDirInPalm is rebuilt from the bases rather than stored.
+static json handSkeletonToJson(const HandSkeletonConfig& handSkeleton)
+{
+	json out= json::object();
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		if (!handSkeleton.present[sideIndex])
+			continue;
+		const HandSkeleton& skeleton= handSkeleton.skeleton[sideIndex];
+		json values= json::array();
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			const glm::vec3& base= skeleton.baseInPalm[finger];
+			values.push_back(base.x);
+			values.push_back(base.y);
+			values.push_back(base.z);
+		}
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			for (int phalanx= 0; phalanx < 3; ++phalanx)
+				values.push_back(skeleton.phalanxLengths[finger][phalanx]);
+		out[sideIndex == 0 ? "left" : "right"]= values;
+	}
+	return out;
+}
+
+static void handSkeletonFromJson(const json& hs, HandSkeletonConfig& outHandSkeleton)
+{
+	constexpr size_t kValueCount= FINGER_COUNT * 3 + FINGER_COUNT * 3;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const char* key= sideIndex == 0 ? "left" : "right";
+		outHandSkeleton.present[sideIndex]= false;
+		if (!hs.contains(key) || !hs[key].is_array() || hs[key].size() != kValueCount)
+			continue;
+
+		HandSkeleton& skeleton= outHandSkeleton.skeleton[sideIndex];
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			skeleton.baseInPalm[finger]= glm::vec3(hs[key][finger * 3 + 0], hs[key][finger * 3 + 1],
+												   hs[key][finger * 3 + 2]);
+		}
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			for (int phalanx= 0; phalanx < 3; ++phalanx)
+				skeleton.phalanxLengths[finger][phalanx]= hs[key][FINGER_COUNT * 3 + finger * 3 + phalanx];
+
+		skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
+		outHandSkeleton.present[sideIndex]= true;
+	}
 }
 
 static void restAnglesFromJson(const json& ra, RestAnglesConfig& outRestAngles)
@@ -318,6 +370,7 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
 
 	restAnglesFromJson(j.value("fusedRestAngles", json::object()), config.fusedRestAngles);
+	handSkeletonFromJson(j.value("handSkeleton", json::object()), config.handSkeleton);
 
 	const json& eq= j.value("extrinsicsQuality", json::object());
 	config.extrinsicsQuality.present= eq.value("present", false);
@@ -400,6 +453,7 @@ std::string AppConfig::toJsonString() const
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
+	j["handSkeleton"]= handSkeletonToJson(handSkeleton);
 
 	j["extrinsicsQuality"]= {
 		{"present", extrinsicsQuality.present},

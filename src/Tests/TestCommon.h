@@ -34,6 +34,7 @@
 #include "ExtrinsicsValidation.h"
 #include "ExtrinsicsWizard.h"
 #include "PatternPoseSampler.h"
+#include "HandBoneCalibrator.h"
 #include "HandFusion.h"
 #include "HandPoseModel.h"
 #include "HandRoiQuality.h"

@@ -10,6 +10,7 @@
 
 #include "DiagnosticDump.h"
 #include "ImuService.h"
+#include "HandBoneCalibrator.h"
 #include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
 #include "HandRoiQuality.h" // LumaFlickerTracker
@@ -137,6 +138,34 @@ public:
 	// plus the stereo-triangulated fused capture when it was available);
 	// returns false if none is pending
 	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused);
+
+	// Hand bone calibration: measures the user's own skeleton from the
+	// stereo-triangulated landmarks over a sampling window. Unlike the rest
+	// pose this needs TIME rather than an instant - it is a median over many
+	// frames, and one pose only measures that pose's triangulation luck.
+	void requestBoneCalibration(float durationSeconds)
+	{
+		m_boneCalibrationSeconds= durationSeconds;
+		m_bBoneCalibrationRequested= true;
+	}
+	void cancelBoneCalibration() { m_bBoneCalibrationCancelRequested= true; }
+	// Live sample counts while a window is open, so the UI can show progress
+	// and refuse a capture that never saw a hand
+	void getBoneCalibrationProgress(bool& outActive, int& outLeftSamples, int& outRightSamples) const
+	{
+		outActive= m_bBoneCalibrationActive.load();
+		outLeftSamples= m_boneCalibrationSamples[0].load();
+		outRightSamples= m_boneCalibrationSamples[1].load();
+	}
+
+	struct BoneCalibrationCapture
+	{
+		std::array<HandSkeleton, 2> skeleton{};
+		std::array<HandBoneCalibrator::Quality, 2> quality{};
+		bool bCaptured[2]= {false, false};
+	};
+	// Fetches a completed window; returns false if none is pending
+	bool fetchBoneCalibration(BoneCalibrationCapture& outCapture);
 
 	// Tracking recording: captures every input to the post-MediaPipe stages
 	// (per-camera landmarks, depth measurements, timestamps, IMU forearm
@@ -307,6 +336,18 @@ private:
 	std::vector<RestPoseCapture> m_capturedRestPose;
 	RestPoseCapture m_capturedFusedRest;
 	bool m_bRestPoseReady= false;
+
+	std::atomic_bool m_bBoneCalibrationRequested{false};
+	std::atomic_bool m_bBoneCalibrationCancelRequested{false};
+	std::atomic_bool m_bBoneCalibrationActive{false};
+	std::atomic<float> m_boneCalibrationSeconds{0.f};
+	std::atomic_int m_boneCalibrationSamples[2]{};
+	// Vision-thread only
+	HandBoneCalibrator m_boneCalibrator;
+	double m_boneCalibrationEndMs= 0.0;
+	std::mutex m_boneCalibrationMutex;
+	BoneCalibrationCapture m_capturedBones;
+	bool m_bBoneCalibrationReady= false;
 
 	// Logs and publishes a loop iteration that overran the hitch threshold,
 	// attributing it to the phase that consumed the most time

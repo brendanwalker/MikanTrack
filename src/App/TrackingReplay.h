@@ -64,6 +64,9 @@ public:
 		bool bUseRecordedDepth= true;
 		// Off = clear the per-camera rest angle offsets
 		bool bApplyRestAngles= true;
+		// Off = ignore the recording's measured hand skeleton, falling back to
+		// the landmark model's own proportions (the A/B for a bone calibration)
+		bool bApplyCalibratedSkeleton= true;
 		// Replace each camera's extrinsics with these (indexed by camera).
 		// Sound to override offline: recorded landmarks live in each camera's
 		// own undistorted image space, and extrinsics apply strictly after

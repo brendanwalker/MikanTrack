@@ -348,6 +348,12 @@ void TimelinePanel::drawWhatIfSection()
 	ImGui::Checkbox("Use depth", &m_whatIfParams.bUseRecordedDepth);
 	ImGui::SameLine();
 	ImGui::Checkbox("Rest angles", &m_whatIfParams.bApplyRestAngles);
+	ImGui::SameLine();
+	ImGui::Checkbox("Hand bones", &m_whatIfParams.bApplyCalibratedSkeleton);
+	ImGui::SetItemTooltip(
+		"Off = fall back to the landmark model's own proportions, which is\n"
+		"the A/B for a bone calibration. No effect on a recording made\n"
+		"before one was measured.");
 
 	float jitterReferenceMm= fusion.jitterReferenceM * 1000.f;
 	if (ImGui::SliderFloat("Jitter reference", &jitterReferenceMm, 3.f, 60.f, "%.0f mm"))

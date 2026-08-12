@@ -162,18 +162,28 @@ void LandmarkTo3D::fillHandPose(const TrackedHand& hand, HandPose& outPose)
 	outPose.palmOrientationCamera= glm::quat_cast(glm::mat3(palmFrame));
 	outPose.hasCameraPose= true;
 
-	// Skeleton from the model's LOCAL articulation (scale/depth invariant -
+	// Skeleton: the user's measured bones when they have been calibrated,
+	// which is also what clients rebuild the hand from. Without a calibration
+	// it falls back to the model's LOCAL articulation (scale/depth invariant -
 	// all depth noise stays in the palm transform above), rescaled to metric
-	// by the calibrated hand scale. Fills the flat-hand default rest pose.
-	std::array<glm::vec3, HAND_LANDMARK_COUNT> metricModel;
-	const glm::vec3 modelWrist= hand.modelPoints[(int)eHandLandmark::WRIST];
-	const float modelBone=
-		glm::length(hand.modelPoints[(int)eHandLandmark::MIDDLE_MCP] - modelWrist);
-	const float modelScale= modelBone > 1e-4f ? m_refLengthMeters / modelBone : 1.f;
-	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
-		metricModel[i]= hand.modelPoints[i] * modelScale;
-	HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton,
-								   &m_modelPalmarMemory[(int)hand.side]);
+	// by the calibrated hand scale. Either way the flat-hand rest pose is
+	// filled in by computeSkeleton/makeDefaultNeutralDirections.
+	if (m_bHasCalibratedSkeleton[(int)hand.side])
+	{
+		outPose.skeleton= m_calibratedSkeleton[(int)hand.side];
+	}
+	else
+	{
+		std::array<glm::vec3, HAND_LANDMARK_COUNT> metricModel;
+		const glm::vec3 modelWrist= hand.modelPoints[(int)eHandLandmark::WRIST];
+		const float modelBone=
+			glm::length(hand.modelPoints[(int)eHandLandmark::MIDDLE_MCP] - modelWrist);
+		const float modelScale= modelBone > 1e-4f ? m_refLengthMeters / modelBone : 1.f;
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+			metricModel[i]= hand.modelPoints[i] * modelScale;
+		HandPoseModel::computeSkeleton(metricModel, hand.side, outPose.skeleton,
+									   &m_modelPalmarMemory[(int)hand.side]);
+	}
 
 	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, outPose.skeleton.neutralDirInPalm,
 									   outPose.fingers, &m_modelPalmarMemory[(int)hand.side]);
@@ -242,20 +252,68 @@ void LandmarkTo3D::processHand(TrackedHand& hand)
 	processHandPnp(hand);
 }
 
+bool LandmarkTo3D::buildCalibratedObjectPoints(const TrackedHand& hand,
+											   std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints)
+{
+	const int sideIndex= (int)hand.side;
+	if (!m_bHasCalibratedSkeleton[sideIndex])
+		return false;
+
+	const HandSkeleton& skeleton= m_calibratedSkeleton[sideIndex];
+
+	// The model contributes articulation only. Angles are read against the
+	// calibrated neutral directions so the forward kinematics below inverts
+	// them exactly.
+	std::array<FingerAngles, FINGER_COUNT> angles{};
+	HandPoseModel::computeFingerAngles(hand.modelPoints, hand.side, skeleton.neutralDirInPalm, angles,
+									   &m_modelPalmarMemory[sideIndex]);
+
+	std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+	HandPoseModel::buildFingerJoints(glm::mat4(1.f), skeleton, angles, joints);
+
+	// Palm +X is wrist -> middle MCP about the palm center, so the wrist sits
+	// opposite that base (the same reconstruction makeDefaultNeutralDirections
+	// uses). FK covers the other 20 landmarks.
+	outPoints[(int)eHandLandmark::WRIST]=
+		glm::vec3(-skeleton.baseInPalm[(int)eFinger::Middle].x, 0.f, 0.f);
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		for (int joint= 0; joint < 4; ++joint)
+			outPoints[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+
+	return true;
+}
+
 bool LandmarkTo3D::processHandPnp(TrackedHand& hand)
 {
 	const int wristIndex= (int)eHandLandmark::WRIST;
 	const int middleMcpIndex= (int)eHandLandmark::MIDDLE_MCP;
 
-	// The landmark model's metric hand is the (per-frame, articulated) PnP
-	// object model, rescaled so the wrist->middleMCP bone matches the
-	// calibrated hand scale. The model is in canonical average-hand scale -
-	// skipping this rescale would bias depth for any non-average hand.
-	const glm::vec3 modelWrist= hand.modelPoints[wristIndex];
-	const float modelBoneLength= glm::length(hand.modelPoints[middleMcpIndex] - modelWrist);
-	if (modelBoneLength < 1e-4f)
-		return false;
-	const float modelScale= m_refLengthMeters / modelBoneLength;
+	// The PnP object model is a per-frame articulated hand, WRIST-RELATIVE so
+	// the recovered translation lands on the wrist. Preferred: the user's
+	// measured skeleton posed by the model's angles. Fallback (no bone
+	// calibration yet): the landmark model's own metric hand, rescaled so the
+	// wrist->middleMCP bone matches the calibrated hand scale.
+	//
+	// The fallback keeps its subtract-then-scale form deliberately. Scaling
+	// first is algebraically identical and bit-wise is not, and an
+	// uncalibrated session has to replay against older recordings exactly.
+	std::array<glm::vec3, HAND_LANDMARK_COUNT> objectModel{};
+	if (buildCalibratedObjectPoints(hand, objectModel))
+	{
+		const glm::vec3 wristInPalm= objectModel[wristIndex];
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+			objectModel[i]-= wristInPalm;
+	}
+	else
+	{
+		const glm::vec3 modelWrist= hand.modelPoints[wristIndex];
+		const float modelBoneLength= glm::length(hand.modelPoints[middleMcpIndex] - modelWrist);
+		if (modelBoneLength < 1e-4f)
+			return false;
+		const float modelScale= m_refLengthMeters / modelBoneLength;
+		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+			objectModel[i]= (hand.modelPoints[i] - modelWrist) * modelScale;
+	}
 
 	// All 21 correspondences: landmark jitter averages across the hand
 	std::vector<cv::Point3f> objectPoints;
@@ -264,8 +322,7 @@ bool LandmarkTo3D::processHandPnp(TrackedHand& hand)
 	imagePoints.reserve(HAND_LANDMARK_COUNT);
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 	{
-		const glm::vec3 objectPoint= (hand.modelPoints[i] - modelWrist) * modelScale;
-		objectPoints.emplace_back(objectPoint.x, objectPoint.y, objectPoint.z);
+		objectPoints.emplace_back(objectModel[i].x, objectModel[i].y, objectModel[i].z);
 		imagePoints.emplace_back(hand.imagePoints[i].x, hand.imagePoints[i].y);
 	}
 
@@ -314,8 +371,8 @@ bool LandmarkTo3D::processHandPnp(TrackedHand& hand)
 	cv::Rodrigues(rvec, rotation);
 	for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
 	{
-		const glm::vec3 objectPoint= (hand.modelPoints[i] - modelWrist) * modelScale;
-		const cv::Vec3d rotated= rotation * cv::Vec3d(objectPoint.x, objectPoint.y, objectPoint.z) + tvec;
+		const cv::Vec3d rotated=
+			rotation * cv::Vec3d(objectModel[i].x, objectModel[i].y, objectModel[i].z) + tvec;
 		hand.cameraPoints[i]= glm::vec3((float)rotated(0), (float)rotated(1), (float)rotated(2));
 	}
 

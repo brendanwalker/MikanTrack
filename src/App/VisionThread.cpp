@@ -189,6 +189,17 @@ bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCapture
 	return true;
 }
 
+bool VisionThread::fetchBoneCalibration(BoneCalibrationCapture& outCapture)
+{
+	std::lock_guard<std::mutex> lock(m_boneCalibrationMutex);
+	if (!m_bBoneCalibrationReady)
+		return false;
+
+	outCapture= m_capturedBones;
+	m_bBoneCalibrationReady= false;
+	return true;
+}
+
 bool VisionThread::fetchImuMountingCapture(ImuMountingCapture& outCapture)
 {
 	std::lock_guard<std::mutex> lock(m_imuMutex);
@@ -399,6 +410,12 @@ void VisionThread::refreshConfigOnThread()
 			<< ") - restart the vision thread to apply";
 	}
 
+	// A full bone calibration parks the auto hand-scale, so its factor is
+	// pinned back to 1 rather than left wherever this session's EMA had
+	// wandered to - it is still what the Hand Scale readout multiplies by.
+	if (m_config->handSkeleton.present[0] && m_config->handSkeleton.present[1])
+		m_autoScaleFactor= 1.f;
+
 	for (std::unique_ptr<CameraContext>& contextPtr : m_cameras)
 	{
 		CameraContext& context= *contextPtr;
@@ -448,6 +465,18 @@ void VisionThread::refreshConfigOnThread()
 			context.landmarkTo3D->configure(
 				profile.intrinsics.intrinsics,
 				m_config->handScale.refLengthMeters);
+
+			// Measured hand geometry, when there is any. Not per camera: bones
+			// are a physical property, so every camera gets the same skeleton.
+			context.landmarkTo3D->clearCalibratedSkeleton();
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				if (m_config->handSkeleton.present[sideIndex])
+				{
+					context.landmarkTo3D->setCalibratedSkeleton(
+						(eHandSide)sideIndex, m_config->handSkeleton.skeleton[sideIndex]);
+				}
+			}
 
 			// Undistortion for the ML input + preview. ALWAYS rebuilt on a
 			// config change: gating on frame dimensions alone kept the OLD
@@ -1148,9 +1177,14 @@ void VisionThread::threadLoop()
 			}
 
 			// Stereo auto hand-scale: slow EMA over the triangulated
-			// correction, applied live to every camera's 3D projection
+			// correction, applied live to every camera's 3D projection.
+			// A calibrated skeleton supersedes it - that measurement IS the
+			// hand's geometry, and two mechanisms setting scale at once would
+			// only fight. The EMA stays for hands with no calibration.
+			const bool bBothSidesCalibrated=
+				m_config->handSkeleton.present[0] && m_config->handSkeleton.present[1];
 			float scaleSample= 1.f;
-			if (m_fusion.getStereoScaleSample(scaleSample))
+			if (!bBothSidesCalibrated && m_fusion.getStereoScaleSample(scaleSample))
 			{
 				constexpr float kScaleEmaAlpha= 0.02f;
 				const float ema= m_autoScaleFactor.load() * (1.f - kScaleEmaAlpha) + scaleSample * kScaleEmaAlpha;
@@ -1202,6 +1236,56 @@ void VisionThread::threadLoop()
 			m_bFusedFresh= true;
 		}
 		lastOutputResult= outputResult;
+
+		// Bone calibration: accumulate the stereo-triangulated landmarks over
+		// an open window. Only triangulated frames carry measured geometry -
+		// a monocular pose is the landmark model's shape wearing a pose, which
+		// is exactly what this calibration exists to stop trusting.
+		if (m_bBoneCalibrationRequested.exchange(false))
+		{
+			m_boneCalibrator.reset();
+			m_boneCalibrationSamples[0]= 0;
+			m_boneCalibrationSamples[1]= 0;
+			m_boneCalibrationEndMs= steadyNowMs() + 1000.0 * (double)m_boneCalibrationSeconds.load();
+			m_bBoneCalibrationActive= true;
+		}
+		if (m_bBoneCalibrationCancelRequested.exchange(false) && m_bBoneCalibrationActive.load())
+		{
+			m_boneCalibrator.reset();
+			m_boneCalibrationSamples[0]= 0;
+			m_boneCalibrationSamples[1]= 0;
+			m_bBoneCalibrationActive= false;
+		}
+		if (m_bBoneCalibrationActive.load())
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const HandPose& pose= outputResult.poses[sideIndex];
+				const TrackedHand& hand= outputResult.hands[sideIndex];
+				if (!pose.tracked || !pose.stereoTriangulated || !hand.tracked || !hand.hasWorldSpace)
+					continue;
+
+				m_boneCalibrator.addSample((eHandSide)sideIndex, hand.worldPoints);
+				m_boneCalibrationSamples[sideIndex]= m_boneCalibrator.getSampleCount((eHandSide)sideIndex);
+			}
+
+			if (steadyNowMs() >= m_boneCalibrationEndMs)
+			{
+				BoneCalibrationCapture capture;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					capture.bCaptured[sideIndex]= m_boneCalibrator.finish(
+						(eHandSide)sideIndex, capture.skeleton[sideIndex], capture.quality[sideIndex]);
+				}
+
+				{
+					std::lock_guard<std::mutex> lock(m_boneCalibrationMutex);
+					m_capturedBones= capture;
+					m_bBoneCalibrationReady= true;
+				}
+				m_bBoneCalibrationActive= false;
+			}
+		}
 
 		// Rest-pose capture: EVERY camera records what it currently reports for
 		// each hand, so each one's own view-dependent bias is removed

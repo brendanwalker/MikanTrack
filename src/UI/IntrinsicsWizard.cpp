@@ -225,7 +225,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 			}
 			ImGui::SetItemTooltip(
 				"Writes the board to resources/calibration and opens it in your image\n"
-				"viewer. Print at 100% scale and check a square with a ruler - a\n"
+				"viewer. Print at 100%% scale and check a square with a ruler - a\n"
 				"rescaled print silently rescales the whole tracking world. The same\n"
 				"board is the extrinsics target, so its FORWARD label sets the world\n"
 				"axes.");

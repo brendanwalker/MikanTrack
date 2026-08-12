@@ -35,6 +35,17 @@ struct TrackingPanelState
 	float qualityEma[kQualityMaxCameras][kQualityMetricCount]= {};
 	bool bQualityEmaValid[kQualityMaxCameras][kQualityMetricCount]= {};
 
+	// Hand bone calibration: countdown, then a sampling window on the vision
+	// thread, then a review table. Nothing reaches the config until the
+	// measurement has been looked at - it replaces the geometry every client
+	// rebuilds the hand from.
+	float boneCountdown= 0.f;
+	bool bBoneReviewPending= false;
+	bool bBoneCaptured[2]= {false, false};
+	std::array<HandSkeleton, 2> boneSkeleton{};
+	float boneWorstSpreadMm[2]= {0.f, 0.f};
+	int boneSampleCount[2]= {0, 0};
+
 	// Hold-still jitter test: countdown, then a sampling window over the
 	// fused output. The result is THE number for A/B-ing camera settings and
 	// lighting changes - one repeatable measurement per configuration.

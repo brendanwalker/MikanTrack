@@ -71,6 +71,20 @@ struct HandScaleConfig
 	double refLengthMeters= 0.08; // wrist -> middle-MCP distance
 };
 
+// The user's own hand geometry, measured from stereo triangulation (see
+// HandBoneCalibrator). NOT per camera: bones are a physical property, unlike
+// the rest angles above, which correct each camera's view-dependent model
+// bias. When present it supersedes the landmark model's proportions both as
+// the PnP object model and as the skeleton streamed to clients.
+//
+// neutralDirInPalm is deliberately not stored - it is derived from the base
+// positions on load, so the streamed skeleton's zero keeps meaning one thing.
+struct HandSkeletonConfig
+{
+	bool present[2]= {false, false}; // indexed by eHandSide
+	std::array<HandSkeleton, 2> skeleton{};
+};
+
 struct CharucoBoardConfig
 {
 	int cols= 11;
@@ -198,6 +212,7 @@ public:
 	// invariant: never empty (default-constructed with one camera)
 	std::vector<CameraProfile> cameras= std::vector<CameraProfile>(1);
 	HandScaleConfig handScale;
+	HandSkeletonConfig handSkeleton;
 	CharucoBoardConfig charucoBoard;
 	TrackingConfig tracking;
 	OscConfig osc;

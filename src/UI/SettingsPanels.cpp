@@ -20,6 +20,17 @@ static constexpr float k_restPoseCountdownSeconds= 3.f;
 // How long the "captured" banner stays up afterwards
 static constexpr float k_restPoseResultSeconds= 4.f;
 
+// Hand bone calibration: the countdown gets the mouse hand back into view,
+// then a long window - the estimate is a median over many poses, and one pose
+// only measures how well that pose happened to triangulate
+static constexpr float k_boneCountdownSeconds= 3.f;
+static constexpr float k_boneSampleSeconds= 10.f;
+// Per-bone spread (median absolute deviation) above which the capture is
+// flagged rather than trusted. Synthetic noise of 4 mm per landmark produces
+// about 2.6 mm of spread (--test-bonecalib), so past this the hand was moving
+// through poses the cameras could not agree on.
+static constexpr float k_boneSpreadWarnMm= 4.f;
+
 // Hold-still jitter test: countdown mirrors the rest-pose capture (the mouse
 // hand needs to get back into position), then the sampling window
 static constexpr float k_holdStillCountdownSeconds= 3.f;
@@ -522,6 +533,172 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		ImGui::EndDisabled();
 	}
 
+	ImGui::SeparatorText("Hand Bones");
+	{
+		ImGui::TextWrapped(
+			"Measures your own bone lengths from stereo triangulation. The "
+			"landmark model's metric hand is not your hand - its proximal "
+			"phalanges run about half length - which both biases the "
+			"single-camera depth solve and ships the wrong skeleton to "
+			"clients. Move and rotate both hands through varied poses during "
+			"the window so no bone stays aligned with a camera's view ray.");
+
+		const bool bCalibrated= config->handSkeleton.present[0] || config->handSkeleton.present[1];
+		ImGui::Text("Calibrated  L: %s  R: %s", config->handSkeleton.present[0] ? "yes" : "no",
+					config->handSkeleton.present[1] ? "yes" : "no");
+
+		const float deltaSeconds= ImGui::GetIO().DeltaTime;
+
+		bool bSamplingActive= false;
+		int liveSamples[2]= {0, 0};
+		visionThread->getBoneCalibrationProgress(bSamplingActive, liveSamples[0], liveSamples[1]);
+
+		if (panelState.boneCountdown > 0.f)
+		{
+			panelState.boneCountdown-= deltaSeconds;
+			if (panelState.boneCountdown <= 0.f)
+			{
+				panelState.boneCountdown= 0.f;
+				visionThread->requestBoneCalibration(k_boneSampleSeconds);
+			}
+
+			char countdownText[16];
+			snprintf(countdownText, sizeof(countdownText), "%d", (int)ceilf(panelState.boneCountdown));
+			ImGui::SetWindowFontScale(3.f);
+			const float textWidth= ImGui::CalcTextSize(countdownText).x;
+			ImGui::SetCursorPosX((ImGui::GetWindowWidth() - textWidth) * 0.5f);
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", countdownText);
+			ImGui::SetWindowFontScale(1.f);
+
+			if (ImGui::Button("Cancel", ImVec2(-1, 0)))
+				panelState.boneCountdown= 0.f;
+		}
+		else if (bSamplingActive)
+		{
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Sampling - move both hands");
+			ImGui::Text("Samples  L: %d  R: %d (need %d)", liveSamples[0], liveSamples[1],
+						HandBoneCalibrator::k_minSamples);
+			if (ImGui::Button("Cancel", ImVec2(-1, 0)))
+				visionThread->cancelBoneCalibration();
+		}
+		else if (!panelState.bBoneReviewPending)
+		{
+			if (ImGui::Button("Calibrate Hand Bones"))
+			{
+				panelState.boneCountdown= k_boneCountdownSeconds;
+				panelState.bBoneReviewPending= false;
+			}
+			ImGui::SetItemTooltip(
+				"Counts down, then samples every stereo-triangulated frame for\n"
+				"a few seconds and takes the median of each bone. Needs BOTH\n"
+				"cameras seeing the hand - a monocular pose carries the model's\n"
+				"shape, which is the thing being replaced.");
+
+			if (bCalibrated)
+			{
+				ImGui::SameLine();
+				if (ImGui::Button("BoneCalibrationClear##Clear"))
+				{
+					config->handSkeleton.present[0]= false;
+					config->handSkeleton.present[1]= false;
+					bChanged= true;
+				}
+				ImGui::SetItemTooltip(
+					"Reverts to the landmark model's proportions and re-enables\n"
+					"the stereo auto hand-scale.");
+			}
+		}
+
+		// Poll for a finished window (the vision thread does the sampling)
+		VisionThread::BoneCalibrationCapture capture;
+		if (visionThread->fetchBoneCalibration(capture))
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				panelState.bBoneCaptured[sideIndex]= capture.bCaptured[sideIndex];
+				panelState.boneSkeleton[sideIndex]= capture.skeleton[sideIndex];
+				panelState.boneWorstSpreadMm[sideIndex]=
+					capture.quality[sideIndex].worstPhalanxSpread * 1000.f;
+				panelState.boneSampleCount[sideIndex]= capture.quality[sideIndex].sampleCount;
+			}
+			panelState.bBoneReviewPending= true;
+		}
+
+		// Review before anything is written: this replaces the geometry every
+		// client rebuilds the hand from, so it gets looked at first
+		if (panelState.bBoneReviewPending)
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				const char* sideName= sideIndex == 0 ? "Left" : "Right";
+				if (!panelState.bBoneCaptured[sideIndex])
+				{
+					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s: only %d stereo samples, need %d",
+									   sideName, panelState.boneSampleCount[sideIndex],
+									   HandBoneCalibrator::k_minSamples);
+					continue;
+				}
+
+				const HandSkeleton& skeleton= panelState.boneSkeleton[sideIndex];
+				const float referenceBone= skeleton.baseInPalm[(int)eFinger::Middle].x * 2.f;
+				const float spreadMm= panelState.boneWorstSpreadMm[sideIndex];
+				const ImVec4 spreadColor= spreadMm > k_boneSpreadWarnMm ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
+																		: ImVec4(0.4f, 1.f, 0.4f, 1.f);
+				ImGui::TextColored(spreadColor, "%s: wrist->knuckle %.1f mm, %d samples, worst spread %.1f mm",
+								   sideName, referenceBone * 1000.f,
+								   panelState.boneSampleCount[sideIndex], spreadMm);
+
+				// Proximal phalanxes only: they are the longest bones and where
+				// the model is most wrong, so they are what a glance should check
+				ImGui::Text("   proximal  index %.1f  middle %.1f  ring %.1f  pinky %.1f mm",
+							skeleton.phalanxLengths[(int)eFinger::Index][0] * 1000.f,
+							skeleton.phalanxLengths[(int)eFinger::Middle][0] * 1000.f,
+							skeleton.phalanxLengths[(int)eFinger::Ring][0] * 1000.f,
+							skeleton.phalanxLengths[(int)eFinger::Pinky][0] * 1000.f);
+			}
+
+			const bool bAnyCaptured= panelState.bBoneCaptured[0] || panelState.bBoneCaptured[1];
+			ImGui::BeginDisabled(!bAnyCaptured);
+			if (ImGui::Button("Save"))
+			{
+				double referenceSum= 0.0;
+				int referenceCount= 0;
+				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+				{
+					if (!panelState.bBoneCaptured[sideIndex])
+						continue;
+					config->handSkeleton.skeleton[sideIndex]= panelState.boneSkeleton[sideIndex];
+					config->handSkeleton.present[sideIndex]= true;
+					referenceSum+=
+						panelState.boneSkeleton[sideIndex].baseInPalm[(int)eFinger::Middle].x * 2.0;
+					++referenceCount;
+				}
+
+				// One scale story: the reference bone the rest of the app
+				// reads now comes from the measurement, not the EMA
+				if (referenceCount > 0)
+				{
+					config->handScale.refLengthMeters= referenceSum / (double)referenceCount;
+					config->handScale.present= true;
+				}
+
+				panelState.bBoneReviewPending= false;
+				bChanged= true;
+			}
+			ImGui::EndDisabled();
+
+			ImGui::SameLine();
+			if (ImGui::Button("Discard"))
+				panelState.bBoneReviewPending= false;
+
+			ImGui::TextWrapped(
+				"Saving moves the thumb's angle zero (its neutral direction "
+				"follows the metacarpal, unlike the four fingers, which are "
+				"always palm-forward), so a rest-pose recapture is worth doing "
+				"afterwards.");
+		}
+	}
+
 	ImGui::SeparatorText("Rest Pose");
 	{
 		ImGui::TextWrapped(
@@ -595,7 +772,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			if (bAnyCalibrated)
 			{
 				ImGui::SameLine();
-				if (ImGui::Button("Clear"))
+				if (ImGui::Button("RestAnglesClear##Clear"))
 				{
 					for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 					{
