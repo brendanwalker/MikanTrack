@@ -71,6 +71,7 @@ public:
 			m_pnpTvec[sideIndex]= {};
 			m_bPnpPoseValid[sideIndex]= false;
 			m_bSideWasTracked[sideIndex]= false;
+			m_bSideWasDetected[sideIndex]= false;
 		}
 	}
 
@@ -169,5 +170,10 @@ private:
 	std::array<std::array<double, 3>, 2> m_pnpTvec{};
 	bool m_bPnpPoseValid[2]= {false, false};
 
+	// Camera-space success last frame (tracked AND solved) - gates the PnP
+	// warm start on reacquisition
 	bool m_bSideWasTracked[2]= {false, false};
+	// 2D tracker had this side last frame - a tracked->untracked transition
+	// resets the palmar side memories
+	bool m_bSideWasDetected[2]= {false, false};
 };

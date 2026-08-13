@@ -62,6 +62,17 @@ void LandmarkTo3D::process(TrackingFrameResult& ioResult,
 	{
 		TrackedHand& hand= ioResult.hands[sideIndex];
 
+		if (!hand.tracked && m_bSideWasDetected[sideIndex])
+		{
+			// Hand lost: forget the remembered palmar sides. A reacquired hand
+			// under this side label may be the OTHER physical hand (slot
+			// identity churn) or in any orientation, and a stale normal would
+			// pin the wrong palmar side and mirror every extracted angle
+			m_cameraPalmarMemory[sideIndex].reset();
+			m_modelPalmarMemory[sideIndex].reset();
+		}
+		m_bSideWasDetected[sideIndex]= hand.tracked;
+
 		if (hand.tracked)
 		{
 			// fresh acquisition: drop the stale PnP warm start
@@ -336,10 +347,16 @@ bool LandmarkTo3D::processHandPnp(TrackedHand& hand)
 	cv::Vec3d rvec(m_pnpRvec[sideIndex][0], m_pnpRvec[sideIndex][1], m_pnpRvec[sideIndex][2]);
 	cv::Vec3d tvec(m_pnpTvec[sideIndex][0], m_pnpTvec[sideIndex][1], m_pnpTvec[sideIndex][2]);
 
+	// Warm-started frames refine with LM; cold frames use SQPnP. ITERATIVE's
+	// cold-start DLT is ill-conditioned on NEAR-planar point sets (a flat hand
+	// posed by FK), collapsing to near-zero or negative depth - and since the
+	// sanity gate clears the warm start, the collapse repeats every frame
+	// until the hand curls. SQPnP has no planar degeneracy.
+	const int solveFlags= bUseGuess ? cv::SOLVEPNP_ITERATIVE : cv::SOLVEPNP_SQPNP;
 	try
 	{
 		if (!cv::solvePnP(objectPoints, imagePoints, cameraMatrix, cv::noArray(), rvec, tvec, bUseGuess,
-						  cv::SOLVEPNP_ITERATIVE))
+						  solveFlags))
 		{
 			return false;
 		}
