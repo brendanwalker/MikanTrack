@@ -53,6 +53,14 @@ public:
 	// Runs the session over all outputs. Inputs are in model input order.
 	std::vector<Ort::Value> run(const Ort::Value* inputs, size_t inputCount);
 
+	// Runs the session over a SUBSET of outputs, returned in the order the
+	// indices were given. ONNX Runtime prunes the graph to what was asked for,
+	// so branches feeding only unrequested outputs never execute - which is
+	// the difference between paying for a model's auxiliary heads and not.
+	std::vector<Ort::Value> runOutputs(
+		const Ort::Value* inputs, size_t inputCount,
+		const int* outputIndices, size_t outputIndexCount);
+
 	// CPU memory info for building input tensors over preallocated buffers
 	static const Ort::MemoryInfo& getCpuMemoryInfo();
 

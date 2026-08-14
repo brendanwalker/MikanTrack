@@ -29,3 +29,14 @@
 // hand landmark and arm point that is present (hasCameraSpace), and sets the
 // corresponding hasWorldSpace flags.
 void applyWorldTransform(TrackingFrameResult& ioResult, const glm::dmat4& markerFromCamera);
+
+// Camera's optical center in world space (the translation column)
+glm::vec3 cameraPositionWorld(const glm::dmat4& markerFromCamera);
+
+// World-space direction (normalized) of the ray from the camera's optical
+// center through an undistorted pixel. fx/fy/cx/cy are the UNDISTORTED camera
+// matrix the pixel lives in.
+glm::vec3 pixelRayDirWorld(
+	const glm::dmat4& markerFromCamera,
+	float fx, float fy, float cx, float cy,
+	const glm::vec2& px);

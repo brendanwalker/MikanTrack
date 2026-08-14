@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "AppConfig.h"
+#include "BodyPoseSolver.h"
 #include "HandFusion.h"
 #include "LandmarkTo3D.h"
 #include "TrackingRecording.h"
@@ -130,6 +131,7 @@ private:
 
 	// Replay instances (rebuilt at the start of every pass)
 	HandFusion m_fusion;
+	BodyPoseSolver m_bodyPoseSolver;
 	std::vector<std::unique_ptr<LandmarkTo3D>> m_landmarkTo3D;
 	std::vector<CameraFrameResult> m_mirrors;
 };

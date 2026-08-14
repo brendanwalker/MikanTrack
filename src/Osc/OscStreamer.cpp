@@ -10,10 +10,12 @@ static const char* k_handTrackedAddress[2]= {"/mikan/hand/left/tracked", "/mikan
 static const char* k_handPalmAddress[2]= {"/mikan/hand/left/palm", "/mikan/hand/right/palm"};
 static const char* k_handWristAddress[2]= {"/mikan/hand/left/wrist", "/mikan/hand/right/wrist"};
 static const char* k_handElbowAddress[2]= {"/mikan/hand/left/elbow", "/mikan/hand/right/elbow"};
+static const char* k_handShoulderAddress[2]= {"/mikan/hand/left/shoulder", "/mikan/hand/right/shoulder"};
 static const char* k_handFingersAddress[2]= {"/mikan/hand/left/fingers", "/mikan/hand/right/fingers"};
 static const char* k_handSkeletonAddress[2]= {"/mikan/hand/left/skeleton", "/mikan/hand/right/skeleton"};
 
 static const char* k_frameAddress= "/mikan/frame";
+static const char* k_headAddress= "/mikan/body/head";
 static const char* k_infoAddress= "/mikan/info";
 
 static const char* k_infoWorldSpace=
@@ -135,6 +137,26 @@ void OscStreamer::sendFrame(const TrackingFrameResult& frame)
 		appendHandMessages(frame, sideIndex, bSendSkeleton);
 	}
 
+	// /mikan/body/head ,ffffffff -- position xyz + orientation xyzw +
+	// confidence. Head frame: +X facing direction, +Y toward the person's
+	// left, +Z up. Always sent; confidence 0 means do not use it. Live-only
+	// (no dropout hold): the head estimate re-anchors off the wrists each
+	// frame, so a held value has nothing measured behind it.
+	{
+		glm::vec3 headPosition(0.f);
+		glm::quat headOrientation(1.f, 0.f, 0.f, 0.f);
+		float headConfidence= 0.f;
+		resolveHeadOutput(frame.head, headPosition, headOrientation, headConfidence);
+
+		OscMessage& headMessage= m_bundle.addMessage(k_headAddress);
+		addVec3(headMessage, headPosition);
+		headMessage.addFloat(headOrientation.x)
+			.addFloat(headOrientation.y)
+			.addFloat(headOrientation.z)
+			.addFloat(headOrientation.w);
+		headMessage.addFloat(headConfidence);
+	}
+
 	appendInfoMessage(hasWorldSpace, now);
 
 	m_scratchBuffer.clear();
@@ -176,10 +198,11 @@ bool OscStreamer::resolveOutputPose(const HandPose& pose, double frameTimestampM
 			const float decay= (float)(1.0 - elapsedMs / (double)holdMs);
 			outPose= ioHeld.pose;
 			outPose.confidence= ioHeld.pose.confidence * decay;
-			// The elbow confidence decays with it. A consumer gates the elbow
-			// on this one number, so leaving it at its last live value would
-			// advertise a held pose as freshly measured.
+			// The elbow and shoulder confidences decay with it. A consumer
+			// gates each on its one number, so leaving them at their last live
+			// values would advertise a held pose as freshly measured.
 			outPose.forearmConfidence= ioHeld.pose.forearmConfidence * decay;
+			outPose.shoulderConfidence= ioHeld.pose.shoulderConfidence * decay;
 			return true;
 		}
 	}
@@ -205,6 +228,40 @@ void OscStreamer::resolveElbowOutput(const HandPose& pose, bool bPoseSent, float
 
 	outPosition= pose.getElbowPositionWorld(forearmLengthMeters);
 	outConfidence= glm::clamp(pose.forearmConfidence, 0.f, 1.f);
+}
+
+void OscStreamer::resolveShoulderOutput(const HandPose& pose, bool bPoseSent,
+										glm::vec3& outPosition, float& outConfidence)
+{
+	// Same contract as the elbow: always produces a value, confidence 0 means
+	// do not use this position. The shoulder is only ever solved in world
+	// space off a world-anchored wrist.
+	const bool bUsable= bPoseSent && pose.hasShoulder && pose.hasWorldPose;
+	if (!bUsable)
+	{
+		outPosition= glm::vec3(0.f);
+		outConfidence= 0.f;
+		return;
+	}
+
+	outPosition= pose.shoulderPositionWorld;
+	outConfidence= glm::clamp(pose.shoulderConfidence, 0.f, 1.f);
+}
+
+void OscStreamer::resolveHeadOutput(const TrackingFrameResult::HeadPose& head,
+									glm::vec3& outPosition, glm::quat& outOrientation, float& outConfidence)
+{
+	if (!head.valid)
+	{
+		outPosition= glm::vec3(0.f);
+		outOrientation= glm::quat(1.f, 0.f, 0.f, 0.f);
+		outConfidence= 0.f;
+		return;
+	}
+
+	outPosition= head.positionWorld;
+	outOrientation= head.orientationWorld;
+	outConfidence= glm::clamp(head.confidence, 0.f, 1.f);
 }
 
 void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton)
@@ -241,6 +298,18 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 		OscMessage& elbowMessage= m_bundle.addMessage(k_handElbowAddress[sideIndex]);
 		addVec3(elbowMessage, elbowPosition);
 		elbowMessage.addFloat(elbowConfidence);
+	}
+
+	// /mikan/hand/{s}/shoulder ,ffff -- position xyz + confidence. Same
+	// always-send, confidence-carries-validity contract as the elbow.
+	{
+		glm::vec3 shoulderPosition(0.f);
+		float shoulderConfidence= 0.f;
+		resolveShoulderOutput(pose, bSendPose, shoulderPosition, shoulderConfidence);
+
+		OscMessage& shoulderMessage= m_bundle.addMessage(k_handShoulderAddress[sideIndex]);
+		addVec3(shoulderMessage, shoulderPosition);
+		shoulderMessage.addFloat(shoulderConfidence);
 	}
 
 	if (!bSendPose)

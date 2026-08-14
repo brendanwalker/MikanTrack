@@ -47,6 +47,9 @@ public:
 
 	bool getShowDetectionBoxes() const { return m_bShowDetectionBoxes; }
 	void setShowDetectionBoxes(bool bShow) { m_bShowDetectionBoxes= bShow; }
+
+	bool getShowBodyPose() const { return m_bShowBodyPose; }
+	void setShowBodyPose(bool bShow) { m_bShowBodyPose= bShow; }
 	bool getShowOverlay() const { return m_bShowOverlay; }
 	void setShowOverlay(bool bShow) { m_bShowOverlay= bShow; }
 
@@ -65,4 +68,6 @@ private:
 
 	bool m_bShowOverlay= true;
 	bool m_bShowDetectionBoxes= false;
+	// Raw BlazePose landmarks on body-pose cameras (the solver's source data)
+	bool m_bShowBodyPose= true;
 };

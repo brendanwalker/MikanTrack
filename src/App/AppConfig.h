@@ -151,12 +151,28 @@ struct RestAnglesConfig
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
 };
 
+// Body-pose stage, opt-in per camera. The person detector only fires on
+// cameras that see the user upright, so this stays off for overhead cameras
+// and costs them nothing.
+struct BodyPoseCameraConfig
+{
+	bool enabled= false;
+	// 0 = BlazePose, 1 = RTMPose (see eBodyPoseBackend)
+	int backend= 1;
+	// Pose models run every Nth frame on this camera
+	int poseFrameDivider= 2;
+	// Rebuild the region of interest from the image every Nth model frame,
+	// regardless of model confidence
+	int detectorIntervalFrames= 20;
+};
+
 struct CameraProfile
 {
 	VideoConfig video;
 	IntrinsicsConfig intrinsics;
 	ExtrinsicsConfig extrinsics;
 	RestAnglesConfig restAngles;
+	BodyPoseCameraConfig bodyPose;
 };
 
 // Wrist-strapped inertial trackers (Joy-Cons today, SlimeVR later).
@@ -172,13 +188,45 @@ struct ImuConfig
 	float visionYawSigma= 0.35f;
 	// Swap which controller drives which wrist
 	bool swapSides= false;
-	// Forearm length, used only to place the elbow estimate back along the
-	// measured forearm direction from the wrist (visualization + IK hint).
-	// The direction is measured; only this length is assumed.
-	float forearmLengthMeters= 0.25f;
 	// Captured mounting rotation (forearm -> sensor), indexed by eHandSide
 	bool mountingPresent[2]= {false, false};
 	std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f), glm::quat(1.f, 0.f, 0.f, 0.f)};
+};
+
+// Body proportions shared by every elbow consumer (IMU-measured forearms and
+// the vision body-pose solver alike)
+struct BodyConfig
+{
+	// Forearm length, used to place the elbow estimate back along the forearm
+	// direction from the wrist (visualization + IK hint). The direction is
+	// measured; only this length is assumed. The IMU mounting wizard's curl
+	// stage overwrites it with a measured value.
+	float forearmLengthMeters= 0.25f;
+	// Elbow-to-shoulder length. Only disambiguates which of the two
+	// ray-sphere elbow solutions is real; it never places a joint by itself.
+	float upperArmLengthMeters= 0.30f;
+	// Distance between the shoulder joints. With both shoulder rays known,
+	// this fixes their depth without the pose model's own metric guess, which
+	// measured unusable per frame (its forearm length swung nearly 3x within
+	// one session).
+	float shoulderWidthMeters= 0.40f;
+	// Ear-to-ear width, which fixes head depth the same way
+	float headWidthMeters= 0.15f;
+	// Ear-axis midpoint to nose tip, which fixes head yaw and pitch
+	float noseForwardMeters= 0.11f;
+};
+
+// Tracking recordings store landmarks, which are abstract enough to share.
+// Raw frames are video of a room, so storing them is OPT-IN and local: this
+// defaults off and stays off unless someone deliberately turns it on.
+struct RecordingConfig
+{
+	// Store the frames the models consumed alongside the landmark recording.
+	// The reason to want it: a landmark recording cannot answer "would a
+	// different pose model have done better", because the model's input is
+	// gone. Costs roughly 3-6 MB/s per camera.
+	bool recordRawFrames= false;
+	int jpegQuality= 85;
 };
 
 struct FusionConfig
@@ -205,6 +253,11 @@ struct FusionConfig
 	float residualReferencePx= 8.f;
 };
 
+// Declared here (rather than each caller assembling its own) so the live
+// solve and a replayed one cannot drift apart
+struct BodyDimensions;
+BodyDimensions makeBodyDimensions(const class AppConfig& config);
+
 class AppConfig
 {
 public:
@@ -217,6 +270,8 @@ public:
 	OscConfig osc;
 	FusionConfig fusion;
 	ImuConfig imu;
+	BodyConfig body;
+	RecordingConfig recording;
 	// Rest-pose zero for the stereo-TRIANGULATED path (one set, not per
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.

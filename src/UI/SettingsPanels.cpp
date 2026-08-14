@@ -503,7 +503,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		bChanged|= ImGui::Checkbox("Swap wrists", &imu.swapSides);
 		ImGui::SetItemTooltip("If the Joy-Con L is strapped to your RIGHT wrist");
 
-		bChanged|= ImGui::SliderFloat("Forearm length", &imu.forearmLengthMeters, 0.10f, 0.40f, "%.2f m");
+		bChanged|= ImGui::SliderFloat("Forearm length", &config->body.forearmLengthMeters, 0.10f, 0.40f, "%.2f m");
 		ImGui::SetItemTooltip(
 			"Wrist-to-elbow distance, used to place the elbow back along the\n"
 			"MEASURED forearm direction. An error here slides the elbow along\n"
@@ -525,6 +525,67 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"the roll about that axis, and your forearm length).");
 
 		ImGui::EndDisabled();
+	}
+
+	ImGui::SeparatorText("Body Pose");
+	{
+		ImGui::TextWrapped(
+			"Body tracking for measured elbows, shoulders, and head pose. "
+			"Opt-in per camera: the person detector only fires on a camera "
+			"that sees you upright, so leave overhead cameras off.");
+
+		for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+		{
+			BodyPoseCameraConfig& bodyPose= config->camera(cameraIndex).bodyPose;
+			ImGui::PushID(cameraIndex);
+
+			char label[32];
+			snprintf(label, sizeof(label), "Camera %d", cameraIndex + 1);
+			bChanged|= ImGui::Checkbox(label, &bodyPose.enabled);
+
+			if (bodyPose.enabled)
+			{
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(110.f);
+				const char* backendNames[]= {"BlazePose", "RTMPose"};
+				bChanged|= ImGui::Combo("model", &bodyPose.backend, backendNames, 2);
+				ImGui::SetItemTooltip(
+					"RTMPose is top-down: this app supplies the person box and\n"
+					"each joint is scored on its own, so joints outside the\n"
+					"frame read as low confidence.\n\n"
+					"BlazePose owns its own crop and always emits a whole body,\n"
+					"so a person truncated at a desk gets an invented lower\n"
+					"body that drags the arms with it.");
+
+				ImGui::SetNextItemWidth(110.f);
+				bChanged|= ImGui::SliderInt("divider", &bodyPose.poseFrameDivider, 1, 4);
+				ImGui::SetItemTooltip("Pose models run every Nth frame on this camera");
+
+				ImGui::SameLine();
+				ImGui::SetNextItemWidth(110.f);
+				bChanged|= ImGui::SliderInt("re-detect", &bodyPose.detectorIntervalFrames, 1, 60);
+				ImGui::SetItemTooltip(
+					"Rebuild the search region from the image every Nth model\n"
+					"frame, whatever the model claims about its confidence.\n"
+					"Without it the region is only ever grown from the previous\n"
+					"landmarks, so a drifting crop feeds itself.");
+			}
+
+			ImGui::PopID();
+		}
+
+		ImGui::TextWrapped(
+			"Body proportions. Only lengths are assumed - every direction is "
+			"measured - but they set the scale of the estimates, so correcting "
+			"them for your own body is worth a minute.");
+		bChanged|= ImGui::SliderFloat("Upper arm", &config->body.upperArmLengthMeters, 0.20f, 0.45f, "%.2f m");
+		ImGui::SetItemTooltip("Shoulder to elbow. Decides which of the two elbow solutions is real.");
+		bChanged|= ImGui::SliderFloat("Shoulder width", &config->body.shoulderWidthMeters, 0.25f, 0.60f, "%.2f m");
+		ImGui::SetItemTooltip("Between the shoulder joints. Sets the shoulders' distance from the camera.");
+		bChanged|= ImGui::SliderFloat("Head width", &config->body.headWidthMeters, 0.10f, 0.22f, "%.2f m");
+		ImGui::SetItemTooltip("Ear to ear. Sets the head's distance from the camera.");
+		bChanged|= ImGui::SliderFloat("Nose forward", &config->body.noseForwardMeters, 0.05f, 0.18f, "%.2f m");
+		ImGui::SetItemTooltip("Ear midpoint to nose tip. Sets head yaw and pitch.");
 	}
 
 	ImGui::SeparatorText("Hand Bones");
@@ -870,6 +931,15 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bool bShowBoxes= previewPanel->getShowDetectionBoxes();
 	if (ImGui::Checkbox("Show detection boxes", &bShowBoxes))
 		previewPanel->setShowDetectionBoxes(bShowBoxes);
+
+	bool bShowBodyPose= previewPanel->getShowBodyPose();
+	if (ImGui::Checkbox("Show body landmarks", &bShowBodyPose))
+		previewPanel->setShowBodyPose(bShowBodyPose);
+	ImGui::SetItemTooltip(
+		"Draws the raw BlazePose skeleton on cameras running body pose.\n"
+		"Landmarks below the solver's visibility gate are dimmed, and the\n"
+		"joints it consumes (shoulders, elbows, wrists) carry their\n"
+		"visibility - so a bad elbow can be traced to its source landmark.");
 	if (config->cameraCount() > 1)
 	{
 		bool bShowPerCamera= scene3dPanel->getShowPerCameraSkeletons();
@@ -1173,7 +1243,7 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 			ImGui::Text("  wrist quat:   (%.3f, %.3f, %.3f, %.3f)", wristRotation.x, wristRotation.y,
 						wristRotation.z, wristRotation.w);
 
-			const glm::vec3 elbow= pose.getElbowPositionWorld(config->imu.forearmLengthMeters);
+			const glm::vec3 elbow= pose.getElbowPositionWorld(config->body.forearmLengthMeters);
 			ImGui::Text("  elbow: (%.3f, %.3f, %.3f) m", elbow.x, elbow.y, elbow.z);
 		}
 		else

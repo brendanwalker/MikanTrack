@@ -25,6 +25,8 @@ nlohmann::json fingersToJson(const std::array<FingerAngles, FINGER_COUNT>& finge
 nlohmann::json landmarksToJson(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points);
 nlohmann::json imageQualityToJson(const HandImageQuality& quality);
 nlohmann::json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics);
+// Full 33-landmark body-pose observation (invalid encodes as {"valid":false})
+nlohmann::json bodyPoseToJson(const BodyPoseObservation& body);
 
 // null-tolerant scalar read: null (nlohmann's encoding of NaN/Inf) -> 0
 float floatFromJson(const nlohmann::json& value);
@@ -34,4 +36,5 @@ glm::vec3 vec3FromJson(const nlohmann::json& j);
 glm::quat quatFromJson(const nlohmann::json& j); // xyzw
 void fingersFromJson(const nlohmann::json& j, std::array<FingerAngles, FINGER_COUNT>& outFingers);
 void landmarksFromJson(const nlohmann::json& j, std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints);
+void bodyPoseFromJson(const nlohmann::json& j, BodyPoseObservation& outBody);
 } // namespace TrackingJson

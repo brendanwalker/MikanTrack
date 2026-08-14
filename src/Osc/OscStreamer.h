@@ -59,9 +59,11 @@ struct OscStreamerConfig
 ///       value for any address that stops arriving - an elbow that simply
 ///       went silent would sit at its last confident value while the hand
 ///       was gone. Confidence therefore carries validity: 0 means do not use
-///       this position. It folds together the hand's own confidence, the IMU
-///       mounting quality (a bad mounting leaves the hand looking correct
-///       while swinging the elbow around it) and the dropout decay.
+///       this position. It folds together the hand's own confidence, the
+///       forearm source's quality (IMU mounting quality, or measured jitter
+///       stability for a vision elbow) and the dropout decay.
+///     /mikan/hand/{s}/shoulder ,ffff position xyz + confidence [0,1].
+///       Same always-send contract; from the vision body-pose solver.
 ///     if tracked (confidence below minConfidence reports tracked=0 and
 ///     withholds everything below):
 ///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
@@ -77,6 +79,9 @@ struct OscStreamerConfig
 ///       /mikan/hand/{s}/skeleton ,f x45 (1 Hz) per finger: base position in
 ///         the palm frame xyz + phalanx lengths [prox, inter, distal] +
 ///         neutral (zero-angle) direction in the palm frame xyz
+///   /mikan/body/head ,ffffffff position xyz + orientation xyzw + confidence.
+///     Head frame: +X facing, +Y toward the person's left, +Z up. Always
+///     sent, confidence 0 carries invalidity; live-only (no dropout hold).
 ///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z;...;angles=deg" appVersion
 ///     (at most once per second)
 class OscStreamer
@@ -129,6 +134,15 @@ public:
 	/// Static so the self test can exercise the contract without a socket.
 	static void resolveElbowOutput(const HandPose& pose, bool bPoseSent, float forearmLengthMeters,
 								   glm::vec3& outPosition, float& outConfidence);
+
+	/// Same always-send contract for /shoulder: confidence 0 carries
+	/// invalidity, the address never goes silent.
+	static void resolveShoulderOutput(const HandPose& pose, bool bPoseSent,
+									  glm::vec3& outPosition, float& outConfidence);
+
+	/// Same contract for /mikan/body/head; live-only (no dropout hold).
+	static void resolveHeadOutput(const TrackingFrameResult::HeadPose& head,
+								  glm::vec3& outPosition, glm::quat& outOrientation, float& outConfidence);
 
 private:
 	using ClockTimePoint= std::chrono::steady_clock::time_point;

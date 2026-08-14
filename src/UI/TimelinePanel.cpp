@@ -20,7 +20,7 @@ void TimelinePanel::draw(AppConfig* config, VisionThread* visionThread)
 		return;
 	}
 
-	drawRecordingSection(visionThread);
+	drawRecordingSection(config, visionThread);
 	ImGui::SeparatorText("Replay");
 	drawLoadSection(visionThread);
 	if (m_bLoaded && m_replay.didRun())
@@ -35,7 +35,7 @@ void TimelinePanel::draw(AppConfig* config, VisionThread* visionThread)
 	ImGui::End();
 }
 
-void TimelinePanel::drawRecordingSection(VisionThread* visionThread)
+void TimelinePanel::drawRecordingSection(AppConfig* config, VisionThread* visionThread)
 {
 	ImGui::SeparatorText("Recording");
 
@@ -45,6 +45,16 @@ void TimelinePanel::drawRecordingSection(VisionThread* visionThread)
 		ImGui::SameLine();
 		ImGui::Text("%lld frames, %.1f MB", (long long)visionThread->getRecordingFrameCount(),
 					(double)visionThread->getRecordingBytes() / (1024.0 * 1024.0));
+		if (visionThread->isRecordingRawFrames())
+		{
+			ImGui::TextColored(k_colorBad, "+ RAW FRAMES");
+			ImGui::SameLine();
+			ImGui::Text("%lld images, %.0f MB", (long long)visionThread->getRecordedFrameCount(),
+						(double)visionThread->getRecordedFrameBytes() / (1024.0 * 1024.0));
+			const int64_t dropped= visionThread->getDroppedFrameCount();
+			if (dropped > 0)
+				ImGui::TextColored(k_colorBad, "%lld frames dropped (encoder behind)", (long long)dropped);
+		}
 		if (ImGui::Button("Stop Recording (F10)", ImVec2(-1, 0)))
 			visionThread->requestRecordingStop();
 	}
@@ -59,6 +69,27 @@ void TimelinePanel::drawRecordingSection(VisionThread* visionThread)
 			"tracking state (brief blip), and editing any tracking/fusion\n"
 			"setting while recording finalizes the file. Roughly 0.5-1 MB\n"
 			"per second.");
+
+		// Deliberately below the start button and unchecked by default: this
+		// is the difference between recording abstract landmarks and
+		// recording video of the room
+		bool bRecordFrames= config->recording.recordRawFrames;
+		if (ImGui::Checkbox("Also record raw camera frames", &bRecordFrames))
+		{
+			config->recording.recordRawFrames= bRecordFrames;
+			config->markDirty();
+		}
+		ImGui::SetItemTooltip(
+			"PRIVACY: this writes the actual camera images to disk as JPEGs,\n"
+			"next to the recording. Off by default, and worth leaving off\n"
+			"unless you are chasing a problem.\n\n"
+			"What it buys: a landmark recording cannot answer whether a\n"
+			"different pose model would have done better, because the model's\n"
+			"input is gone. With frames, that becomes an offline measurement\n"
+			"(--replay-bodypose) instead of a live impression.\n\n"
+			"Costs roughly 3-6 MB per second per camera.");
+		if (bRecordFrames)
+			ImGui::TextColored(k_colorBad, "Raw frames WILL be written next recording");
 
 		const std::string lastPath= visionThread->getLastRecordingPath();
 		if (!lastPath.empty())

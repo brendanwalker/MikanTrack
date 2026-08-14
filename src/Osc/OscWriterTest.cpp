@@ -363,6 +363,77 @@ bool runOscWriterSelfTest()
 		allPassed&= elbowPassed;
 	}
 
+	// -- Shoulder output (OscStreamer::resolveShoulderOutput) ----------------
+	{
+		bool shoulderPassed= true;
+
+		HandPose pose;
+		pose.tracked= true;
+		pose.hasWorldPose= true;
+		pose.hasShoulder= true;
+		pose.shoulderPositionWorld= glm::vec3(0.2f, -0.1f, 1.4f);
+		pose.shoulderConfidence= 0.6f;
+
+		glm::vec3 shoulder(0.f);
+		float confidence= -1.f;
+		OscStreamer::resolveShoulderOutput(pose, true, shoulder, confidence);
+		shoulderPassed&= glm::length(shoulder - pose.shoulderPositionWorld) < 1e-6f;
+		shoulderPassed&= fabsf(confidence - 0.6f) < 1e-6f;
+
+		// No solved shoulder, unsent pose, and camera-space pose all report
+		// confidence 0 rather than going silent
+		HandPose noShoulder= pose;
+		noShoulder.hasShoulder= false;
+		OscStreamer::resolveShoulderOutput(noShoulder, true, shoulder, confidence);
+		shoulderPassed&= confidence == 0.f && shoulder == glm::vec3(0.f);
+
+		OscStreamer::resolveShoulderOutput(pose, false, shoulder, confidence);
+		shoulderPassed&= confidence == 0.f;
+
+		HandPose cameraSpace= pose;
+		cameraSpace.hasWorldPose= false;
+		OscStreamer::resolveShoulderOutput(cameraSpace, true, shoulder, confidence);
+		shoulderPassed&= confidence == 0.f;
+
+		if (shoulderPassed)
+			MIKAN_LOG_INFO("runOscWriterSelfTest") << "shoulder output passed";
+		else
+			MIKAN_LOG_ERROR("runOscWriterSelfTest") << "shoulder output FAILED";
+		allPassed&= shoulderPassed;
+	}
+
+	// -- Head output (OscStreamer::resolveHeadOutput) ------------------------
+	{
+		bool headPassed= true;
+
+		TrackingFrameResult::HeadPose head;
+		head.valid= true;
+		head.positionWorld= glm::vec3(0.1f, 0.2f, 1.6f);
+		head.orientationWorld= glm::normalize(glm::quat(0.9f, 0.1f, 0.2f, 0.3f));
+		head.confidence= 0.8f;
+
+		glm::vec3 position(0.f);
+		glm::quat orientation(1.f, 0.f, 0.f, 0.f);
+		float confidence= -1.f;
+		OscStreamer::resolveHeadOutput(head, position, orientation, confidence);
+		headPassed&= glm::length(position - head.positionWorld) < 1e-6f;
+		headPassed&= fabsf(glm::dot(orientation, head.orientationWorld)) > 1.f - 1e-6f;
+		headPassed&= fabsf(confidence - 0.8f) < 1e-6f;
+
+		// Invalid head: identity orientation, zero position, confidence 0
+		TrackingFrameResult::HeadPose invalid;
+		OscStreamer::resolveHeadOutput(invalid, position, orientation, confidence);
+		headPassed&= confidence == 0.f;
+		headPassed&= position == glm::vec3(0.f);
+		headPassed&= orientation == glm::quat(1.f, 0.f, 0.f, 0.f);
+
+		if (headPassed)
+			MIKAN_LOG_INFO("runOscWriterSelfTest") << "head output passed";
+		else
+			MIKAN_LOG_ERROR("runOscWriterSelfTest") << "head output FAILED";
+		allPassed&= headPassed;
+	}
+
 	if (allPassed)
 	{
 		MIKAN_LOG_INFO("runOscWriterSelfTest") << "All OSC writer self tests passed";

@@ -9,6 +9,22 @@ static glm::vec3 transformPoint(const glm::dmat4& transform, const glm::vec3& po
 	return glm::vec3((float)transformed.x, (float)transformed.y, (float)transformed.z);
 }
 
+glm::vec3 cameraPositionWorld(const glm::dmat4& markerFromCamera)
+{
+	return glm::vec3(markerFromCamera[3]);
+}
+
+glm::vec3 pixelRayDirWorld(
+	const glm::dmat4& markerFromCamera,
+	float fx, float fy, float cx, float cy,
+	const glm::vec2& px)
+{
+	// Undistorted pinhole back-projection, OpenCV camera convention
+	const glm::vec3 dirCamera((px.x - cx) / fx, (px.y - cy) / fy, 1.f);
+	const glm::mat3 rotation= glm::mat3(glm::mat4(markerFromCamera));
+	return glm::normalize(rotation * dirCamera);
+}
+
 void applyWorldTransform(TrackingFrameResult& ioResult, const glm::dmat4& markerFromCamera)
 {
 	const glm::mat3 rotation= glm::mat3(glm::dmat3(markerFromCamera));

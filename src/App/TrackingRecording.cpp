@@ -167,6 +167,8 @@ json cameraInputToJson(const RecordedCameraInput& camera)
 	};
 	if (camera.bHaveDepth)
 		out["depth"]= json::array({depthToJson(camera.depth[0]), depthToJson(camera.depth[1])});
+	if (camera.bHaveBodyPose)
+		out["body"]= bodyPoseToJson(camera.body);
 	return out;
 }
 
@@ -194,6 +196,11 @@ bool cameraInputFromJson(const json& j, RecordedCameraInput& outCamera)
 		outCamera.bHaveDepth= true;
 		depthFromJson(j["depth"][0], outCamera.depth[0]);
 		depthFromJson(j["depth"][1], outCamera.depth[1]);
+	}
+	if (j.contains("body"))
+	{
+		outCamera.bHaveBodyPose= true;
+		bodyPoseFromJson(j["body"], outCamera.body);
 	}
 	return true;
 }
@@ -318,6 +325,14 @@ void snapshotFusedOutput(const TrackingFrameResult& fused,
 		out.fingers= pose.fingers;
 		out.skeleton= pose.skeleton;
 	}
+}
+
+std::string makeFrameDirectoryPath(const std::string& recordingFilePath)
+{
+	const size_t extension= recordingFilePath.find_last_of('.');
+	const std::string stem=
+		extension == std::string::npos ? recordingFilePath : recordingFilePath.substr(0, extension);
+	return stem + "_frames";
 }
 
 json headerToJson(const RecordingHeader& header)

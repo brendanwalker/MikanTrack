@@ -34,7 +34,7 @@ public:
 	std::vector<const TrackingFrameResult*> getPerCameraResults() const;
 
 private:
-	void drawRecordingSection(VisionThread* visionThread);
+	void drawRecordingSection(AppConfig* config, VisionThread* visionThread);
 	void drawLoadSection(VisionThread* visionThread);
 	void drawTransportSection();
 	void drawWhatIfSection();

@@ -22,6 +22,7 @@
 #include "nlohmann/json.hpp"
 #include "opencv2/calib3d.hpp"
 #include "opencv2/core.hpp"
+#include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
 
@@ -35,6 +36,8 @@
 #include "ExtrinsicsWizard.h"
 #include "PatternPoseSampler.h"
 #include "HandBoneCalibrator.h"
+#include "BodyPoseSolver.h"
+#include "BodyPoseTracker.h"
 #include "HandFusion.h"
 #include "HandPoseModel.h"
 #include "HandRoiQuality.h"

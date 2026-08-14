@@ -297,7 +297,7 @@ void MainWindow::update(float deltaSeconds)
 
 					const glm::vec3 wristWorld= pose.getWristPositionWorld();
 					const glm::vec3 elbowWorld=
-						pose.getElbowPositionWorld(config->imu.forearmLengthMeters);
+						pose.getElbowPositionWorld(config->body.forearmLengthMeters);
 					overlay.valid[sideIndex]= projectToImage(wristWorld, overlay.wristPx[sideIndex]) &&
 						projectToImage(elbowWorld, overlay.elbowPx[sideIndex]);
 				}
@@ -312,7 +312,7 @@ void MainWindow::update(float deltaSeconds)
 	// with the frustums built from the RECORDING's config snapshot.
 	if (m_timelinePanel->isReplayViewActive())
 	{
-		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
+		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
 							 m_timelinePanel->getPerCameraResults());
 	}
@@ -334,7 +334,7 @@ void MainWindow::update(float deltaSeconds)
 			perCameraResults.push_back(
 				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
 		}
-		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
+		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 		m_scene3dPanel->draw(m_latestFused, sceneCameras, perCameraResults);
 	}
 

@@ -161,6 +161,7 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 	// recording started
 	m_fusion= HandFusion();
 	m_fusion.configure(bWhatIf ? whatIfParams->fusionConfig : buildFusionConfig());
+	m_bodyPoseSolver.reset();
 
 	m_landmarkTo3D.clear();
 	m_mirrors.clear();
@@ -269,6 +270,11 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 					hand.imageQuality= recordedHand.imageQuality;
 				}
 
+				// Body-pose observation, exactly as the live stage emitted it
+				// (cadence and all - the pose models are never re-run)
+				if (fresh.bHaveBodyPose)
+					result.body= fresh.body;
+
 				// refLengthMeters > 0 <=> live had a LandmarkTo3D for this
 				// camera (an existing instance never reports 0)
 				if (fresh.refLengthMeters > 0.f && m_landmarkTo3D[cameraIndex] != nullptr)
@@ -324,34 +330,32 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 			fused= m_mirrors.empty() ? TrackingFrameResult() : m_mirrors[0].result;
 		}
 
-		if (bWhatIf)
+		if (!bWhatIf)
 		{
-			replayFrame.whatIfFused= fused;
-			replayFrame.bHasWhatIf= true;
-			replayFrame.whatIfPerCamera.resize(cameraCount);
-			for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
-				replayFrame.whatIfPerCamera[cameraIndex]= m_mirrors[cameraIndex].result;
-			continue;
+			// Checksum compares PRE-IMU, PRE-body-solver, matching the live tap
+			replayFrame.replayChecksum= TrackingRecording::computeFusedChecksum(fused);
+			replayFrame.bChecksumMatch= replayFrame.replayChecksum == recorded.checksum;
+			if (!replayFrame.bChecksumMatch)
+				m_divergentFrames.push_back((int)frameIndex);
+
+			if (m_bCaptureDiagnostics && recorded.bFused &&
+				(int)frameIndex >= m_diagnosticsFirstFrame &&
+				(m_diagnosticsLastFrame < 0 || (int)frameIndex <= m_diagnosticsLastFrame))
+			{
+				replayFrame.diagnostics= m_fusion.getLastDiagnostics();
+				replayFrame.bHasDiagnostics= true;
+			}
+			else
+			{
+				replayFrame.bHasDiagnostics= false;
+			}
 		}
 
-		replayFrame.replayChecksum= TrackingRecording::computeFusedChecksum(fused);
-		replayFrame.bChecksumMatch= replayFrame.replayChecksum == recorded.checksum;
-		if (!replayFrame.bChecksumMatch)
-			m_divergentFrames.push_back((int)frameIndex);
-
-		if (m_bCaptureDiagnostics && recorded.bFused &&
-			(int)frameIndex >= m_diagnosticsFirstFrame &&
-			(m_diagnosticsLastFrame < 0 || (int)frameIndex <= m_diagnosticsLastFrame))
-		{
-			replayFrame.diagnostics= m_fusion.getLastDiagnostics();
-			replayFrame.bHasDiagnostics= true;
-		}
-		else
-		{
-			replayFrame.bHasDiagnostics= false;
-		}
-
-		// Display copy: overlay the recorded IMU forearm output (not re-run)
+		// Post-fusion output stages in live order: overlay the recorded IMU
+		// forearm output (the EKF is not re-run), then run the body-pose
+		// solver, which fills only sides the IMU didn't claim. Re-running the
+		// solver (rather than replaying its output) is what makes solver
+		// changes A/B-able against old recordings.
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{
 			HandPose& pose= fused.poses[sideIndex];
@@ -363,6 +367,19 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 				pose.forearmConfidence= imu.forearmConfidence;
 			}
 		}
+		if (recorded.bFused)
+			m_bodyPoseSolver.solve(candidates, makeBodyDimensions(m_recordedConfig), fused);
+
+		if (bWhatIf)
+		{
+			replayFrame.whatIfFused= fused;
+			replayFrame.bHasWhatIf= true;
+			replayFrame.whatIfPerCamera.resize(cameraCount);
+			for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+				replayFrame.whatIfPerCamera[cameraIndex]= m_mirrors[cameraIndex].result;
+			continue;
+		}
+
 		replayFrame.replayedFused= fused;
 
 		// Per-camera view for the scene panel (stale cameras show their last

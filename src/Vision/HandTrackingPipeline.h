@@ -89,13 +89,8 @@ struct HandSeedStats
 //   - handedness resolution with temporal stickiness
 // Fills the image-space fields of TrackingFrameResult; camera/world space and
 // the parametric hand poses are filled later by the Tracking module
-// (LandmarkTo3D / SpaceTransforms). Elbow estimation was removed entirely -
-// there isn't enough information in a hand-only view for a useful estimate;
-// clients solve arms with IK from the palm pose.
-//
-// NOTE: BlazePose elbow measurement was removed - its person detector never
-// fires on top-down/overhead views, so the pose stage never produced usable
-// elbows on the rigs this app targets (see git history for the experiment).
+// (LandmarkTo3D / SpaceTransforms). Body pose (elbows/shoulders/head) is a
+// separate opt-in per-camera stage (BodyPoseTracker), not part of this graph.
 //
 // THREAD AFFINITY: startup/process/shutdown must all happen on the same
 // (inference) thread — the ONNX sessions live on it.

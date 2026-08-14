@@ -40,6 +40,32 @@ json landmarksToJson(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points)
 	return out;
 }
 
+json bodyPoseToJson(const BodyPoseObservation& body)
+{
+	if (!body.valid)
+		return {{"valid", false}};
+
+	json imagePoints= json::array();
+	json visibility= json::array();
+	json worldPoints= json::array();
+	for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
+	{
+		imagePoints.push_back(vec3ToJson(body.imagePoints[landmark]));
+		visibility.push_back(body.visibility[landmark]);
+		worldPoints.push_back(vec3ToJson(body.worldPoints[landmark]));
+	}
+	return {
+		{"valid", true},
+		{"modelFrameIndex", body.modelFrameIndex},
+		{"providedMask", body.providedMask},
+		{"boxSource", (int)body.boxSource},
+		{"confidence", body.confidence},
+		{"imagePoints", imagePoints},
+		{"visibility", visibility},
+		{"worldPoints", worldPoints},
+	};
+}
+
 json imageQualityToJson(const HandImageQuality& quality)
 {
 	return {
@@ -155,5 +181,30 @@ void landmarksFromJson(const json& j, std::array<glm::vec3, HAND_LANDMARK_COUNT>
 		return;
 	for (int landmark= 0; landmark < HAND_LANDMARK_COUNT && landmark < (int)j.size(); ++landmark)
 		outPoints[landmark]= vec3FromJson(j[landmark]);
+}
+
+void bodyPoseFromJson(const json& j, BodyPoseObservation& outBody)
+{
+	outBody= BodyPoseObservation();
+	if (!j.is_object() || !j.value("valid", false))
+		return;
+	outBody.valid= true;
+	outBody.modelFrameIndex= j.value("modelFrameIndex", (int64_t)-1);
+	// Recordings predating the mask carry the full 33-slot BlazePose layout
+	outBody.providedMask= j.value("providedMask", (1u << POSE_LANDMARK_COUNT) - 1u);
+	outBody.boxSource= (eBodyBoxSource)j.value("boxSource", (int)eBodyBoxSource::None);
+	outBody.confidence= j.value("confidence", 0.f);
+	const json& imagePoints= j.value("imagePoints", json::array());
+	const json& visibility= j.value("visibility", json::array());
+	const json& worldPoints= j.value("worldPoints", json::array());
+	for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
+	{
+		if (landmark < (int)imagePoints.size())
+			outBody.imagePoints[landmark]= vec3FromJson(imagePoints[landmark]);
+		if (landmark < (int)visibility.size())
+			outBody.visibility[landmark]= floatFromJson(visibility[landmark]);
+		if (landmark < (int)worldPoints.size())
+			outBody.worldPoints[landmark]= vec3FromJson(worldPoints[landmark]);
+	}
 }
 } // namespace TrackingJson
