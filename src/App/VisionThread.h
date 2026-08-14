@@ -244,7 +244,7 @@ private:
 		std::unique_ptr<HandTrackingPipeline> pipeline;
 		std::unique_ptr<LandmarkTo3D> landmarkTo3D; // smoothing always disabled (post-fusion smoothing)
 		std::unique_ptr<CVVideoFrameProcessor> undistorter;
-		// Opt-in BlazePose stage; only allocated for cameras whose profile
+		// Opt-in body-pose stage; only allocated for cameras whose profile
 		// enables body pose
 		std::unique_ptr<BodyPoseTracker> bodyPoseTracker;
 

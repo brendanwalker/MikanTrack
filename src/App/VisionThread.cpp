@@ -515,17 +515,8 @@ void VisionThread::refreshConfigOnThread()
 		if (profile.bodyPose.enabled)
 		{
 			BodyPoseTrackerConfig trackerConfig;
-			trackerConfig.backend= (eBodyPoseBackend)profile.bodyPose.backend;
 			trackerConfig.frameDivider= profile.bodyPose.poseFrameDivider;
 			trackerConfig.detectorIntervalFrames= profile.bodyPose.detectorIntervalFrames;
-
-			// A backend switch needs a fresh load, since the two backends own
-			// different models
-			if (context.bodyPoseTracker != nullptr &&
-				context.bodyPoseTracker->getBackend() != trackerConfig.backend)
-			{
-				context.bodyPoseTracker= nullptr;
-			}
 
 			if (context.bodyPoseTracker == nullptr)
 			{
@@ -849,7 +840,7 @@ bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFram
 		if (m_frameRecorder != nullptr && m_frameRecorder->isRecording())
 			m_frameRecorder->enqueueFrame(context.cameraIndex, result.frameIndex, *activeFrame);
 
-		// Opt-in BlazePose stage, same undistorted frame the hand pipeline
+		// Opt-in body-pose stage, same undistorted frame the hand pipeline
 		// consumed (so its imagePoints share the undistorted camera matrix)
 		if (m_recorder != nullptr && m_recorder->isRecording())
 			context.pendingRecordInput.bHaveBodyPose= false;

@@ -41,12 +41,12 @@ struct RtmPoseResult
 
 // RTMPose body (SimCC) via ONNX Runtime.
 //
-// TOP-DOWN, which is the reason this backend exists: the caller supplies the
+// TOP-DOWN, which is the reason this model was chosen: the caller supplies the
 // person box and the model predicts each keypoint independently inside it.
-// BlazePose instead owns its own region of interest, derived from a hip
-// center and a "full body" point, and always emits one coherent full-body
-// skeleton - so a person truncated at a desk has no correct crop and gets a
-// fabricated lower body that drags the arms with it.
+// The holistic model tried before it owned its own region of interest, derived
+// from a hip center and a "full body" point, and always emitted one coherent
+// full-body skeleton - so a person truncated at a desk had no correct crop and
+// got a fabricated lower body that dragged the arms with it.
 //
 // Model contract (rtmpose_body.onnx, MMDeploy end2end export):
 //   input  input    [1,3,256,192] NCHW RGB, (x - mean) / std with the

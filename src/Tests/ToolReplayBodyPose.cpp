@@ -3,7 +3,7 @@
 #include "BodyPoseTracker.h"
 #include "FrameRecorder.h"
 
-// Re-runs a body-pose backend over the RAW FRAMES stored beside a recording,
+// Re-runs the body-pose stage over the RAW FRAMES stored beside a recording,
 // so "which pose model is better on my rig" is a measurement rather than an
 // impression. The landmark recording alone cannot answer it: it replays every
 // stage after inference, but the model's input is gone.
@@ -11,7 +11,7 @@
 // Frames are only present when raw frame recording was turned on for that
 // session (opt-in, off by default).
 //
-// usage: --replay-bodypose <recording.jsonl> [blazepose|rtmpose] [camera]
+// usage: --replay-bodypose <recording.jsonl> [camera]
 
 namespace
 {
@@ -46,26 +46,12 @@ static int runReplayBodyPose(const TestArgs& args)
 {
 	if (args.empty())
 	{
-		MIKAN_LOG_ERROR("replay-bodypose")
-			<< "usage: --replay-bodypose <recording.jsonl> [blazepose|rtmpose] [cameraIndex]";
+		MIKAN_LOG_ERROR("replay-bodypose") << "usage: --replay-bodypose <recording.jsonl> [cameraIndex]";
 		return 1;
 	}
 
 	const std::string recordingPath= args[0];
-	eBodyPoseBackend backend= eBodyPoseBackend::RtmPose;
-	if (args.size() > 1)
-	{
-		std::string name= args[1];
-		std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return (char)tolower(c); });
-		if (name == "blazepose")
-			backend= eBodyPoseBackend::BlazePose;
-		else if (name != "rtmpose")
-		{
-			MIKAN_LOG_ERROR("replay-bodypose") << "Unknown backend '" << args[1] << "'";
-			return 1;
-		}
-	}
-	const int requestedCamera= args.size() > 2 ? atoi(args[2].c_str()) : -1;
+	const int requestedCamera= args.size() > 1 ? atoi(args[1].c_str()) : -1;
 
 	TrackingReplay replay;
 	std::string error;
@@ -104,7 +90,6 @@ static int runReplayBodyPose(const TestArgs& args)
 	}
 
 	BodyPoseTrackerConfig trackerConfig;
-	trackerConfig.backend= backend;
 	// Every stored frame is fed through: the recorded divider already decided
 	// which frames exist, and re-dividing here would just sample them again
 	trackerConfig.frameDivider= 1;
@@ -114,13 +99,12 @@ static int runReplayBodyPose(const TestArgs& args)
 	BodyPoseTracker tracker;
 	if (!tracker.load("models", "directml", trackerConfig))
 	{
-		MIKAN_LOG_ERROR("replay-bodypose") << "Failed to load models for " << bodyPoseBackendName(backend);
+		MIKAN_LOG_ERROR("replay-bodypose") << "Failed to load the body pose models";
 		return 1;
 	}
 
 	MIKAN_LOG_INFO("replay-bodypose")
-		<< "Backend " << bodyPoseBackendName(backend) << " (ep=" << tracker.activeEp() << "), camera "
-		<< cameraIndex << ", frames from " << frameDirectory;
+		<< "ep=" << tracker.activeEp() << ", camera " << cameraIndex << ", frames from " << frameDirectory;
 
 	std::vector<JointStats> joints= {
 		{"shoulderL", ePoseLandmark::LEFT_SHOULDER}, {"shoulderR", ePoseLandmark::RIGHT_SHOULDER},
@@ -202,7 +186,7 @@ static int runReplayBodyPose(const TestArgs& args)
 	{
 		if (joint.scores.empty())
 		{
-			MIKAN_LOG_INFO("replay-bodypose") << "  " << joint.name << ": not emitted by this backend";
+			MIKAN_LOG_INFO("replay-bodypose") << "  " << joint.name << ": not emitted by the model";
 			continue;
 		}
 		const float scoreMedian= median(joint.scores);
@@ -217,5 +201,5 @@ static int runReplayBodyPose(const TestArgs& args)
 	return 0;
 }
 
-MIKAN_REGISTER_TEST("--replay-bodypose", "Re-run a body-pose backend over a recording's raw frames",
+MIKAN_REGISTER_TEST("--replay-bodypose", "Re-run body pose over a recording's raw frames",
 					eTestCategory::Tool, runReplayBodyPose);

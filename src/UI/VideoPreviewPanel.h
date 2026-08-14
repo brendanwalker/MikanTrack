@@ -68,6 +68,6 @@ private:
 
 	bool m_bShowOverlay= true;
 	bool m_bShowDetectionBoxes= false;
-	// Raw BlazePose landmarks on body-pose cameras (the solver's source data)
+	// Raw body landmarks on body-pose cameras (the solver's source data)
 	bool m_bShowBodyPose= true;
 };

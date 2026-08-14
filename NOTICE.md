@@ -39,17 +39,16 @@ linked, so this app builds standalone.
 
 ## ML models
 
-The MediaPipe hand/pose models (Apache-2.0, Google) are used in their
+The MediaPipe hand models and person detector (Apache-2.0, Google) are used in their
 OpenCV Zoo ONNX conversions (https://github.com/opencv/opencv_zoo,
 Apache-2.0), downloaded into `models/` by `InitialSetup_x64.bat`:
 
 - `palm_detection.onnx` — palm_detection_mediapipe_2023feb
 - `hand_landmark.onnx` — handpose_estimation_mediapipe_2023feb
 - `person_detection.onnx` — person_detection_mediapipe_2023mar
-- `pose_landmark.onnx` — pose_estimation_mediapipe_2023mar
 
-The RTMPose body model (Apache-2.0, OpenMMLab) is the top-down body
-backend, downloaded from the MMPose model zoo
+The RTMPose body model (Apache-2.0, OpenMMLab) is the body landmark
+model, downloaded from the MMPose model zoo
 (https://github.com/open-mmlab/mmpose):
 
 - `rtmpose_body.onnx` — rtmpose-m_simcc-body7_pt-body7_420e-256x192

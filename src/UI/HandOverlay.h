@@ -43,7 +43,7 @@ void drawTrackingResult(ImDrawList* drawList, const TrackingFrameResult& result,
 void drawForearmOverlay(ImDrawList* drawList, const ForearmOverlay& forearm,
 						const ImageToScreenMapping& mapping);
 
-// Draws the BlazePose body skeleton for a body-pose camera: the RAW landmarks
+// Draws the body skeleton for a body-pose camera: the RAW landmarks
 // the solver consumes, dimmed wherever visibility falls under the solver's
 // gate, with the visibility of the joints it actually uses (shoulders,
 // elbows, wrists) labelled. This is the source data behind the elbow, so a

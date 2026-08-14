@@ -20,18 +20,16 @@ capture, calibration and app scaffolding are borrowed from
 
 Body pose (measured elbows, shoulders, head pose) is an OPT-IN per-camera
 stage: enable it on a camera that sees you upright (a person detector never
-fires on top-down views, so overhead cameras leave it off). Two backends are
-selectable per camera. RTMPose (default) is top-down - this app supplies the
-person box and each joint is scored independently, so joints outside the
-frame read as low confidence. BlazePose owns its own crop and always emits a
-whole body, which suits a fully visible person but invents a lower body for
-someone truncated at a desk.
+fires on top-down views, so overhead cameras leave it off). The landmark
+model is RTMPose-m, which is top-down - this app supplies the person box and
+each joint is scored independently, so joints outside the frame read as low
+confidence rather than being invented.
 
 Everything above the wrist is solved from 2D rays plus known body lengths,
 never the pose model's own metric 3D (measured unusable per frame): the elbow
 is the elbow ray against a forearm-length sphere around the FUSED wrist, the
-shoulder chains onward from it, and the head takes its depth from the
-apparent ear separation. A calibrated wrist IMU still wins for the forearm
+shoulders take their depth from the calibrated shoulder width, and the head
+takes its depth from the apparent ear separation. A calibrated wrist IMU still wins for the forearm
 when present. Rigs with only overhead cameras solve arms client-side with
 Two-Bone IK from the palm transform.
 
@@ -122,7 +120,7 @@ Two-Bone IK from the palm transform.
   different pose model would have done better - that model's input is gone.
   Ticking "Also record raw camera frames" in the Timeline panel additionally
   writes the exact images the models consumed as JPEGs beside the recording,
-  which makes `MikanMediaPipe --replay-bodypose <file> [blazepose|rtmpose]`
+  which makes `MikanMediaPipe --replay-bodypose <file> [camera]`
   a real measurement (per-joint scores, 2D jitter, box source, inference
   cost) rather than a live impression. **This is video of your room**, which
   is why it defaults off and is a local choice; it costs roughly 3-6 MB per

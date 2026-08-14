@@ -20,7 +20,7 @@ MikanMediaPipe went from empty repo to a working multi-camera hand tracker betwe
 | extrinsic_calibration | Aug 10-11 | Charuco-board extrinsics, all cameras in one session | Kept |
 | (main) | Aug 11 | Depth A/B tool, marker-scale discovery, bone calibration | Kept |
 | seed_fix | Aug 12 | Cross-camera seeding instrumentation + fixes | Kept, seeding now unconditional |
-| body_pose | Aug 12-13 | BlazePose revived as an opt-in per-camera stage | In progress, awaiting live verification |
+| body_pose | Aug 12-14 | Opt-in per-camera body pose (elbows, shoulders, head) | Kept; landmark model swapped BlazePose -> RTMPose |
 
 ## 1. ONNX Runtime + DirectML instead of the MediaPipe framework
 
@@ -43,6 +43,10 @@ First, the elbow could not be re-solved on every fused frame: the pose models ru
 Second, confidence-from-measured-jitter has to be normalized by the sampling interval: the hands' plain-distance residual assumes a fixed rate, and applied to a variable ~10 Hz signal it mostly measured how long the gap was, scoring every elbow at 0.01. Dividing by dt squared turns it into an acceleration, which means the same thing at any cadence.
 
 Third, and the one that was actually causing the visible popping: anchoring the elbow to a forearm-length sphere around the wrist leaves a camera ray intersecting that sphere TWICE, roughly 400 mm apart, and we were choosing between them with the model's own elbow-versus-wrist depth. That sign flips on 28-42% of model frames because its magnitude (24-46 mm median) sits inside its own noise, so the elbow teleported at random. Raising a threshold on it does not help - even the top 5-19% of samples by magnitude still flip 10-17% of the time. Continuity decides it instead (the forearm cannot swing 400 mm between model results, giving 0-1% flips), with the model depth demoted to seeding the first solve and an independent shoulder-length check as a sustained-evidence escape hatch. The general lesson: when a geometric solve has a discrete ambiguity, resolve it with the strongest signal available, and prefer temporal continuity over a per-frame measurement whose noise is comparable to the quantity being measured.
+
+Then the model itself lost. Even with the elbow solve fixed, the landmarks under it were poor, and the reason was structural rather than tunable: BlazePose is holistic, deriving its own crop from a hip center and a "full body" point. A person truncated at a desk has no correct crop, so it fabricated a lower body and dragged the arms with it, while scoring the shoulders 0.9998 as they jittered 30-40 px. The landmark model was swapped for RTMPose-m (body7), which is top-down: this app supplies the person box, and each of the 17 COCO keypoints is scored independently, so joints outside the frame read as low confidence instead of being invented. Same frames, same session, the two measured: 99% of frames usable against 70%, elbow 2D step medians of 6.7 and 7.4 px against 53 and 74 px, nose 3.9 px against 23 px. BlazePose was then removed outright. Two things made that decision cheap. Raw frame recording (opt-in, off by default) preserves the model's actual input, so "would a different model have done better" became a replay measurement rather than an argument. And the box handed to the top-down model has to be built from the person detector's KEYPOINTS, not its own box, which is a face box - feeding that to RTMPose cropped the arms away.
+
+Learned: a confidence score is a statement about the model's own crop, not about the answer. When a model owns its region of interest, its assumptions about the scene are non-negotiable, and a scene that violates them cannot be fixed downstream.
 
 ## 3. Multi-camera fusion and the hand-identity wars
 

@@ -47,12 +47,10 @@ json bodyPoseToJson(const BodyPoseObservation& body)
 
 	json imagePoints= json::array();
 	json visibility= json::array();
-	json worldPoints= json::array();
 	for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
 	{
 		imagePoints.push_back(vec3ToJson(body.imagePoints[landmark]));
 		visibility.push_back(body.visibility[landmark]);
-		worldPoints.push_back(vec3ToJson(body.worldPoints[landmark]));
 	}
 	return {
 		{"valid", true},
@@ -62,7 +60,6 @@ json bodyPoseToJson(const BodyPoseObservation& body)
 		{"confidence", body.confidence},
 		{"imagePoints", imagePoints},
 		{"visibility", visibility},
-		{"worldPoints", worldPoints},
 	};
 }
 
@@ -196,15 +193,12 @@ void bodyPoseFromJson(const json& j, BodyPoseObservation& outBody)
 	outBody.confidence= j.value("confidence", 0.f);
 	const json& imagePoints= j.value("imagePoints", json::array());
 	const json& visibility= j.value("visibility", json::array());
-	const json& worldPoints= j.value("worldPoints", json::array());
 	for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
 	{
 		if (landmark < (int)imagePoints.size())
 			outBody.imagePoints[landmark]= vec3FromJson(imagePoints[landmark]);
 		if (landmark < (int)visibility.size())
 			outBody.visibility[landmark]= floatFromJson(visibility[landmark]);
-		if (landmark < (int)worldPoints.size())
-			outBody.worldPoints[landmark]= vec3FromJson(worldPoints[landmark]);
 	}
 }
 } // namespace TrackingJson

@@ -62,7 +62,7 @@ struct RecordedCameraInput
 	bool bHaveDepth= false;
 	std::array<HandDepthMeasurement, 2> depth;
 
-	// Body-pose observation from this camera's opt-in BlazePose stage. The
+	// Body-pose observation from this camera's opt-in body-pose stage. The
 	// stage runs upstream of this tap, so divider cadence (held re-emits) is
 	// baked in and replay never re-runs the pose models.
 	bool bHaveBodyPose= false;

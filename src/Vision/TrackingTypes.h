@@ -312,7 +312,7 @@ struct TrackingFrameResult
 	std::array<TrackedHand, 2> hands;
 	std::array<HandPose, 2> poses;
 
-	// Raw BlazePose observation from this camera's opt-in body-pose stage
+	// Raw landmark observation from this camera's opt-in body-pose stage
 	// (invalid on cameras without the stage). On the FUSED result this is
 	// unused; the solved outputs live on poses[] (forearm/shoulder) and head.
 	BodyPoseObservation body;

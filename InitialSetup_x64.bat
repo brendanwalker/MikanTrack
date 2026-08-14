@@ -115,10 +115,6 @@ echo "Downloading person detection model..."
 curl -L https://huggingface.co/opencv/opencv_zoo/resolve/main/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx --output person_detection.onnx
 IF %ERRORLEVEL% NEQ 0 goto model_failure
 
-echo "Downloading pose landmark model..."
-curl -L https://huggingface.co/opencv/opencv_zoo/resolve/main/models/pose_estimation_mediapipe/pose_estimation_mediapipe_2023mar.onnx --output pose_landmark.onnx
-IF %ERRORLEVEL% NEQ 0 goto model_failure
-
 popd
 
 :: ------------------------------------------------------- RTMPose body model

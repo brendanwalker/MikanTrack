@@ -545,18 +545,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 			if (bodyPose.enabled)
 			{
-				ImGui::SameLine();
-				ImGui::SetNextItemWidth(110.f);
-				const char* backendNames[]= {"BlazePose", "RTMPose"};
-				bChanged|= ImGui::Combo("model", &bodyPose.backend, backendNames, 2);
-				ImGui::SetItemTooltip(
-					"RTMPose is top-down: this app supplies the person box and\n"
-					"each joint is scored on its own, so joints outside the\n"
-					"frame read as low confidence.\n\n"
-					"BlazePose owns its own crop and always emits a whole body,\n"
-					"so a person truncated at a desk gets an invented lower\n"
-					"body that drags the arms with it.");
-
 				ImGui::SetNextItemWidth(110.f);
 				bChanged|= ImGui::SliderInt("divider", &bodyPose.poseFrameDivider, 1, 4);
 				ImGui::SetItemTooltip("Pose models run every Nth frame on this camera");
@@ -971,7 +959,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	if (ImGui::Checkbox("Show body landmarks", &bShowBodyPose))
 		previewPanel->setShowBodyPose(bShowBodyPose);
 	ImGui::SetItemTooltip(
-		"Draws the raw BlazePose skeleton on cameras running body pose.\n"
+		"Draws the raw body skeleton on cameras running body pose.\n"
 		"Landmarks below the solver's visibility gate are dimmed, and the\n"
 		"joints it consumes (shoulders, elbows, wrists) carry their\n"
 		"visibility - so a bad elbow can be traced to its source landmark.");

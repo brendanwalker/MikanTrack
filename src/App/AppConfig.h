@@ -157,8 +157,6 @@ struct RestAnglesConfig
 struct BodyPoseCameraConfig
 {
 	bool enabled= false;
-	// 0 = BlazePose, 1 = RTMPose (see eBodyPoseBackend)
-	int backend= 1;
 	// Pose models run every Nth frame on this camera
 	int poseFrameDivider= 2;
 	// Rebuild the region of interest from the image every Nth model frame,

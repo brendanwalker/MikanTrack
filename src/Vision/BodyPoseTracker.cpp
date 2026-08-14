@@ -6,9 +6,6 @@
 
 #include "Logger.h"
 
-// Below this the BlazePose result is discarded and the next model frame falls
-// back to person detection
-static constexpr float kPoseConfidenceThreshold= 0.5f;
 // Grow the box around the tracked keypoints. The model applies its own 1.25
 // padding on top; this only has to cover motion between model frames.
 static constexpr float kTrackedBoxExpansion= 1.15f;
@@ -17,8 +14,9 @@ static constexpr float kMinBoxSize= 24.f;
 
 // COCO 17 -> the 33-slot BlazePose layout, which stays the canonical index
 // space for observations so every downstream consumer (solver, overlay,
-// recordings, dumps) is backend-independent. Unmapped slots stay at zero
-// visibility rather than being invented.
+// recordings, dumps) is backend-independent - and so recordings made before
+// the backend swap still load. Slots this model does not fill are reported
+// through BodyPoseObservation::providedMask rather than being invented.
 static constexpr int k_cocoToPoseLandmark[COCO_KEYPOINT_COUNT]= {
 	0,  // nose
 	2,  // left eye
@@ -39,61 +37,33 @@ static constexpr int k_cocoToPoseLandmark[COCO_KEYPOINT_COUNT]= {
 	28, // right ankle
 };
 
-const char* bodyPoseBackendName(eBodyPoseBackend backend)
-{
-	switch (backend)
-	{
-	case eBodyPoseBackend::BlazePose:
-		return "BlazePose";
-	case eBodyPoseBackend::RtmPose:
-		return "RTMPose";
-	}
-	return "unknown";
-}
-
 bool BodyPoseTracker::load(const std::string& modelDir, const std::string& preferredEp,
 						   const BodyPoseTrackerConfig& config)
 {
-	m_config= config;
 	setConfig(config);
 
-	m_bLoaded= m_detector.load(modelDir + "/person_detection.onnx", preferredEp);
-	if (m_bLoaded)
-	{
-		m_bLoaded= config.backend == eBodyPoseBackend::RtmPose
-			? m_rtmPoseModel.load(modelDir + "/rtmpose_body.onnx", preferredEp)
-			: m_blazePoseModel.load(modelDir + "/pose_landmark.onnx", preferredEp);
-	}
+	m_bLoaded= m_detector.load(modelDir + "/person_detection.onnx", preferredEp) &&
+		m_landmarkModel.load(modelDir + "/rtmpose_body.onnx", preferredEp);
 
 	if (!m_bLoaded)
 	{
 		MIKAN_MT_LOG_WARNING("BodyPoseTracker::load")
-			<< "Body pose models missing or unloadable in " << modelDir << " for backend "
-			<< bodyPoseBackendName(config.backend)
+			<< "Body pose models missing or unloadable in " << modelDir
 			<< " - body pose stage disabled (re-run InitialSetup_x64.bat)";
 	}
 	reset();
 	return m_bLoaded;
 }
 
-const char* BodyPoseTracker::activeEp() const
-{
-	return m_config.backend == eBodyPoseBackend::RtmPose ? m_rtmPoseModel.activeEp()
-														 : m_blazePoseModel.activeEp();
-}
-
 void BodyPoseTracker::setConfig(const BodyPoseTrackerConfig& config)
 {
-	const eBodyPoseBackend loadedBackend= m_config.backend;
 	m_config= config;
-	m_config.backend= loadedBackend; // a backend change is handled by reloading
 	m_config.frameDivider= std::max(config.frameDivider, 1);
 	m_config.detectorIntervalFrames= std::max(config.detectorIntervalFrames, 1);
 }
 
 void BodyPoseTracker::reset()
 {
-	m_bRoiTracked= false;
 	m_bBoxTracked= false;
 	m_lastObservation= BodyPoseObservation();
 	m_frameIndex= 0;
@@ -162,115 +132,6 @@ eBodyBoxSource BodyPoseTracker::acquireBox(const cv::Mat& bgrFrame, bool bForceD
 	return eBodyBoxSource::FullFrame;
 }
 
-bool BodyPoseTracker::runRtmPose(const cv::Mat& bgrFrame, bool bForceDetect,
-								 BodyPoseObservation& outObservation)
-{
-	glm::vec2 boxMin(0.f);
-	glm::vec2 boxMax(0.f);
-	const eBodyBoxSource boxSource= acquireBox(bgrFrame, bForceDetect, boxMin, boxMax);
-	if (boxSource == eBodyBoxSource::None)
-		return false;
-
-	m_rtmPoseModel.estimate(bgrFrame, boxMin, boxMax, m_rtmPoseResult);
-	if (!m_rtmPoseResult.valid)
-	{
-		m_bBoxTracked= false;
-		return false;
-	}
-
-	// Next frame's box is the confident keypoints' extent. No full-body
-	// assumption is involved, so a truncated subject simply produces a
-	// smaller box instead of a fabricated one.
-	glm::vec2 trackedMin(FLT_MAX);
-	glm::vec2 trackedMax(-FLT_MAX);
-	int confidentCount= 0;
-	for (int keypoint= 0; keypoint < COCO_KEYPOINT_COUNT; ++keypoint)
-	{
-		if (m_rtmPoseResult.scores[keypoint] < m_config.keypointScoreThreshold)
-			continue;
-		trackedMin= glm::min(trackedMin, m_rtmPoseResult.points[keypoint]);
-		trackedMax= glm::max(trackedMax, m_rtmPoseResult.points[keypoint]);
-		confidentCount++;
-	}
-
-	if (confidentCount >= 3 && (trackedMax.x - trackedMin.x) >= kMinBoxSize &&
-		(trackedMax.y - trackedMin.y) >= kMinBoxSize)
-	{
-		const glm::vec2 boxCenter= (trackedMin + trackedMax) * 0.5f;
-		const glm::vec2 halfExtent= (trackedMax - trackedMin) * 0.5f * kTrackedBoxExpansion;
-		m_trackedBoxMin= boxCenter - halfExtent;
-		m_trackedBoxMax= boxCenter + halfExtent;
-		m_bBoxTracked= true;
-	}
-	else
-	{
-		m_bBoxTracked= false;
-	}
-
-	outObservation.valid= true;
-	outObservation.boxSource= boxSource;
-	// SimCC peaks are not probabilities; they are reported as-is and clamped
-	// so downstream visibility gates keep their [0,1] meaning
-	float scoreSum= 0.f;
-	for (int keypoint= 0; keypoint < COCO_KEYPOINT_COUNT; ++keypoint)
-	{
-		const int landmark= k_cocoToPoseLandmark[keypoint];
-		const float score= std::clamp(m_rtmPoseResult.scores[keypoint], 0.f, 1.f);
-		outObservation.imagePoints[landmark]= glm::vec3(m_rtmPoseResult.points[keypoint], 0.f);
-		outObservation.visibility[landmark]= score;
-		outObservation.providedMask|= 1u << landmark;
-		scoreSum+= score;
-	}
-	outObservation.confidence= scoreSum / (float)COCO_KEYPOINT_COUNT;
-	return true;
-}
-
-bool BodyPoseTracker::runBlazePose(const cv::Mat& bgrFrame, bool bForceDetect,
-								   BodyPoseObservation& outObservation)
-{
-	PoseRoi roi;
-	bool bHaveRoi= false;
-	if (!bForceDetect && m_bRoiTracked)
-	{
-		roi= m_trackedRoi;
-		bHaveRoi= true;
-	}
-	else
-	{
-		m_detector.detect(bgrFrame, m_detections);
-		if (!m_detections.empty())
-		{
-			m_lastDetectModelFrame= m_modelFrameIndex;
-			roi= PoseRoi::fromPersonDetection(m_detections[0]);
-			bHaveRoi= true;
-		}
-	}
-	if (!bHaveRoi)
-	{
-		m_bRoiTracked= false;
-		return false;
-	}
-
-	m_blazePoseModel.estimate(bgrFrame, roi, m_blazePoseResult);
-	if (!m_blazePoseResult.valid || m_blazePoseResult.confidence < kPoseConfidenceThreshold)
-	{
-		m_bRoiTracked= false;
-		return false;
-	}
-
-	m_trackedRoi.hipCenter= m_blazePoseResult.auxRoiCenter;
-	m_trackedRoi.fullBodyPoint= m_blazePoseResult.auxRoiScalePoint;
-	m_bRoiTracked= true;
-
-	outObservation.valid= true;
-	outObservation.confidence= m_blazePoseResult.confidence;
-	outObservation.imagePoints= m_blazePoseResult.imagePoints;
-	outObservation.visibility= m_blazePoseResult.visibility;
-	outObservation.worldPoints= m_blazePoseResult.worldPoints;
-	outObservation.providedMask= (1u << POSE_LANDMARK_COUNT) - 1u; // the whole layout
-	return true;
-}
-
 void BodyPoseTracker::process(const cv::Mat& bgrFrame, BodyPoseObservation& outObservation)
 {
 	const int64_t frameIndex= m_frameIndex++;
@@ -286,18 +147,70 @@ void BodyPoseTracker::process(const cv::Mat& bgrFrame, BodyPoseObservation& outO
 	outObservation= BodyPoseObservation();
 	if (m_bLoaded && !bgrFrame.empty())
 	{
-		// Drift guard: periodically rebuild the region of interest from the
-		// image rather than from the previous landmarks, whatever the model
-		// claims about its own confidence
+		// Drift guard: periodically rebuild the person box from the image
+		// rather than from the previous keypoints, whatever the model claims
+		// about its own confidence
 		const bool bForceDetect=
 			(m_modelFrameIndex - m_lastDetectModelFrame) >= (int64_t)m_config.detectorIntervalFrames;
 
-		const bool bProduced= m_config.backend == eBodyPoseBackend::RtmPose
-			? runRtmPose(bgrFrame, bForceDetect, outObservation)
-			: runBlazePose(bgrFrame, bForceDetect, outObservation);
+		glm::vec2 boxMin(0.f);
+		glm::vec2 boxMax(0.f);
+		const eBodyBoxSource boxSource= acquireBox(bgrFrame, bForceDetect, boxMin, boxMax);
 
-		if (bProduced)
+		m_landmarkModel.estimate(bgrFrame, boxMin, boxMax, m_landmarkResult);
+		if (m_landmarkResult.valid)
+		{
+			// Next frame's box is the confident keypoints' extent. No
+			// full-body assumption is involved, so a truncated subject simply
+			// produces a smaller box instead of a fabricated one.
+			glm::vec2 trackedMin(FLT_MAX);
+			glm::vec2 trackedMax(-FLT_MAX);
+			int confidentCount= 0;
+			for (int keypoint= 0; keypoint < COCO_KEYPOINT_COUNT; ++keypoint)
+			{
+				if (m_landmarkResult.scores[keypoint] < m_config.keypointScoreThreshold)
+					continue;
+				trackedMin= glm::min(trackedMin, m_landmarkResult.points[keypoint]);
+				trackedMax= glm::max(trackedMax, m_landmarkResult.points[keypoint]);
+				confidentCount++;
+			}
+
+			if (confidentCount >= 3 && (trackedMax.x - trackedMin.x) >= kMinBoxSize &&
+				(trackedMax.y - trackedMin.y) >= kMinBoxSize)
+			{
+				const glm::vec2 boxCenter= (trackedMin + trackedMax) * 0.5f;
+				const glm::vec2 halfExtent= (trackedMax - trackedMin) * 0.5f * kTrackedBoxExpansion;
+				m_trackedBoxMin= boxCenter - halfExtent;
+				m_trackedBoxMax= boxCenter + halfExtent;
+				m_bBoxTracked= true;
+			}
+			else
+			{
+				m_bBoxTracked= false;
+			}
+
+			outObservation.valid= true;
+			outObservation.boxSource= boxSource;
 			outObservation.modelFrameIndex= m_modelFrameIndex;
+
+			// SimCC peaks are not probabilities; they are reported as-is and
+			// clamped so downstream visibility gates keep their [0,1] meaning
+			float scoreSum= 0.f;
+			for (int keypoint= 0; keypoint < COCO_KEYPOINT_COUNT; ++keypoint)
+			{
+				const int landmark= k_cocoToPoseLandmark[keypoint];
+				const float score= std::clamp(m_landmarkResult.scores[keypoint], 0.f, 1.f);
+				outObservation.imagePoints[landmark]= glm::vec3(m_landmarkResult.points[keypoint], 0.f);
+				outObservation.visibility[landmark]= score;
+				outObservation.providedMask|= 1u << landmark;
+				scoreSum+= score;
+			}
+			outObservation.confidence= scoreSum / (float)COCO_KEYPOINT_COUNT;
+		}
+		else
+		{
+			m_bBoxTracked= false;
+		}
 
 		m_modelFrameIndex++;
 	}

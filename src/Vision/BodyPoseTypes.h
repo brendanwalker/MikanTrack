@@ -45,10 +45,10 @@ constexpr int POSE_CONNECTIONS[POSE_CONNECTION_COUNT][2]= {
 	{24, 26}, {26, 28}, {28, 30}, {28, 32}, {30, 32},
 };
 
-// One camera's BlazePose result for a frame: the per-camera body-pose stage
+// One camera's body-pose result for a frame: the per-camera body-pose stage
 // fills it, and it rides TrackingFrameResult through the fusion candidate
 // mirrors, recordings, replay, and diagnostics. Landmark sides are
-// body-semantic (BlazePose labels the person's own left/right).
+// body-semantic (they name the person's own left/right).
 // Where the person box for a model frame came from. Recorded because a
 // top-down backend is only as good as its box, and "the detector missed" and
 // "the tracked box drifted" fail identically from the outside.
@@ -91,7 +91,4 @@ struct BodyPoseObservation
 
 	// sigmoid [0,1]: within frame and not occluded
 	std::array<float, POSE_LANDMARK_COUNT> visibility{};
-
-	// Meters, hip-centered, camera-oriented (de-rotated into frame orientation)
-	std::array<glm::vec3, POSE_LANDMARK_COUNT> worldPoints{};
 };
