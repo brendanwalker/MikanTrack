@@ -207,10 +207,54 @@ void BodyPoseSolver::solveFromObservation(
 	};
 	auto isVisible= [&](int landmarkIndex) { return body.visibility[landmarkIndex] >= kMinVisibility; };
 
+	// -- Shoulders, from their own two rays plus the CALIBRATED separation --
+	// Solved FIRST and independently of the arms. Chaining them off the elbow
+	// instead made them useless as a check on it: the shoulder then agrees
+	// with whichever elbow was picked, so a wrong elbow simply dragged the
+	// shoulder along and produced an arm bent the wrong way. This needs the
+	// separation to be MEASURED - the same construction with an anatomical
+	// guess put shoulders 0.8 m too far away - which is what the body
+	// measurement wizard is for.
+	{
+		const int leftIndex= (int)ePoseLandmark::LEFT_SHOULDER;
+		const int rightIndex= (int)ePoseLandmark::RIGHT_SHOULDER;
+		JitterTracker& leftTracker= m_jitter[JointShoulderLeft];
+		JitterTracker& rightTracker= m_jitter[JointShoulderRight];
+
+		const glm::vec3 leftRay= pixelRay(leftIndex);
+		const glm::vec3 rightRay= pixelRay(rightIndex);
+		const float depth= isVisible(leftIndex) && isVisible(rightIndex)
+			? depthFromKnownSeparation(leftRay, rightRay, dimensions.shoulderWidthMeters)
+			: 0.f;
+
+		if (depth > 0.f)
+		{
+			const glm::vec3 shoulders[2]= {cameraPos + leftRay * depth, cameraPos + rightRay * depth};
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				JitterTracker& tracker= sideIndex == (int)eHandSide::Left ? leftTracker : rightTracker;
+				ArmEstimate& arm= m_arms[sideIndex];
+				const float stability= tracker.update(shoulders[sideIndex], dtSeconds, kAccelReference);
+
+				arm.bHasShoulder= true;
+				arm.shoulderPositionWorld= m_shoulderFilter[sideIndex].filter(shoulders[sideIndex], dtSeconds);
+				arm.shoulderConfidence= stability;
+			}
+		}
+		else
+		{
+			// One shoulder unseen: the pair no longer fixes a depth. The held
+			// shoulders stay, since they are torso-fixed.
+			leftTracker.invalidate();
+			rightTracker.invalidate();
+		}
+	}
+
 	// -- Elbows -> forearm directions --
-	// Solved BEFORE the shoulders, which hang off them. The root choice reads
-	// the PREVIOUS model frame's shoulder, which is fine because the torso
-	// barely moves between them, and it keeps the two solves acyclic.
+	// The shoulders above are now an INDEPENDENT arbiter for the elbow's
+	// depth, which the 2D alone cannot resolve: the two candidates sit up to
+	// half a metre apart, and only one of them is an upper arm from the
+	// shoulder.
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		const int elbowIndex= sideIndex == (int)eHandSide::Left
@@ -258,34 +302,41 @@ void BodyPoseSolver::solveFromObservation(
 		}
 		else
 		{
-			// How far a candidate elbow is from being reachable from the
-			// shoulder. Only the shoulder's RAY is used, never a shoulder
-			// position: the shoulder is solved by chaining off this very
-			// elbow, so its position agrees with whichever root was picked
-			// and cannot arbitrate. The ray does not depend on the elbow at
-			// all, and a candidate lying farther from it than one upper arm
-			// is simply unreachable, whatever the shoulder's depth.
-			const glm::vec3 shoulderRay= pixelRay(shoulderIndex);
-			auto reachViolation= [&](int candidate) -> float {
-				if (!isVisible(shoulderIndex))
-					return 0.f;
-				const glm::vec3 toCandidate= candidates[candidate] - cameraPos;
-				const glm::vec3 alongRay= shoulderRay * glm::dot(toCandidate, shoulderRay);
-				const float distanceToRay= glm::length(toCandidate - alongRay);
-				return std::max(distanceToRay - dimensions.upperArmLengthMeters, 0.f);
+			// The upper arm has to reach: an elbow at the right depth sits
+			// one upper-arm length from the shoulder, and the wrong candidate
+			// typically misses by tens of centimetres. This only means
+			// anything because the shoulder above was solved WITHOUT the
+			// elbow - chained off it, the shoulder agreed with whichever
+			// candidate was picked and could never contradict it.
+			auto upperArmError= [&](int candidate) -> float {
+				return fabsf(glm::length(candidates[candidate] - arm.shoulderPositionWorld) -
+							 dimensions.upperArmLengthMeters);
 			};
 
-			if (arm.bHasForearm)
+			if (!arm.bHasShoulder)
+			{
+				// Nothing to measure against: continuity if there is any,
+				// else the desk prior - hands reach toward the camera, so the
+				// elbow trails behind the wrist.
+				chosen= 1;
+				if (arm.bHasForearm)
+				{
+					const glm::vec3 predicted= wristWorld + arm.forearmDirWorld * forearmLength;
+					chosen= glm::length(candidates[0] - predicted) <= glm::length(candidates[1] - predicted)
+						? 0 : 1;
+				}
+			}
+			else if (arm.bHasForearm)
 			{
 				const glm::vec3 predicted= wristWorld + arm.forearmDirWorld * forearmLength;
 				chosen= glm::length(candidates[0] - predicted) <= glm::length(candidates[1] - predicted)
 					? 0 : 1;
 
-				// Sustained unreachability escapes a wrong lock. Individually
-				// this test is noisy (the 2D shoulder wanders), so it has to
-				// hold for several consecutive model frames.
+				// Sustained disagreement escapes a wrong lock. One frame is
+				// not enough: the 2D shoulder wanders, and frame to frame
+				// continuity is the more reliable signal.
 				const int other= 1 - chosen;
-				if (reachViolation(other) + kShoulderLengthMarginM < reachViolation(chosen))
+				if (upperArmError(other) + kShoulderLengthMarginM < upperArmError(chosen))
 				{
 					arm.rootDisagreeStreak++;
 					if (arm.rootDisagreeStreak >= kRootOverrideFrames)
@@ -301,17 +352,7 @@ void BodyPoseSolver::solveFromObservation(
 			}
 			else
 			{
-				const float violation[2]= {reachViolation(0), reachViolation(1)};
-				if (violation[0] != violation[1])
-				{
-					chosen= violation[0] < violation[1] ? 0 : 1;
-				}
-				else
-				{
-					// Both equally reachable. Behind the wrist is the better
-					// prior at a desk: the hands reach toward the camera.
-					chosen= 1;
-				}
+				chosen= upperArmError(0) <= upperArmError(1) ? 0 : 1;
 			}
 		}
 		const glm::vec3 elbowWorld= candidates[chosen];
@@ -327,51 +368,6 @@ void BodyPoseSolver::solveFromObservation(
 			? glm::normalize(filteredDir) : rawDir;
 		arm.bHasForearm= true;
 		arm.forearmConfidence= pose.confidence * stability;
-	}
-
-	// -- Shoulders --
-	// Chained off the solved elbow rather than placed by the shoulder pair's
-	// apparent width. The width route floats free of anything measured, and
-	// the landmark shoulder points sit well inside the anatomical shoulder
-	// joints - measured on a live session, assuming a 0.40m biacromial width
-	// put the shoulders 0.8m too far away, giving a 0.77m upper arm. Chaining
-	// anchors the shoulder to the fused wrist, the best-measured point in the
-	// system, through a bone length that IS the thing being assumed.
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const int shoulderIndex= sideIndex == (int)eHandSide::Left
-			? (int)ePoseLandmark::LEFT_SHOULDER : (int)ePoseLandmark::RIGHT_SHOULDER;
-		JitterTracker& tracker= m_jitter[sideIndex == (int)eHandSide::Left
-			? JointShoulderLeft : JointShoulderRight];
-		ArmEstimate& arm= m_arms[sideIndex];
-
-		if (!isVisible(shoulderIndex) || !arm.bHasForearm || !fused.poses[sideIndex].hasWorldPose)
-		{
-			// The held shoulder stays: it is torso-fixed, so the last solved
-			// position remains the best estimate until an elbow returns
-			tracker.invalidate();
-			continue;
-		}
-
-		const glm::vec3 elbowWorld=
-			fused.poses[sideIndex].getWristPositionWorld() +
-			arm.forearmDirWorld * dimensions.forearmLengthMeters;
-
-		RaySphereHit hit;
-		if (!intersectRaySphere(cameraPos, pixelRay(shoulderIndex), elbowWorld,
-								dimensions.upperArmLengthMeters, hit))
-		{
-			tracker.invalidate();
-			continue;
-		}
-		// The shoulder is the root farther from the camera: an arm reaches
-		// toward what it works on, so the elbow leads the shoulder
-		const glm::vec3 shoulderWorld= hit.bFarValid ? hit.farPoint : hit.nearPoint;
-
-		const float stability= tracker.update(shoulderWorld, dtSeconds, kAccelReference);
-		arm.bHasShoulder= true;
-		arm.shoulderPositionWorld= m_shoulderFilter[sideIndex].filter(shoulderWorld, dtSeconds);
-		arm.shoulderConfidence= fused.poses[sideIndex].confidence * stability;
 	}
 
 	// -- Head, from the two ear rays plus the known head width --

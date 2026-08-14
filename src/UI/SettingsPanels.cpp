@@ -578,8 +578,43 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"Body proportions. Only lengths are assumed - every direction is "
 			"measured - but they set the scale of the estimates, so correcting "
 			"them for your own body is worth a minute.");
-		bChanged|= ImGui::SliderFloat("Upper arm", &config->body.upperArmLengthMeters, 0.20f, 0.45f, "%.2f m");
-		ImGui::SetItemTooltip("Shoulder to elbow. Decides which of the two elbow solutions is real.");
+
+		if (ImGui::Button("Measure My Body...", ImVec2(-1, 0)))
+			panelState.bLaunchBodyCalibrationWizard= true;
+		ImGui::SetItemTooltip(
+			"Measures these four lengths against your own body, using the fused\n"
+			"wrists as the ruler.\n\n"
+			"They are NOT anatomical numbers: they are distances between the\n"
+			"pose model's landmarks, which sit inside your real joints by an\n"
+			"amount that differs per person and per model. A guessed shoulder\n"
+			"width put a measured shoulder 0.8 m too far away.");
+		bChanged|=
+			ImGui::Checkbox("Upper arm from shoulder width", &config->body.bDeriveUpperArmFromShoulderWidth);
+		ImGui::SetItemTooltip(
+			"Take the upper arm as a multiple of the shoulder width instead of\n"
+			"measuring it. Measuring it needs the arm straight and square to the\n"
+			"camera, which is hard to hold at a desk and reads 20%% short when\n"
+			"missed - and a short upper arm makes the elbow bend the wrong way.\n"
+			"Proportions are stable enough that a multiple of a width that IS\n"
+			"easy to measure wins.");
+		if (config->body.bDeriveUpperArmFromShoulderWidth)
+		{
+			bChanged|= ImGui::SliderFloat("Upper arm ratio", &config->body.upperArmPerShoulderWidth, 0.80f,
+										  1.40f, "%.2f x shoulders");
+			ImGui::SetItemTooltip(
+				"NOT the anatomical ratio: the model's shoulder points sit inside\n"
+				"your real joints (measured at ~0.74 of a biacromial breadth), so\n"
+				"the familiar 'arm is about 1.5 shoulder widths' becomes ~2.0 of\n"
+				"THIS width, and the upper arm alone lands near 1.05.");
+			ImGui::TextDisabled("   = %.1f cm upper arm", config->body.shoulderWidthMeters *
+															 config->body.upperArmPerShoulderWidth * 100.f);
+		}
+		else
+		{
+			bChanged|= ImGui::SliderFloat("Upper arm", &config->body.upperArmLengthMeters, 0.20f, 0.45f,
+										  "%.2f m");
+			ImGui::SetItemTooltip("Shoulder to elbow. Decides which of the two elbow solutions is real.");
+		}
 		bChanged|= ImGui::SliderFloat("Shoulder width", &config->body.shoulderWidthMeters, 0.25f, 0.60f, "%.2f m");
 		ImGui::SetItemTooltip("Between the shoulder joints. Sets the shoulders' distance from the camera.");
 		bChanged|= ImGui::SliderFloat("Head width", &config->body.headWidthMeters, 0.10f, 0.22f, "%.2f m");

@@ -26,6 +26,7 @@ struct TrackingPanelState
 	// consumes and clears it (the mounting calibration is a multi-step guided
 	// flow, not something a panel button can drive)
 	bool bLaunchMountingWizard= false;
+	bool bLaunchBodyCalibrationWizard= false;
 
 	// UI smoothing for the image-quality readout: the per-frame values are
 	// twitchy at camera rate, so the panel shows a ~1s EMA (the dump keeps the

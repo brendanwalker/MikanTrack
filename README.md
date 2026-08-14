@@ -55,6 +55,19 @@ Two-Bone IK from the palm transform.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera
+- **Body measurement wizard** (Tracking panel -> Measure My Body): the elbow,
+  shoulder and head estimates rest on lengths that are NOT anatomical - they
+  are distances between the pose model's own landmarks, which sit inside the
+  real joints by an amount that varies per person and per model. Raise ONE hand
+  beside your shoulder: that puts a metric wrist at roughly the depth of your
+  torso, and the fused wrists (the only metric, world-anchored points, measured
+  by the other cameras) become the ruler for the shoulder and head widths. A
+  second step turns the head, which swings the nose's forward offset into the
+  image where it can be measured. Only WIDTHS are measured; the upper arm is
+  taken as a multiple of the shoulder width, because measuring it directly
+  needs the arm straight and square to the camera - a pose that is hard to hold
+  at a desk and reads 20% short when missed, which is enough to make the elbow
+  bend the wrong way.
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)
 - **Charuco extrinsics** wizard: the SAME printed charuco board defines the
   tracking world - its center is the origin, and the FORWARD/RIGHT labels on

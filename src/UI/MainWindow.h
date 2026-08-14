@@ -12,6 +12,7 @@ class DevicePanel;
 class ExtrinsicsWizard;
 class IntrinsicsWizard;
 class MountingWizard;
+class BodyCalibrationWizard;
 class Scene3dPanel;
 class TimelinePanel;
 class VideoPreviewPanel;
@@ -44,6 +45,7 @@ private:
 	std::unique_ptr<IntrinsicsWizard> m_intrinsicsWizard;
 	std::unique_ptr<ExtrinsicsWizard> m_extrinsicsWizard;
 	std::unique_ptr<MountingWizard> m_mountingWizard;
+	std::unique_ptr<BodyCalibrationWizard> m_bodyCalibrationWizard;
 	std::unique_ptr<TimelinePanel> m_timelinePanel;
 
 	// Latest per-camera previews + the fused result (kept between updates so

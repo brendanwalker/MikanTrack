@@ -130,41 +130,30 @@ static int runBodyPoseTest(const TestArgs&)
 			  "parallel rays report no depth");
 	}
 
-	// (b) Shoulder chained off the measured wrist: wrist -> elbow (one
-	// forearm) -> shoulder (one upper arm), each step a ray against a sphere.
-	// Anchoring to the fused wrist is what keeps the arm anatomically sized;
-	// placing the shoulder by its landmark separation instead drifted it 0.8m
-	// away on real data, because the landmark shoulders sit well inside the
-	// anatomical joints.
+	// (b) Shoulders come from their own two rays plus the CALIBRATED
+	// separation, independent of the arms and of any tracked hand. They have
+	// to be independent: chained off the elbow they agreed with whichever
+	// elbow candidate was chosen and could never contradict a wrong one.
+	//
+	// This construction is only sound because the separation is MEASURED. The
+	// same code with an anatomical guess put shoulders 0.8 m too far away,
+	// which is what the body measurement wizard exists to prevent.
 	{
 		TestRig rig;
 		TrackingFrameResult fused;
 		fused.timestampMs= 1000.0;
-		const glm::vec3 wristWorld(0.10f, 0.05f, 0.90f);
-		const glm::vec3 elbowTrue=
-			wristWorld + glm::normalize(glm::vec3(0.2f, 0.1f, 0.9f)) * dims.forearmLengthMeters;
-		const glm::vec3 shoulderTrue=
-			elbowTrue + glm::normalize(glm::vec3(0.1f, -0.3f, 0.9f)) * dims.upperArmLengthMeters;
-		setPoseWithWrist(fused.poses[0], 0, wristWorld, 0.8f);
-		rig.setLandmark(ePoseLandmark::LEFT_ELBOW, elbowTrue);
-		rig.setLandmark(ePoseLandmark::LEFT_SHOULDER, shoulderTrue);
+		glm::vec3 leftShoulder, rightShoulder;
+		placeSymmetricPair(dims.shoulderWidthMeters, 1.10f, -0.2f, leftShoulder, rightShoulder);
+		rig.setLandmark(ePoseLandmark::LEFT_SHOULDER, leftShoulder);
+		rig.setLandmark(ePoseLandmark::RIGHT_SHOULDER, rightShoulder);
 
 		BodyPoseSolver solver;
 		solver.solve(rig.candidates, dims, fused);
 
-		check(fused.poses[0].hasShoulder, "shoulder solved");
-		check(nearlyEqual(fused.poses[0].shoulderPositionWorld, shoulderTrue, 2e-3f), "shoulder exact");
-		check(fabsf(glm::length(fused.poses[0].shoulderPositionWorld -
-							   fused.poses[0].getElbowPositionWorld(dims.forearmLengthMeters)) -
-					dims.upperArmLengthMeters) < 2e-3f,
-			  "upper arm comes out the configured length");
-
-		// The chain starts at the wrist, so no tracked hand means no shoulder
-		TrackingFrameResult handless;
-		handless.timestampMs= 1000.0;
-		BodyPoseSolver handlessSolver;
-		handlessSolver.solve(rig.candidates, dims, handless);
-		check(!handless.poses[0].hasShoulder, "no tracked hand leaves the shoulder unsolved");
+		check(fused.poses[0].hasShoulder && fused.poses[1].hasShoulder,
+			  "shoulders solved with no tracked hand");
+		check(nearlyEqual(fused.poses[0].shoulderPositionWorld, leftShoulder, 1e-3f), "left shoulder exact");
+		check(nearlyEqual(fused.poses[1].shoulderPositionWorld, rightShoulder, 1e-3f), "right shoulder exact");
 	}
 
 	// (c) Elbow: ray through the 2D landmark intersected with the
@@ -403,8 +392,18 @@ static int runBodyPoseTest(const TestArgs&)
 		solver.solve(rig.candidates, dims, fused);
 		check(!fused.poses[0].hasForearmPose, "low elbow visibility withholds the forearm");
 		check(!fused.head.valid, "low ear visibility withholds the head");
-		// The shoulder chains off the elbow, so losing the elbow loses it too
-		check(!fused.poses[0].hasShoulder, "a gated elbow also withholds the shoulder it carries");
+		// The shoulders stand on their own, so an elbow gate cannot take them
+		check(fused.poses[0].hasShoulder, "shoulders survive an unrelated gate");
+
+		// One shoulder unseen removes the pair that fixes the depth
+		TestRig soloRig;
+		TrackingFrameResult soloFused;
+		soloFused.timestampMs= 1000.0;
+		soloRig.setShoulders(dims.shoulderWidthMeters, 1.10f);
+		soloRig.body().visibility[(int)ePoseLandmark::RIGHT_SHOULDER]= 0.1f;
+		BodyPoseSolver soloSolver;
+		soloSolver.solve(soloRig.candidates, dims, soloFused);
+		check(!soloFused.poses[0].hasShoulder, "a single visible shoulder fixes no depth");
 	}
 
 	if (failures == 0)

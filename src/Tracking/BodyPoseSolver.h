@@ -16,7 +16,11 @@
 struct BodyDimensions
 {
 	float forearmLengthMeters= 0.25f;
+	// Usually derived from the shoulder width rather than measured (see
+	// BodyConfig): a length that needs a hard pose loses to a multiple of a
+	// width that does not.
 	float upperArmLengthMeters= 0.30f;
+	float upperArmPerShoulderWidth= 1.05f;
 	float shoulderWidthMeters= 0.40f;
 	float headWidthMeters= 0.15f;
 	// Ear-axis midpoint to nose tip. Fixes the nose's depth, which is what

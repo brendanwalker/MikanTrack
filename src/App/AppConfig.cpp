@@ -250,7 +250,9 @@ BodyDimensions makeBodyDimensions(const AppConfig& config)
 {
 	BodyDimensions dimensions;
 	dimensions.forearmLengthMeters= config.body.forearmLengthMeters;
-	dimensions.upperArmLengthMeters= config.body.upperArmLengthMeters;
+	dimensions.upperArmLengthMeters= config.body.bDeriveUpperArmFromShoulderWidth
+		? config.body.shoulderWidthMeters * config.body.upperArmPerShoulderWidth
+		: config.body.upperArmLengthMeters;
 	dimensions.shoulderWidthMeters= config.body.shoulderWidthMeters;
 	dimensions.headWidthMeters= config.body.headWidthMeters;
 	dimensions.noseForwardMeters= config.body.noseForwardMeters;
@@ -428,6 +430,8 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.body.forearmLengthMeters=
 		bd.value("forearmLengthMeters", im.value("forearmLengthMeters", 0.25f));
 	config.body.upperArmLengthMeters= bd.value("upperArmLengthMeters", 0.30f);
+	config.body.bDeriveUpperArmFromShoulderWidth= bd.value("deriveUpperArmFromShoulderWidth", true);
+	config.body.upperArmPerShoulderWidth= bd.value("upperArmPerShoulderWidth", 1.05f);
 	config.body.shoulderWidthMeters= bd.value("shoulderWidthMeters", 0.40f);
 	config.body.headWidthMeters= bd.value("headWidthMeters", 0.15f);
 	config.body.noseForwardMeters= bd.value("noseForwardMeters", 0.11f);
@@ -522,6 +526,8 @@ std::string AppConfig::toJsonString() const
 	j["body"]= {
 		{"forearmLengthMeters", body.forearmLengthMeters},
 		{"upperArmLengthMeters", body.upperArmLengthMeters},
+		{"deriveUpperArmFromShoulderWidth", body.bDeriveUpperArmFromShoulderWidth},
+		{"upperArmPerShoulderWidth", body.upperArmPerShoulderWidth},
 		{"shoulderWidthMeters", body.shoulderWidthMeters},
 		{"headWidthMeters", body.headWidthMeters},
 		{"noseForwardMeters", body.noseForwardMeters},

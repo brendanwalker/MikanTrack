@@ -205,6 +205,19 @@ struct BodyConfig
 	// Elbow-to-shoulder length. Only disambiguates which of the two
 	// ray-sphere elbow solutions is real; it never places a joint by itself.
 	float upperArmLengthMeters= 0.30f;
+	// Derive the upper arm from the shoulder width instead of measuring it.
+	// Measuring it needs the arm held straight and square to the camera,
+	// which is hard to hit at a desk and wrong by 20% when missed - and a
+	// wrong upper arm makes the elbow solve pick the wrong bend. Body
+	// proportions are stable enough that a multiple of a width that IS easy
+	// to measure beats a length that is not.
+	bool bDeriveUpperArmFromShoulderWidth= true;
+	// Upper arm as a multiple of the LANDMARK shoulder width. Not the
+	// anatomical ratio: the model's shoulder points sit inside the real
+	// joints (measured at ~0.74 of a biacromial breadth), so the familiar
+	// "arm is about 1.5 shoulder widths" becomes ~2.0 of THIS width, and the
+	// upper arm alone lands near 1.05.
+	float upperArmPerShoulderWidth= 1.05f;
 	// Distance between the shoulder joints. With both shoulder rays known,
 	// this fixes their depth without the pose model's own metric guess, which
 	// measured unusable per frame (its forearm length swung nearly 3x within
