@@ -116,6 +116,9 @@ json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
 			{"triVetoed", cluster.triVetoed},
 			{"triResidualRmsPx", cluster.triResidualRmsPx},
 			{"triResidualMaxPx", cluster.triResidualMaxPx},
+			{"triCameraA", cluster.triCameraA},
+			{"triCameraB", cluster.triCameraB},
+			{"triParallaxDeg", cluster.triParallaxDeg},
 			{"affinity", affinity},
 			{"observations", observations},
 		});
@@ -188,7 +191,7 @@ void bodyPoseFromJson(const json& j, BodyPoseObservation& outBody)
 	outBody.valid= true;
 	outBody.modelFrameIndex= j.value("modelFrameIndex", (int64_t)-1);
 	// Recordings predating the mask carry the full 33-slot BlazePose layout
-	outBody.providedMask= j.value("providedMask", (1u << POSE_LANDMARK_COUNT) - 1u);
+	outBody.providedMask= j.value("providedMask", (1ull << POSE_LANDMARK_COUNT) - 1ull);
 	outBody.boxSource= (eBodyBoxSource)j.value("boxSource", (int)eBodyBoxSource::None);
 	outBody.confidence= j.value("confidence", 0.f);
 	const json& imagePoints= j.value("imagePoints", json::array());

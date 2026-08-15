@@ -83,10 +83,13 @@ struct BodyPoseObservation
 	// different topology (RTMPose emits COCO's 17) leaves the rest untouched
 	// at the image origin - and an overlay that drew them would pin a phantom
 	// landmark in the corner of the frame.
-	uint32_t providedMask= 0;
+	//
+	// 64-bit because there are 33 slots: a 32-bit mask cannot address the
+	// last one, and shifting by 33 is undefined rather than merely wrong.
+	uint64_t providedMask= 0;
 	bool isProvided(int landmarkIndex) const
 	{
-		return (providedMask & (1u << landmarkIndex)) != 0;
+		return (providedMask & (1ull << landmarkIndex)) != 0;
 	}
 
 	// sigmoid [0,1]: within frame and not occluded

@@ -37,7 +37,7 @@ struct SyntheticBody
 		const int index= (int)landmark;
 		camera.result.body.imagePoints[index]= glm::vec3(project(p), 0.f);
 		camera.result.body.visibility[index]= 1.f;
-		camera.result.body.providedMask|= 1u << index;
+		camera.result.body.providedMask|= 1ull << index;
 	}
 
 	void setWrist(int sideIndex, const glm::vec3& wristWorld)

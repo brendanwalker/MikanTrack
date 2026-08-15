@@ -202,7 +202,7 @@ void BodyPoseTracker::process(const cv::Mat& bgrFrame, BodyPoseObservation& outO
 				const float score= std::clamp(m_landmarkResult.scores[keypoint], 0.f, 1.f);
 				outObservation.imagePoints[landmark]= glm::vec3(m_landmarkResult.points[keypoint], 0.f);
 				outObservation.visibility[landmark]= score;
-				outObservation.providedMask|= 1u << landmark;
+				outObservation.providedMask|= 1ull << landmark;
 				scoreSum+= score;
 			}
 			outObservation.confidence= scoreSum / (float)COCO_KEYPOINT_COUNT;
