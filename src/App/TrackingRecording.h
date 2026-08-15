@@ -61,6 +61,12 @@ struct RecordedCameraInput
 
 	bool bHaveDepth= false;
 	std::array<HandDepthMeasurement, 2> depth;
+
+	// Body-pose observation from this camera's opt-in body-pose stage. The
+	// stage runs upstream of this tap, so divider cadence (held re-emits) is
+	// baked in and replay never re-runs the pose models.
+	bool bHaveBodyPose= false;
+	BodyPoseObservation body;
 };
 
 // Fused pose snapshot taken immediately after fuse(), BEFORE the IMU forearm
@@ -139,6 +145,11 @@ uint64_t computeFusedChecksum(const TrackingFrameResult& preImuFused);
 // Fills the pose snapshots from a (pre-IMU) fused result
 void snapshotFusedOutput(const TrackingFrameResult& fused,
 						 std::array<RecordedPoseOutput, 2>& outPoses);
+
+// Raw frames live in a sibling directory named after the recording, so a
+// recording and its frames travel together and either can be deleted alone:
+// <dir>/2026-01-01_12-00-00.jsonl -> <dir>/2026-01-01_12-00-00_frames
+std::string makeFrameDirectoryPath(const std::string& recordingFilePath);
 
 nlohmann::json headerToJson(const RecordingHeader& header);
 bool headerFromJson(const nlohmann::json& j, RecordingHeader& outHeader);

@@ -65,9 +65,15 @@ static json diagHandToJson(const DiagHandState& hand)
 		{"palmOrientationWorld", quatToJson(hand.palmOrientationWorld)},
 		{"hasForearmPose", hand.hasForearmPose},
 		{"forearmOrientationWorld", quatToJson(hand.forearmOrientationWorld)},
+		{"forearmConfidence", hand.forearmConfidence},
 		{"wristPx", vec2ToJson(hand.wristPx)},
 		{"fingers", fingersToJson(hand.fingers)},
 	};
+	if (hand.hasShoulder)
+	{
+		out["shoulderPositionWorld"]= vec3ToJson(hand.shoulderPositionWorld);
+		out["shoulderConfidence"]= hand.shoulderConfidence;
+	}
 	if (hand.imageQuality.valid)
 		out["imageQuality"]= imageQualityToJson(hand.imageQuality);
 	return out;
@@ -96,6 +102,10 @@ static void fillDiagHandFromResult(const TrackingFrameResult& result, int sideIn
 	outHand.palmOrientationWorld= pose.hasWorldPose ? pose.palmOrientationWorld : pose.palmOrientationCamera;
 	outHand.hasForearmPose= pose.hasForearmPose;
 	outHand.forearmOrientationWorld= pose.forearmOrientationWorld;
+	outHand.forearmConfidence= pose.forearmConfidence;
+	outHand.hasShoulder= pose.hasShoulder;
+	outHand.shoulderPositionWorld= pose.shoulderPositionWorld;
+	outHand.shoulderConfidence= pose.shoulderConfidence;
 	outHand.wristPx= hand.tracked ? glm::vec2(hand.imagePoints[0]) : glm::vec2(0.f);
 	outHand.fingers= pose.fingers;
 	outHand.imageQuality= hand.imageQuality;
@@ -128,6 +138,15 @@ void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraR
 			cameraState.lumaFlickerHz= cameraResult->result.lumaFlickerHz;
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 				fillDiagHandFromResult(cameraResult->result, sideIndex, cameraState.sides[sideIndex]);
+
+			const BodyPoseObservation& body= cameraResult->result.body;
+			cameraState.bodyValid= body.valid;
+			if (body.valid)
+			{
+				cameraState.bodyConfidence= body.confidence;
+				cameraState.bodyElbowVisibility[0]= body.visibility[(int)ePoseLandmark::LEFT_ELBOW];
+				cameraState.bodyElbowVisibility[1]= body.visibility[(int)ePoseLandmark::RIGHT_ELBOW];
+			}
 		}
 		record.cameras.push_back(cameraState);
 	}
@@ -138,6 +157,9 @@ void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraR
 		record.fused[sideIndex].labeledSide= sideIndex; // fused slots ARE the side
 		record.dominantCamera[sideIndex]= dominantCamera[sideIndex];
 	}
+	record.headValid= fused.head.valid;
+	record.headPositionWorld= fused.head.positionWorld;
+	record.headConfidence= fused.head.confidence;
 
 	m_history.push_back(std::move(record));
 	while (m_history.size() > kMaxHistory)
@@ -158,6 +180,35 @@ static void annotateFrame(const cv::Mat& frame, const TrackingFrameResult& resul
 			const glm::vec2& a= box.corners[corner];
 			const glm::vec2& b= box.corners[(corner + 1) % 4];
 			cv::line(outAnnotated, cv::Point2f(a.x, a.y), cv::Point2f(b.x, b.y), cv::Scalar(0, 200, 0), 1);
+		}
+	}
+
+	// Body-pose skeleton (purple, dimmed segments where an endpoint's
+	// visibility gates it out of the solver)
+	if (result.body.valid)
+	{
+		const cv::Scalar bodyColor(255, 0, 200); // purple
+		for (int i= 0; i < POSE_CONNECTION_COUNT; ++i)
+		{
+			// Slots this backend does not fill sit at the image origin
+			if (!result.body.isProvided(POSE_CONNECTIONS[i][0]) ||
+				!result.body.isProvided(POSE_CONNECTIONS[i][1]))
+				continue;
+			const glm::vec3& a= result.body.imagePoints[POSE_CONNECTIONS[i][0]];
+			const glm::vec3& b= result.body.imagePoints[POSE_CONNECTIONS[i][1]];
+			const bool bVisible= result.body.visibility[POSE_CONNECTIONS[i][0]] >= 0.5f &&
+				result.body.visibility[POSE_CONNECTIONS[i][1]] >= 0.5f;
+			cv::line(outAnnotated, cv::Point2f(a.x, a.y), cv::Point2f(b.x, b.y),
+					 bVisible ? bodyColor : bodyColor * 0.35, bVisible ? 2 : 1);
+		}
+		for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
+		{
+			if (!result.body.isProvided(landmark))
+				continue;
+			const glm::vec3& p= result.body.imagePoints[landmark];
+			const bool bVisible= result.body.visibility[landmark] >= 0.5f;
+			cv::circle(outAnnotated, cv::Point2f(p.x, p.y), 2,
+					   bVisible ? bodyColor : bodyColor * 0.35, cv::FILLED);
 		}
 	}
 
@@ -216,6 +267,21 @@ static json handSnapshotToJson(const TrackedHand& hand)
 	return out;
 }
 
+static json posePostFusionToJson(json& out, const HandPose& pose)
+{
+	if (pose.hasForearmPose)
+	{
+		out["forearmOrientationWorld"]= quatToJson(pose.forearmOrientationWorld);
+		out["forearmConfidence"]= pose.forearmConfidence;
+	}
+	if (pose.hasShoulder)
+	{
+		out["shoulderPositionWorld"]= vec3ToJson(pose.shoulderPositionWorld);
+		out["shoulderConfidence"]= pose.shoulderConfidence;
+	}
+	return out;
+}
+
 static json poseSnapshotToJson(const HandPose& pose)
 {
 	if (!pose.tracked)
@@ -247,12 +313,14 @@ static json poseSnapshotToJson(const HandPose& pose)
 		neutralDirs.push_back(vec3ToJson(dir));
 	out["neutralDirInPalm"]= neutralDirs;
 
+	posePostFusionToJson(out, pose);
+
 	return out;
 }
 
 static json resultSnapshotToJson(const TrackingFrameResult& result)
 {
-	return {
+	json out= {
 		{"frameIndex", result.frameIndex},
 		{"timestampMs", result.timestampMs},
 		{"frameSize", json::array({result.frameWidth, result.frameHeight})},
@@ -263,6 +331,17 @@ static json resultSnapshotToJson(const TrackingFrameResult& result)
 		{"hands", json::array({handSnapshotToJson(result.hands[0]), handSnapshotToJson(result.hands[1])})},
 		{"poses", json::array({poseSnapshotToJson(result.poses[0]), poseSnapshotToJson(result.poses[1])})},
 	};
+	if (result.body.valid)
+		out["body"]= bodyPoseToJson(result.body);
+	if (result.head.valid)
+	{
+		out["head"]= {
+			{"positionWorld", vec3ToJson(result.head.positionWorld)},
+			{"orientationWorld", quatToJson(result.head.orientationWorld)},
+			{"confidence", result.head.confidence},
+		};
+	}
+	return out;
 }
 
 bool DiagnosticDump::write(const std::string& dumpDir,
@@ -369,7 +448,7 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 		json camerasHistory= json::array();
 		for (const DiagCameraState& cameraState : record.cameras)
 		{
-			camerasHistory.push_back({
+			json cameraJson= {
 				{"valid", cameraState.valid},
 				{"timestampMs", cameraState.timestampMs},
 				{"captureFps", cameraState.captureFps},
@@ -378,10 +457,19 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 				{"lumaFlickerHz", cameraState.lumaFlickerHz},
 				{"left", diagHandToJson(cameraState.sides[0])},
 				{"right", diagHandToJson(cameraState.sides[1])},
-			});
+			};
+			if (cameraState.bodyValid)
+			{
+				cameraJson["body"]= {
+					{"confidence", cameraState.bodyConfidence},
+					{"elbowVisibility", json::array({cameraState.bodyElbowVisibility[0],
+													 cameraState.bodyElbowVisibility[1]})},
+				};
+			}
+			camerasHistory.push_back(cameraJson);
 		}
 
-		historyJson.push_back({
+		json recordJson= {
 			{"t", record.fuseTimestampMs},
 			{"cameras", camerasHistory},
 			{"fused",
@@ -397,7 +485,15 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 				 {"left", diagImuToJson(record.imu[0])},
 				 {"right", diagImuToJson(record.imu[1])},
 			 }},
-		});
+		};
+		if (record.headValid)
+		{
+			recordJson["head"]= {
+				{"positionWorld", vec3ToJson(record.headPositionWorld)},
+				{"confidence", record.headConfidence},
+			};
+		}
+		historyJson.push_back(recordJson);
 	}
 	j["history"]= historyJson;
 	// Raw IMU samples, oldest first. Deliberately uncorrected: the point is to

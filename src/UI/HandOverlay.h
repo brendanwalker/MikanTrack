@@ -42,4 +42,12 @@ void drawTrackingResult(ImDrawList* drawList, const TrackingFrameResult& result,
 // marker sits at your elbow the forearm length is right.
 void drawForearmOverlay(ImDrawList* drawList, const ForearmOverlay& forearm,
 						const ImageToScreenMapping& mapping);
+
+// Draws the body skeleton for a body-pose camera: the RAW landmarks
+// the solver consumes, dimmed wherever visibility falls under the solver's
+// gate, with the visibility of the joints it actually uses (shoulders,
+// elbows, wrists) labelled. This is the source data behind the elbow, so a
+// bad elbow can be traced to a bad landmark rather than guessed at.
+void drawBodyPose(ImDrawList* drawList, const BodyPoseObservation& body,
+				  const ImageToScreenMapping& mapping);
 }

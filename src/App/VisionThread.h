@@ -8,7 +8,9 @@
 
 #include "opencv2/core/mat.hpp"
 
+#include "BodyPoseSolver.h"
 #include "DiagnosticDump.h"
+#include "FrameRecorder.h"
 #include "ImuService.h"
 #include "HandBoneCalibrator.h"
 #include "HandPoseModel.h"
@@ -19,6 +21,7 @@
 
 class AppConfig;
 class VideoCaptureSystem;
+class BodyPoseTracker;
 class HandTrackingPipeline;
 class LandmarkTo3D;
 class OscStreamer;
@@ -181,6 +184,19 @@ public:
 	int64_t getRecordingFrameCount() const { return m_recorder != nullptr ? m_recorder->getFrameCount() : 0; }
 	uint64_t getRecordingBytes() const { return m_recorder != nullptr ? m_recorder->getBytesWritten() : 0; }
 	bool didLastRecordingAbort() const { return m_recorder != nullptr && m_recorder->wasAborted(); }
+	bool isRecordingRawFrames() const { return m_frameRecorder != nullptr && m_frameRecorder->isRecording(); }
+	int64_t getRecordedFrameCount() const
+	{
+		return m_frameRecorder != nullptr ? m_frameRecorder->getFramesWritten() : 0;
+	}
+	int64_t getDroppedFrameCount() const
+	{
+		return m_frameRecorder != nullptr ? m_frameRecorder->getFramesDropped() : 0;
+	}
+	uint64_t getRecordedFrameBytes() const
+	{
+		return m_frameRecorder != nullptr ? m_frameRecorder->getBytesWritten() : 0;
+	}
 	// Path of the last finalized recording ("" until one completes)
 	std::string getLastRecordingPath();
 
@@ -228,6 +244,9 @@ private:
 		std::unique_ptr<HandTrackingPipeline> pipeline;
 		std::unique_ptr<LandmarkTo3D> landmarkTo3D; // smoothing always disabled (post-fusion smoothing)
 		std::unique_ptr<CVVideoFrameProcessor> undistorter;
+		// Opt-in body-pose stage; only allocated for cameras whose profile
+		// enables body pose
+		std::unique_ptr<BodyPoseTracker> bodyPoseTracker;
 
 		std::atomic_bool bTrackingEnabled{true};
 		std::atomic_bool bUndistortEnabled{true};
@@ -297,6 +316,7 @@ private:
 
 	std::vector<std::unique_ptr<CameraContext>> m_cameras;
 	HandFusion m_fusion;
+	BodyPoseSolver m_bodyPoseSolver;
 
 	// Wrist IMU service (devices + per-device orientation filters). Lives on
 	// the vision thread; the UI reads snapshots through a mutex.
@@ -365,6 +385,8 @@ private:
 	// Tracking recorder (vision thread owns it; UI reads atomics through the
 	// accessors above)
 	std::unique_ptr<TrackingRecorder> m_recorder;
+	// Only allocated when raw frame capture is turned on
+	std::unique_ptr<FrameRecorder> m_frameRecorder;
 	std::atomic_bool m_bRecordingStartRequested{false};
 	std::atomic_bool m_bRecordingStopRequested{false};
 	std::mutex m_recordingMutex;

@@ -9,6 +9,7 @@
 #include "DevicePanel.h"
 #include "ExtrinsicsWizard.h"
 #include "IntrinsicsWizard.h"
+#include "BodyCalibrationWizard.h"
 #include "MountingWizard.h"
 #include "LogPanel.h"
 #include "Logger.h"
@@ -28,6 +29,8 @@ MainWindow::MainWindow(App* app)
 	, m_intrinsicsWizard(std::make_unique<IntrinsicsWizard>(app->getConfig(), app->getVisionThread()))
 	, m_extrinsicsWizard(std::make_unique<ExtrinsicsWizard>(app->getConfig(), app->getVisionThread()))
 	, m_mountingWizard(std::make_unique<MountingWizard>(app->getConfig(), app->getVisionThread()))
+	, m_bodyCalibrationWizard(
+		  std::make_unique<BodyCalibrationWizard>(app->getConfig(), app->getVisionThread()))
 	, m_timelinePanel(std::make_unique<TimelinePanel>())
 {
 	// Hotplug / disconnect notifications refresh the device panel
@@ -158,7 +161,8 @@ void MainWindow::drawDockspaceAndMenuBar()
 		if (ImGui::BeginMenu("Calibration"))
 		{
 			const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
-							  m_mountingWizard->isActive();
+							  m_mountingWizard->isActive() ||
+							  m_bodyCalibrationWizard->isActive();
 			AppConfig* config= m_app->getConfig();
 
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
@@ -231,7 +235,8 @@ void MainWindow::update(float deltaSeconds)
 	drawDockspaceAndMenuBar();
 
 	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
-							  m_mountingWizard->isActive();
+							  m_mountingWizard->isActive() ||
+							  m_bodyCalibrationWizard->isActive();
 
 	// Panels
 	m_devicePanel->draw();
@@ -245,6 +250,13 @@ void MainWindow::update(float deltaSeconds)
 		m_trackingPanelState.bLaunchMountingWizard= false;
 		if (!bWizardActive)
 			m_mountingWizard->enter();
+	}
+
+	if (m_trackingPanelState.bLaunchBodyCalibrationWizard)
+	{
+		m_trackingPanelState.bLaunchBodyCalibrationWizard= false;
+		if (!bWizardActive)
+			m_bodyCalibrationWizard->enter();
 	}
 
 	const CalibrationPanel::DrawResult calibrationAction= m_calibrationPanel->draw(bWizardActive);
@@ -297,7 +309,7 @@ void MainWindow::update(float deltaSeconds)
 
 					const glm::vec3 wristWorld= pose.getWristPositionWorld();
 					const glm::vec3 elbowWorld=
-						pose.getElbowPositionWorld(config->imu.forearmLengthMeters);
+						pose.getElbowPositionWorld(config->body.forearmLengthMeters);
 					overlay.valid[sideIndex]= projectToImage(wristWorld, overlay.wristPx[sideIndex]) &&
 						projectToImage(elbowWorld, overlay.elbowPx[sideIndex]);
 				}
@@ -312,7 +324,7 @@ void MainWindow::update(float deltaSeconds)
 	// with the frustums built from the RECORDING's config snapshot.
 	if (m_timelinePanel->isReplayViewActive())
 	{
-		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
+		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
 							 m_timelinePanel->getPerCameraResults());
 	}
@@ -334,7 +346,7 @@ void MainWindow::update(float deltaSeconds)
 			perCameraResults.push_back(
 				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
 		}
-		m_scene3dPanel->setForearmLength(config->imu.forearmLengthMeters);
+		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 		m_scene3dPanel->draw(m_latestFused, sceneCameras, perCameraResults);
 	}
 
@@ -364,6 +376,13 @@ void MainWindow::update(float deltaSeconds)
 		// needs live tracked hands for the straight-wrist pose
 		if (!m_mountingWizard->update(deltaSeconds, m_latestFused))
 			m_mountingWizard->exit();
+	}
+	else if (m_bodyCalibrationWizard->isActive())
+	{
+		// Also leaves tracking running: the fused wrists ARE the measurement's
+		// ruler, so they have to keep arriving
+		if (!m_bodyCalibrationWizard->update(deltaSeconds, m_latestPreviews, m_latestFused))
+			m_bodyCalibrationWizard->exit();
 	}
 
 	if (m_bShowLogPanel)

@@ -31,7 +31,23 @@ namespace HandPoseModel
 struct PalmarSideMemory
 {
 	glm::vec3 palmarNormal{0.f}; // zero = nothing remembered yet
-	void reset() { palmarNormal= glm::vec3(0.f); }
+
+	// Consecutive observations whose evidence contradicted palmarNormal;
+	// a flip takes several of them (see computePalmFrame)
+	int contradictionCount= 0;
+	// The palmar score the count last advanced on: the count moves once per
+	// DISTINCT observation, not once per call. One observation is routinely
+	// evaluated more than once per frame (the palm frame, then the angles),
+	// and that is one piece of evidence, not two. Re-evaluating the same
+	// landmarks reproduces the score exactly; different landmarks do not.
+	float countedScore= 0.f;
+
+	void reset()
+	{
+		palmarNormal= glm::vec3(0.f);
+		contradictionCount= 0;
+		countedScore= 0.f;
+	}
 };
 
 // Palm frame from the landmarks (see HandPose for the convention).

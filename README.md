@@ -1,7 +1,7 @@
 # MikanMediaPipe
 
 <!-- AI_USAGE_BADGES:BEGIN -->
-![AI tokens](https://img.shields.io/badge/AI_tokens-3.8M_out_%2F_1.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~67_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~202_L-blue)
+![AI tokens](https://img.shields.io/badge/AI_tokens-4.2M_out_%2F_1.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~71_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~214_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
@@ -18,10 +18,20 @@ frame-to-frame ROI tracking) is implemented in C++, ported from the
 capture, calibration and app scaffolding are borrowed from
 [MikanXR](https://github.com/MikanXR/MikanXR) (see `NOTICE.md`).
 
-Elbows are deliberately NOT estimated or streamed: a hand-only view doesn't
-contain enough information for a useful estimate (BlazePose was tried and
-removed — its person detector never fires on top-down views). Solve arms
-client-side with Two-Bone IK from the palm transform.
+Body pose (measured elbows, shoulders, head pose) is an OPT-IN per-camera
+stage: enable it on a camera that sees you upright (a person detector never
+fires on top-down views, so overhead cameras leave it off). The landmark
+model is RTMPose-m, which is top-down - this app supplies the person box and
+each joint is scored independently, so joints outside the frame read as low
+confidence rather than being invented.
+
+Everything above the wrist is solved from 2D rays plus known body lengths,
+never the pose model's own metric 3D (measured unusable per frame): the elbow
+is the elbow ray against a forearm-length sphere around the FUSED wrist, the
+shoulders take their depth from the calibrated shoulder width, and the head
+takes its depth from the apparent ear separation. A calibrated wrist IMU still wins for the forearm
+when present. Rigs with only overhead cameras solve arms client-side with
+Two-Bone IK from the palm transform.
 
 ## Features
 
@@ -43,6 +53,19 @@ client-side with Two-Bone IK from the palm transform.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera
+- **Body measurement wizard** (Tracking panel -> Measure My Body): the elbow,
+  shoulder and head estimates rest on lengths that are NOT anatomical - they
+  are distances between the pose model's own landmarks, which sit inside the
+  real joints by an amount that varies per person and per model. Raise ONE hand
+  beside your shoulder: that puts a metric wrist at roughly the depth of your
+  torso, and the fused wrists (the only metric, world-anchored points, measured
+  by the other cameras) become the ruler for the shoulder and head widths. A
+  second step turns the head, which swings the nose's forward offset into the
+  image where it can be measured. Only WIDTHS are measured; the upper arm is
+  taken as a multiple of the shoulder width, because measuring it directly
+  needs the arm straight and square to the camera - a pose that is hard to hold
+  at a desk and reads 20% short when missed, which is enough to make the elbow
+  bend the wrong way.
 - **Charuco intrinsics calibration** wizard (partial-board captures supported)
 - **Charuco extrinsics** wizard: the SAME printed charuco board defines the
   tracking world - its center is the origin, and the FORWARD/RIGHT labels on
@@ -92,6 +115,17 @@ client-side with Two-Bone IK from the palm transform.
   recording resets transient tracking state (brief blip); editing tracking
   settings mid-recording finalizes the file. Checksums only verify against
   the same build that recorded them.
+- **Raw frame recording (opt-in, off by default)**: a landmark recording
+  replays every stage after inference, so it cannot answer whether a
+  different pose model would have done better - that model's input is gone.
+  Ticking "Also record raw camera frames" in the Timeline panel additionally
+  writes the exact images the models consumed as JPEGs beside the recording,
+  which makes `MikanMediaPipe --replay-bodypose <file> [camera]`
+  a real measurement (per-joint scores, 2D jitter, box source, inference
+  cost) rather than a live impression. **This is video of your room**, which
+  is why it defaults off and is a local choice; it costs roughly 3-6 MB per
+  second per camera, and frames are dropped rather than stalling tracking if
+  the encoder falls behind.
 
 ## Building
 
@@ -137,16 +171,20 @@ Hands are streamed as a PARAMETRIC model - palm transform + finger bend
 angles - rather than raw landmarks: angles come from the network's local
 articulation (its most reliable output) and are depth-noise-free, and
 poses/angles fuse cleanly across cameras where landmark blending distorted
-bones. Elbows are not streamed - solve arms client-side with IK from the
-palm transform.
+bones. Elbow, shoulder and head addresses are always sent; their trailing
+confidence carries validity (0 = do not use), so they never go silent.
 
 | Address | Types | Meaning |
 |---|---|---|
-| `/mikan/frame` | `iif` | frameId, timestampMs, fps |
+| `/mikan/frame` | `iifi` | frameId, timestampMs, fps, sendSequence |
 | `/mikan/hand/{left,right}/tracked` | `iff` | tracked (0/1), presence, confidence |
+| `/mikan/hand/{left,right}/elbow` | `4f` | elbow position xyz (m) + confidence; from the wrist IMU forearm when calibrated, else the vision body-pose solve |
+| `/mikan/hand/{left,right}/shoulder` | `4f` | shoulder position xyz (m) + confidence; vision body pose |
 | `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
-| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (radians, 0 = the rest pose) |
+| `/mikan/hand/{left,right}/wrist` | `i8f` | valid (0/1), forearm orientation xyzw (world), wrist joint rotation xyzw (palm in the forearm frame) |
+| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (DEGREES, 0 = the rest pose) |
 | `/mikan/hand/{left,right}/skeleton` | `45f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m) + neutral (zero-angle) direction in palm frame xyz; sent at 1 Hz |
+| `/mikan/body/head` | `8f` | head position xyz (m) + orientation xyzw (+X facing, +Y person's left, +Z up) + confidence; vision body pose |
 | `/mikan/info` | `ss` | space/units/palm-frame convention, app version (1 Hz) |
 
 **Palm frame** (Ultraleap-compatible): origin at the palm center (midway

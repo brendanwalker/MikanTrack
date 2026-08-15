@@ -158,7 +158,30 @@ void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightn
 			glm::mat4 forearmTransform= glm::mat4_cast(pose.forearmOrientationWorld);
 			forearmTransform[3]= glm::vec4(elbowWorld, 1.f);
 			drawTransformedAxes(*m_lineRenderer, k_displayFromWorld * forearmTransform, 0.04f);
+
+			// Vision body-pose shoulder: elbow -> shoulder completes the arm
+			if (pose.hasShoulder)
+			{
+				drawSegment(*m_lineRenderer, k_displayFromWorld, elbowWorld, pose.shoulderPositionWorld, color);
+				drawPoint(*m_lineRenderer, k_displayFromWorld, pose.shoulderPositionWorld,
+						  Colors::Yellow * brightness, 7.f);
+			}
 		}
+		else if (pose.hasShoulder)
+		{
+			drawPoint(*m_lineRenderer, k_displayFromWorld, pose.shoulderPositionWorld,
+					  Colors::Yellow * brightness, 7.f);
+		}
+	}
+
+	// Head pose from the vision body-pose solver: +X facing, +Z up
+	if (result.head.valid)
+	{
+		glm::mat4 headTransform= glm::mat4_cast(result.head.orientationWorld);
+		headTransform[3]= glm::vec4(result.head.positionWorld, 1.f);
+		drawTransformedAxes(*m_lineRenderer, k_displayFromWorld * headTransform, 0.06f);
+		drawPoint(*m_lineRenderer, k_displayFromWorld, result.head.positionWorld,
+				  Colors::White * brightness, 6.f);
 	}
 }
 

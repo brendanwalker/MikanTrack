@@ -6,6 +6,7 @@
 #include "opencv2/imgproc.hpp"
 
 #include "AppConfig.h"
+#include "BodyPoseTracker.h"
 #include "CVVideoFrameProcessor.h"
 #include "HandTrackingPipeline.h"
 #include "LandmarkTo3D.h"
@@ -254,6 +255,7 @@ void VisionThread::handleRecordingStartOnThread()
 	// deliberately NOT reset - the effective ref length is recorded per frame
 	// as a plain input, and resetting the EMA would blip the live hand scale.
 	m_fusion.resetTransientState();
+	m_bodyPoseSolver.reset();
 	for (std::unique_ptr<CameraContext>& context : m_cameras)
 	{
 		if (context->landmarkTo3D != nullptr)
@@ -272,6 +274,16 @@ void VisionThread::handleRecordingStartOnThread()
 	if (m_recorder == nullptr)
 		m_recorder= std::make_unique<TrackingRecorder>();
 	m_recorder->start(filePath, TrackingRecording::headerToJson(header));
+
+	// Raw frames are opt-in and local: a landmark recording is abstract
+	// enough to share, frames are video of the room
+	if (m_config->recording.recordRawFrames)
+	{
+		if (m_frameRecorder == nullptr)
+			m_frameRecorder= std::make_unique<FrameRecorder>();
+		m_frameRecorder->start(TrackingRecording::makeFrameDirectoryPath(filePath),
+							   m_config->recording.jpegQuality);
+	}
 }
 
 void VisionThread::finalizeRecordingOnThread(bool bAborted, const std::string& reason)
@@ -280,6 +292,8 @@ void VisionThread::finalizeRecordingOnThread(bool bAborted, const std::string& r
 		return;
 
 	m_recorder->stop(bAborted, reason);
+	if (m_frameRecorder != nullptr)
+		m_frameRecorder->stop();
 	std::lock_guard<std::mutex> lock(m_recordingMutex);
 	m_lastRecordingPath= m_recorder->getFilePath();
 }
@@ -496,6 +510,29 @@ void VisionThread::refreshConfigOnThread()
 			context.undistorter= nullptr;
 		}
 
+		// Opt-in body-pose stage. Load failure (missing models) leaves the
+		// tracker allocated but unloaded so a refresh doesn't retry-spam.
+		if (profile.bodyPose.enabled)
+		{
+			BodyPoseTrackerConfig trackerConfig;
+			trackerConfig.frameDivider= profile.bodyPose.poseFrameDivider;
+			trackerConfig.detectorIntervalFrames= profile.bodyPose.detectorIntervalFrames;
+
+			if (context.bodyPoseTracker == nullptr)
+			{
+				context.bodyPoseTracker= std::make_unique<BodyPoseTracker>();
+				context.bodyPoseTracker->load("models", m_config->tracking.onnxEp, trackerConfig);
+			}
+			else
+			{
+				context.bodyPoseTracker->setConfig(trackerConfig);
+			}
+		}
+		else
+		{
+			context.bodyPoseTracker= nullptr;
+		}
+
 		// This camera's own rest angles. Per camera: the model landmarks are
 		// view-dependent, so removing each camera's bias is what makes their
 		// angles agree well enough for fusion to blend them.
@@ -576,7 +613,7 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.holdOnDropoutMs= m_config->osc.holdOnDropoutMs;
 		// The streamer derives the elbow from the forearm direction, so it
 		// needs the same length the rest of the app uses
-		oscConfig.forearmLengthMeters= m_config->imu.forearmLengthMeters;
+		oscConfig.forearmLengthMeters= m_config->body.forearmLengthMeters;
 		oscConfig.logPalmFrames= m_config->osc.logPalmFrames;
 		m_oscStreamer->setConfig(oscConfig);
 	}
@@ -796,6 +833,29 @@ bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFram
 			seedSearchHints(context, lastFused);
 
 		context.pipeline->process(*activeFrame, result);
+
+		// Raw frame capture, taken here so what lands on disk is EXACTLY what
+		// the models consumed (undistorted, same pixels), which is what makes
+		// an offline model comparison meaningful
+		if (m_frameRecorder != nullptr && m_frameRecorder->isRecording())
+			m_frameRecorder->enqueueFrame(context.cameraIndex, result.frameIndex, *activeFrame);
+
+		// Opt-in body-pose stage, same undistorted frame the hand pipeline
+		// consumed (so its imagePoints share the undistorted camera matrix)
+		if (m_recorder != nullptr && m_recorder->isRecording())
+			context.pendingRecordInput.bHaveBodyPose= false;
+		if (context.bodyPoseTracker != nullptr && context.bodyPoseTracker->isLoaded())
+		{
+			context.bodyPoseTracker->process(*activeFrame, result.body);
+
+			// Recording tap: the stage's cadence (divider re-emits) is baked
+			// into the observation, so replay never re-runs the pose models
+			if (m_recorder != nullptr && m_recorder->isRecording())
+			{
+				context.pendingRecordInput.bHaveBodyPose= true;
+				context.pendingRecordInput.body= result.body;
+			}
+		}
 
 		// Lighting/exposure diagnostics on the exact image the model consumed
 		for (TrackedHand& hand : result.hands)
@@ -1169,6 +1229,12 @@ void VisionThread::threadLoop()
 
 			phaseMs[(int)eVisionPhase::Imu]= steadyNowMs() - phaseMarkMs;
 			phaseMarkMs= steadyNowMs();
+
+			// Vision body pose: elbows for sides the IMU didn't claim, plus
+			// shoulders and head. Runs AFTER the IMU forearm fill (IMU wins)
+			// and after the IMU recording tap (so recordings keep pure IMU
+			// output and replay can re-run this solver for what-if A/Bs).
+			m_bodyPoseSolver.solve(fusionCandidates, makeBodyDimensions(*m_config), outputResult);
 
 			lastFusedForHints= outputResult;
 			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);

@@ -169,3 +169,23 @@ std::vector<Ort::Value> OnnxSession::run(const Ort::Value* inputs, size_t inputC
 		m_inputNamePtrs.data(), inputs, inputCount,
 		m_outputNamePtrs.data(), m_outputNamePtrs.size());
 }
+
+std::vector<Ort::Value> OnnxSession::runOutputs(
+	const Ort::Value* inputs, size_t inputCount,
+	const int* outputIndices, size_t outputIndexCount)
+{
+	std::vector<const char*> requestedNames;
+	requestedNames.reserve(outputIndexCount);
+	for (size_t i= 0; i < outputIndexCount; ++i)
+	{
+		const int outputIndex= outputIndices[i];
+		if (outputIndex < 0 || outputIndex >= (int)m_outputNamePtrs.size())
+			return {}; // caller mapped an output that doesn't exist
+		requestedNames.push_back(m_outputNamePtrs[outputIndex]);
+	}
+
+	return m_session->Run(
+		Ort::RunOptions{nullptr},
+		m_inputNamePtrs.data(), inputs, inputCount,
+		requestedNames.data(), requestedNames.size());
+}

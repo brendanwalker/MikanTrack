@@ -8,6 +8,7 @@
 
 #include "HandPoseModel.h"
 #include "Logger.h"
+#include "SpaceTransforms.h"
 
 // Temporal side-continuity: full-strength attraction within this distance of
 // the side's last fused palm, fading to nothing at 2x
@@ -209,7 +210,7 @@ static float lateralAwareDistance(const glm::vec3& palmA, const glm::vec3& camer
 float HandFusion::pairCost(const HandCandidate& observation, const HandCluster& cluster) const
 {
 	const glm::vec3& palm= observation.pose->palmPositionWorld;
-	const glm::vec3 cameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+	const glm::vec3 cameraPos= cameraPositionWorld(observation.camera->markerFromCamera);
 
 	const float euclid= glm::length(palm - cluster.palmWorld);
 	const float dist=
@@ -284,7 +285,7 @@ void HandFusion::clusterObservations(std::vector<HandCandidate>& observations,
 		if (observation.weight > cluster.bestWeight)
 		{
 			cluster.palmWorld= observation.pose->palmPositionWorld;
-			cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+			cluster.anchorCameraPos= cameraPositionWorld(observation.camera->markerFromCamera);
 			cluster.anchorSignedVote= observation.signedVote;
 			cluster.bestWeight= observation.weight;
 		}
@@ -293,7 +294,7 @@ void HandFusion::clusterObservations(std::vector<HandCandidate>& observations,
 		HandCluster cluster;
 		cluster.candidates.push_back(observation);
 		cluster.palmWorld= observation.pose->palmPositionWorld;
-		cluster.anchorCameraPos= glm::vec3(observation.camera->markerFromCamera[3]);
+		cluster.anchorCameraPos= cameraPositionWorld(observation.camera->markerFromCamera);
 		cluster.anchorSignedVote= observation.signedVote;
 		cluster.bestWeight= observation.weight;
 		outClusters.push_back(cluster);
@@ -417,8 +418,8 @@ void HandFusion::updateStereoScale(const HandCluster& cluster)
 	if (a.camera->cameraIndex == b.camera->cameraIndex)
 		return;
 
-	const glm::vec3 cameraPosA= glm::vec3(a.camera->markerFromCamera[3]);
-	const glm::vec3 cameraPosB= glm::vec3(b.camera->markerFromCamera[3]);
+	const glm::vec3 cameraPosA= cameraPositionWorld(a.camera->markerFromCamera);
+	const glm::vec3 cameraPosB= cameraPositionWorld(b.camera->markerFromCamera);
 	const glm::vec3 palmA= a.pose->palmPositionWorld;
 	const glm::vec3 palmB= b.pose->palmPositionWorld;
 
@@ -478,7 +479,6 @@ bool HandFusion::triangulatePairPoints(const HandCandidate& obsA, const HandCand
 	{
 		const HandCandidate* obs;
 		glm::vec3 cameraPos;
-		glm::mat3 rotation;        // camera -> world
 		glm::dmat4 cameraFromWorld;
 	};
 	std::array<View, 2> views;
@@ -486,8 +486,7 @@ bool HandFusion::triangulatePairPoints(const HandCandidate& obsA, const HandCand
 	{
 		const HandCandidate* obs= v == 0 ? &obsA : &obsB;
 		views[v].obs= obs;
-		views[v].cameraPos= glm::vec3(obs->camera->markerFromCamera[3]);
-		views[v].rotation= glm::mat3(glm::mat4(obs->camera->markerFromCamera));
+		views[v].cameraPos= cameraPositionWorld(obs->camera->markerFromCamera);
 		views[v].cameraFromWorld= glm::inverse(obs->camera->markerFromCamera);
 	}
 
@@ -498,10 +497,10 @@ bool HandFusion::triangulatePairPoints(const HandCandidate& obsA, const HandCand
 		{
 			const CameraFrameResult* camera= views[v].obs->camera;
 			const glm::vec3& px= views[v].obs->hand->imagePoints[i];
-			// Undistorted pinhole back-projection, OpenCV camera convention
-			const glm::vec3 dirCamera((px.x - camera->cx) / camera->fx,
-									  (px.y - camera->cy) / camera->fy, 1.f);
-			rayDir[v]= glm::normalize(views[v].rotation * dirCamera);
+			rayDir[v]= pixelRayDirWorld(
+				camera->markerFromCamera,
+				camera->fx, camera->fy, camera->cx, camera->cy,
+				glm::vec2(px));
 		}
 
 		// Closest-point parameters along the two rays (midpoint method)
@@ -627,27 +626,75 @@ void HandFusion::rescueSoloClusters(std::vector<HandCandidate>& rescuePool,
 bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand,
 									HandPose& outPose)
 {
-	// Best two candidates from distinct cameras with usable image geometry
-	const HandCandidate* obsA= nullptr;
-	const HandCandidate* obsB= nullptr;
+	// Score the PAIR, not the two cameras. Depth error from a stereo pair goes
+	// as 1/sin(parallax), so two well-scored cameras that happen to sit close
+	// together reconstruct worse than a lesser pair with a wide baseline. That
+	// error lands on the small out-of-plane finger geometry that decides the
+	// palmar side, so a short-baseline pair does not just add noise - it flips
+	// the palm frame 180 degrees whenever the fingers straighten.
+	//
+	// The per-camera term here is presence alone. The blend weight is the
+	// wrong ranking for this: it folds in monocular-depth stability, which is
+	// exactly the noise triangulation discards, and palm visibility, which
+	// works BACKWARDS for a pair. A camera seeing the palm edge-on is the one
+	// resolving the depth its face-on partner cannot, so multiplying two
+	// face-on scores selects for redundant viewpoints. Measured on recording
+	// 2026-08-14_17-23-42: weighting by visibility keeps picking the 46-degree
+	// pair (12.4 mm reconstruction error, palm frame flipping) over the
+	// 73-degree one (7.3 mm, never flips).
+	struct PairView
+	{
+		const HandCandidate* candidate;
+		glm::vec3 dirToHand;
+	};
+	std::vector<PairView> views;
+	views.reserve(cluster.candidates.size());
 	for (const HandCandidate& candidate : cluster.candidates)
 	{
 		if (!candidate.camera->hasIntrinsics || !candidate.hand->tracked)
 			continue;
-		if (obsA == nullptr || candidate.weight > obsA->weight)
+		const glm::vec3 toHand= cluster.palmWorld - cameraPositionWorld(candidate.camera->markerFromCamera);
+		if (glm::dot(toHand, toHand) < 1e-8f)
+			continue;
+		views.push_back({&candidate, glm::normalize(toHand)});
+	}
+
+	const HandCandidate* obsA= nullptr;
+	const HandCandidate* obsB= nullptr;
+	float bestPairScore= 0.f;
+	float bestParallaxCos= 1.f;
+	for (size_t i= 0; i < views.size(); ++i)
+	{
+		for (size_t j= i + 1; j < views.size(); ++j)
 		{
-			if (obsA != nullptr && obsA->camera->cameraIndex != candidate.camera->cameraIndex)
-				obsB= obsA;
-			obsA= &candidate;
-		}
-		else if (candidate.camera->cameraIndex != obsA->camera->cameraIndex &&
-				 (obsB == nullptr || candidate.weight > obsB->weight))
-		{
-			obsB= &candidate;
+			if (views[i].candidate->camera->cameraIndex == views[j].candidate->camera->cameraIndex)
+				continue;
+
+			// sin of the subtended angle: penalizes near-parallel AND
+			// near-antiparallel views, both of which lose depth
+			const float parallaxSin= glm::length(glm::cross(views[i].dirToHand, views[j].dirToHand));
+			const float score=
+				views[i].candidate->pose->presence * views[j].candidate->pose->presence * parallaxSin;
+			if (score > bestPairScore)
+			{
+				bestPairScore= score;
+				bestParallaxCos= glm::dot(views[i].dirToHand, views[j].dirToHand);
+				obsA= views[i].candidate;
+				obsB= views[j].candidate;
+			}
 		}
 	}
 	if (obsA == nullptr || obsB == nullptr)
 		return false;
+
+	// obsA is the better-viewed of the two: downstream (hand scale, skeleton)
+	// asks for "the best candidate", which used to be true by construction
+	if (obsB->weight > obsA->weight)
+		std::swap(obsA, obsB);
+
+	cluster.triCameraA= obsA->camera->cameraIndex;
+	cluster.triCameraB= obsB->camera->cameraIndex;
+	cluster.triParallaxDeg= glm::degrees(acosf(std::clamp(bestParallaxCos, -1.f, 1.f)));
 
 	std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
 	float residualRms= 0.f;
@@ -827,7 +874,7 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			// Blend weight additionally folds in geometric conditioning (how
 			// face-on the palm is), which ranks cameras but isn't meaningful
 			// as an absolute trust value
-			const glm::vec3 cameraPos= glm::vec3(camera->markerFromCamera[3]);
+			const glm::vec3 cameraPos= cameraPositionWorld(camera->markerFromCamera);
 			candidate.weight= candidate.confidence *
 				visibilityFactor(pose.palmOrientationWorld, pose.palmPositionWorld, cameraPos);
 
@@ -938,6 +985,9 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		diagCluster.triVetoed= clusters[i].triVetoed;
 		diagCluster.triResidualRmsPx= clusters[i].triResidualRmsPx;
 		diagCluster.triResidualMaxPx= clusters[i].triResidualMaxPx;
+		diagCluster.triCameraA= clusters[i].triCameraA;
+		diagCluster.triCameraB= clusters[i].triCameraB;
+		diagCluster.triParallaxDeg= clusters[i].triParallaxDeg;
 	}
 
 	// Track the solo-side incumbent for the hysteresis above
@@ -1124,7 +1174,7 @@ void HandFusion::applyTriPositionHold(eHandSide side, const HandCandidate& sourc
 	// innovation against the last triangulated palm. A sustained mono
 	// stretch adopts the mono depth when the hold window expires, mirroring
 	// the angle hold above.
-	const glm::vec3 cameraPosWorld= glm::vec3(source.camera->markerFromCamera[3]);
+	const glm::vec3 cameraPosWorld= cameraPositionWorld(source.camera->markerFromCamera);
 	const glm::vec3 toPalm= outPose.palmPositionWorld - cameraPosWorld;
 	const float rayLength= glm::length(toPalm);
 	if (rayLength < 1e-4f)

@@ -111,7 +111,36 @@ echo "Downloading hand landmark model..."
 curl -L https://huggingface.co/opencv/opencv_zoo/resolve/main/models/handpose_estimation_mediapipe/handpose_estimation_mediapipe_2023feb.onnx --output hand_landmark.onnx
 IF %ERRORLEVEL% NEQ 0 goto model_failure
 
+echo "Downloading person detection model..."
+curl -L https://huggingface.co/opencv/opencv_zoo/resolve/main/models/person_detection_mediapipe/person_detection_mediapipe_2023mar.onnx --output person_detection.onnx
+IF %ERRORLEVEL% NEQ 0 goto model_failure
+
 popd
+
+:: ------------------------------------------------------- RTMPose body model
+:: OpenMMLab RTMPose-m (body7), the top-down body backend (Apache-2.0).
+:: https://github.com/open-mmlab/mmpose - shipped as an MMDeploy SDK bundle,
+:: of which only end2end.onnx is used. Plus the reference image the numeric
+:: cross-check in --test-posemodel scores against.
+IF EXIST models\rtmpose_body.onnx goto skip_rtmpose
+echo "Downloading RTMPose body model..."
+curl -L https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip --output rtmpose_body.zip
+IF %ERRORLEVEL% NEQ 0 goto model_failure
+%UNZIP_EXE% e -y -o.\rtmpose_tmp rtmpose_body.zip end2end.onnx -r > nul
+IF %ERRORLEVEL% NEQ 0 (
+  echo "Error unzipping rtmpose_body.zip"
+  goto model_failure
+)
+move /Y rtmpose_tmp\end2end.onnx models\rtmpose_body.onnx > nul
+rmdir /S /Q rtmpose_tmp
+del rtmpose_body.zip
+:skip_rtmpose
+
+IF EXIST rtm_demo.jpg goto skip_rtm_demo
+echo "Downloading pose reference image..."
+curl -L https://raw.githubusercontent.com/open-mmlab/mmdeploy/main/demo/resources/human-pose.jpg --output rtm_demo.jpg
+IF %ERRORLEVEL% NEQ 0 goto model_failure
+:skip_rtm_demo
 
 :: -------------------------------------------------- librealsense headers
 :: Official Intel librealsense C API headers (Apache-2.0), used by the

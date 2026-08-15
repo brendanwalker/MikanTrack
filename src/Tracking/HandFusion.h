@@ -116,6 +116,9 @@ struct FusionDiagnostics
 		bool triVetoed= false;         // residual gate rejected the pairing
 		float triResidualRmsPx= 0.f;   // RMS reprojection residual, both views
 		float triResidualMaxPx= 0.f;   // worst single landmark
+		int triCameraA= -1;            // which two cameras were paired
+		int triCameraB= -1;
+		float triParallaxDeg= 0.f;     // angle their rays subtend at the hand
 	};
 
 	int totalObservations= 0;
@@ -236,6 +239,9 @@ private:
 		bool triVetoed= false;
 		float triResidualRmsPx= 0.f;
 		float triResidualMaxPx= 0.f;
+		int triCameraA= -1; // the pair that was triangulated, and the parallax
+		int triCameraB= -1; // it subtended - a pair chosen for its per-camera
+		float triParallaxDeg= 0.f; // scores alone reconstructs badly up close
 	};
 
 	// Cost of merging an observation into a cluster (lateral-aware position

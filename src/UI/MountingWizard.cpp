@@ -418,7 +418,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 					}
 					if (lengthCount > 0)
 					{
-						m_config->imu.forearmLengthMeters= lengthSum / (float)lengthCount;
+						m_config->body.forearmLengthMeters= lengthSum / (float)lengthCount;
 						bAnyChange= true;
 					}
 

@@ -9,6 +9,8 @@
 #include "glm/ext/vector_float2.hpp"
 #include "glm/ext/vector_float3.hpp"
 
+#include "BodyPoseTypes.h"
+
 // Shared result types passed from the vision/inference thread to the render
 // thread and the OSC streamer.
 
@@ -244,6 +246,13 @@ struct HandPose
 	// leaves the palm perfect while swinging the elbow around it.
 	float forearmConfidence= 0.f;
 
+	// Shoulder estimate from the vision body-pose solver, world space. Unlike
+	// the forearm it has no IMU source: valid only when a body-pose camera saw
+	// the shoulder and a world-anchored wrist existed to anchor it.
+	bool hasShoulder= false;
+	glm::vec3 shoulderPositionWorld{0.f};
+	float shoulderConfidence= 0.f;
+
 	// Wrist joint rotation: the palm expressed IN the forearm frame, i.e.
 	// the local rotation a skeleton hierarchy applies to the hand bone.
 	// Identity when the palm points straight along the forearm. Only
@@ -302,6 +311,22 @@ struct TrackingFrameResult
 	// and streamed.
 	std::array<TrackedHand, 2> hands;
 	std::array<HandPose, 2> poses;
+
+	// Raw landmark observation from this camera's opt-in body-pose stage
+	// (invalid on cameras without the stage). On the FUSED result this is
+	// unused; the solved outputs live on poses[] (forearm/shoulder) and head.
+	BodyPoseObservation body;
+
+	// Head pose from the vision body-pose solver, world space. Body-level
+	// rather than per-side; only ever filled on the fused result.
+	struct HeadPose
+	{
+		bool valid= false;
+		glm::vec3 positionWorld{0.f};
+		glm::quat orientationWorld{1.f, 0.f, 0.f, 0.f};
+		float confidence= 0.f;
+	};
+	HeadPose head;
 
 	// Debug: raw palm detector output + active hand ROI boxes
 	std::vector<DetectionBox> palmDetections;

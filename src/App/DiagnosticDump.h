@@ -37,8 +37,13 @@ struct DiagHandState
 	bool hasWorldPose= false;
 	glm::vec3 palmPositionWorld{0.f};
 	glm::quat palmOrientationWorld{1.f, 0.f, 0.f, 0.f};
-	bool hasForearmPose= false; // wrist IMU calibrated + streaming
+	bool hasForearmPose= false; // wrist IMU, or the vision body-pose solver
 	glm::quat forearmOrientationWorld{1.f, 0.f, 0.f, 0.f};
+	float forearmConfidence= 0.f;
+	// Vision body-pose shoulder (fused records only)
+	bool hasShoulder= false;
+	glm::vec3 shoulderPositionWorld{0.f};
+	float shoulderConfidence= 0.f;
 	glm::vec2 wristPx{0.f};
 	std::array<FingerAngles, FINGER_COUNT> fingers{};
 	// Lighting/exposure statistics of the hand ROI (camera records only; the
@@ -98,6 +103,11 @@ struct DiagCameraState
 	float lumaInstability= 0.f;
 	float lumaFlickerHz= 0.f;
 	DiagHandState sides[2];
+	// Compact body-pose observation summary (full landmarks are in the
+	// dump-time snapshot, not the history ring)
+	bool bodyValid= false;
+	float bodyConfidence= 0.f;
+	float bodyElbowVisibility[2]= {0.f, 0.f}; // indexed by eHandSide
 };
 
 struct DiagFrameRecord
@@ -109,6 +119,10 @@ struct DiagFrameRecord
 	float autoScaleFactor= 1.f;
 	FusionDiagnostics fusion;
 	DiagImuState imu[2];
+	// Solved head pose (vision body-pose solver)
+	bool headValid= false;
+	glm::vec3 headPositionWorld{0.f};
+	float headConfidence= 0.f;
 };
 
 // Raw IMU samples for the axis-convention diagnostic: exactly what the device

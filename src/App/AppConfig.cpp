@@ -9,6 +9,7 @@
 
 #include "nlohmann/json.hpp"
 
+#include "BodyPoseSolver.h" // BodyDimensions
 #include "HandPoseModel.h"
 #include "Logger.h"
 
@@ -184,6 +185,11 @@ static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 
 	restAnglesFromJson(j.value("restAngles", json::object()), profile.restAngles);
 
+	const json& bp= j.value("bodyPose", json::object());
+	profile.bodyPose.enabled= bp.value("enabled", false);
+	profile.bodyPose.poseFrameDivider= bp.value("poseFrameDivider", 2);
+	profile.bodyPose.detectorIntervalFrames= bp.value("detectorIntervalFrames", 20);
+
 	const json& ex= j.value("extrinsics", json::object());
 	profile.extrinsics.present= ex.value("present", false);
 	profile.extrinsics.patternReprojectionErrorPx= ex.value("patternReprojectionErrorPx", 0.0);
@@ -220,6 +226,12 @@ static json cameraProfileToJson(const CameraProfile& profile)
 			 {"distortion", distortionToJson(mono.distortion_coefficients)},
 		 }},
 		{"restAngles", restAnglesToJson(profile.restAngles)},
+		{"bodyPose",
+		 {
+			 {"enabled", profile.bodyPose.enabled},
+			 {"poseFrameDivider", profile.bodyPose.poseFrameDivider},
+			 {"detectorIntervalFrames", profile.bodyPose.detectorIntervalFrames},
+		 }},
 		{"extrinsics",
 		 {
 			 {"present", profile.extrinsics.present},
@@ -230,6 +242,19 @@ static json cameraProfileToJson(const CameraProfile& profile)
 			 {"markerFromCamera", dmat4ToJson(profile.extrinsics.markerFromCamera)},
 		 }},
 	};
+}
+
+BodyDimensions makeBodyDimensions(const AppConfig& config)
+{
+	BodyDimensions dimensions;
+	dimensions.forearmLengthMeters= config.body.forearmLengthMeters;
+	dimensions.upperArmLengthMeters= config.body.bDeriveUpperArmFromShoulderWidth
+		? config.body.shoulderWidthMeters * config.body.upperArmPerShoulderWidth
+		: config.body.upperArmLengthMeters;
+	dimensions.shoulderWidthMeters= config.body.shoulderWidthMeters;
+	dimensions.headWidthMeters= config.body.headWidthMeters;
+	dimensions.noseForwardMeters= config.body.noseForwardMeters;
+	return dimensions;
 }
 
 // -- AppConfig ----
@@ -387,7 +412,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.imu.enabled= im.value("enabled", true);
 	config.imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
 	config.imu.swapSides= im.value("swapSides", false);
-	config.imu.forearmLengthMeters= im.value("forearmLengthMeters", 0.25f);
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		const char* key= sideIndex == 0 ? "mountingLeft" : "mountingRight";
@@ -398,6 +422,21 @@ static void applyConfigJson(AppConfig& config, const json& j)
 			glm::quat((float)im[key][3], (float)im[key][0], (float)im[key][1], (float)im[key][2]);
 		config.imu.mountingPresent[sideIndex]= true;
 	}
+
+	// Legacy configs kept the forearm length on the imu block
+	const json& bd= j.value("body", json::object());
+	config.body.forearmLengthMeters=
+		bd.value("forearmLengthMeters", im.value("forearmLengthMeters", 0.25f));
+	config.body.upperArmLengthMeters= bd.value("upperArmLengthMeters", 0.30f);
+	config.body.bDeriveUpperArmFromShoulderWidth= bd.value("deriveUpperArmFromShoulderWidth", true);
+	config.body.upperArmPerShoulderWidth= bd.value("upperArmPerShoulderWidth", 1.05f);
+	config.body.shoulderWidthMeters= bd.value("shoulderWidthMeters", 0.40f);
+	config.body.headWidthMeters= bd.value("headWidthMeters", 0.15f);
+	config.body.noseForwardMeters= bd.value("noseForwardMeters", 0.11f);
+
+	const json& rec= j.value("recording", json::object());
+	config.recording.recordRawFrames= rec.value("recordRawFrames", false);
+	config.recording.jpegQuality= rec.value("jpegQuality", 85);
 
 	const json& hs= j.value("handScale", json::object());
 	config.handScale.present= hs.value("present", false);
@@ -471,7 +510,6 @@ std::string AppConfig::toJsonString() const
 			{"enabled", imu.enabled},
 			{"visionYawSigma", imu.visionYawSigma},
 			{"swapSides", imu.swapSides},
-			{"forearmLengthMeters", imu.forearmLengthMeters},
 		};
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{
@@ -482,6 +520,21 @@ std::string AppConfig::toJsonString() const
 		}
 		j["imu"]= imuJson;
 	}
+
+	j["body"]= {
+		{"forearmLengthMeters", body.forearmLengthMeters},
+		{"upperArmLengthMeters", body.upperArmLengthMeters},
+		{"deriveUpperArmFromShoulderWidth", body.bDeriveUpperArmFromShoulderWidth},
+		{"upperArmPerShoulderWidth", body.upperArmPerShoulderWidth},
+		{"shoulderWidthMeters", body.shoulderWidthMeters},
+		{"headWidthMeters", body.headWidthMeters},
+		{"noseForwardMeters", body.noseForwardMeters},
+	};
+
+	j["recording"]= {
+		{"recordRawFrames", recording.recordRawFrames},
+		{"jpegQuality", recording.jpegQuality},
+	};
 
 	j["handScale"]= {
 		{"present", handScale.present},
