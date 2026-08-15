@@ -90,6 +90,7 @@ static int runReplayDumpTool(const TestArgs& args)
 			frameJson["replayedHead"]= {
 				{"valid", head.valid},
 				{"positionWorld", TrackingJson::vec3ToJson(head.positionWorld)},
+				{"orientationWorld", TrackingJson::quatToJson(head.orientationWorld)},
 				{"confidence", head.confidence},
 			};
 		}

@@ -61,11 +61,21 @@ glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDM
 	// routinely flips when the palm rotates away from the camera - which
 	// would mirror every extracted angle. Disambiguate geometrically instead,
 	// from two anatomical invariants:
-	//  (1) finger joints can only rotate about their hinge in the palmar
-	//      direction. The joint ROTATION AXIS (cross of successive bones)
-	//      stays aligned with the finger hinge at ANY curl depth - unlike
-	//      bone tilt, which reverses past 180 degrees of total curl (a fist)
-	//  (2) the thumb metacarpal sits palmar of the wrist-index-pinky plane
+	//  (1) flexed finger joints rotate about their hinge toward the palmar
+	//      side. The joint ROTATION AXIS (cross of successive bones) stays
+	//      aligned with the finger hinge at any curl DEPTH - unlike bone tilt,
+	//      which reverses past 180 degrees of total curl (a fist). It needs
+	//      actual flexion though: fingers hyperextend ~10-20 degrees, so a
+	//      flat hand rotates its joints the WRONG way by a small amount, and
+	//      the sign of a small sum means nothing. Measured over recording
+	//      2026-08-14_19-29-22: with |curlEvidence| under 0.5 the sign is
+	//      right on 39-44% of frames (worse than a coin), and at 1.0 or more
+	//      on 86-92%. Only the strong band may argue with continuity.
+	//  (2) the thumb metacarpal sits palmar of the wrist-index-pinky plane.
+	//      Independent of flexion, so this is the one that still means
+	//      something on a flat hand (right 76%, left 93% in the same band) -
+	//      but it is weak, a tenth of curl's magnitude, so it seeds a new
+	//      hand rather than overturning one already being tracked.
 	float curlEvidence= 0.f;
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
 	{
@@ -93,39 +103,72 @@ glm::mat4 HandPoseModel::computePalmFrame(const std::array<glm::vec3, HAND_LANDM
 	// handedness label, which flips whenever the palm turns away from a
 	// camera. Deciding this independently every frame is what let the left
 	// palm frame flip mid-capture and poison the mounting average.
-	constexpr float kDecisiveEvidence= 0.25f; // override the remembered side
-	constexpr float kWeakEvidence= 0.05f;     // better than nothing when new
+	// Curl strong enough to be worth 86-92% rather than a coin flip; only
+	// this may contradict the remembered side
+	constexpr float kCurlOverride= 1.0f;
+	constexpr float kWeakEvidence= 0.05f; // better than nothing when new
+	// Decisive evidence AGAINST the remembered side has to persist. Turning a
+	// hand over rotates the remembered normal with it, so following real
+	// motion never needs continuity broken - a contradiction is a bad
+	// reconstruction until proven otherwise. Sustained contradiction still
+	// wins, so a memory that started out wrong recovers within a few frames.
+	constexpr int kFlipEvidenceCount= 5;
 
 	const bool bRemembered= ioMemory != nullptr && glm::dot(ioMemory->palmarNormal, ioMemory->palmarNormal) > 0.25f;
+	const float rememberedSign=
+		bRemembered ? (glm::dot(normal, ioMemory->palmarNormal) >= 0.f ? 1.f : -1.f) : 0.f;
+	const float evidenceSign= palmarScore > 0.f ? 1.f : -1.f;
 
+	bool bContradicting= false;
 	float palmarSign;
-	if (fabsf(palmarScore) > kDecisiveEvidence || !bRemembered)
+	if (!bRemembered)
 	{
-		if (fabsf(palmarScore) > kWeakEvidence)
+		// Nothing to be continuous with, so take the best signal available:
+		// curl when the hand is properly flexed, otherwise the thumb, which
+		// is the only one that survives a flat hand
+		if (fabsf(curlEvidence) >= kCurlOverride)
 		{
-			palmarSign= palmarScore > 0.f ? 1.f : -1.f;
+			palmarSign= curlEvidence > 0.f ? 1.f : -1.f;
 		}
-		else if (bRemembered)
+		else if (fabsf(thumbEvidence) > kWeakEvidence)
 		{
-			palmarSign= glm::dot(normal, ioMemory->palmarNormal) >= 0.f ? 1.f : -1.f;
+			palmarSign= thumbEvidence > 0.f ? 1.f : -1.f;
 		}
 		else
 		{
-			// Nothing remembered and no usable geometry (perfectly flat hand,
-			// thumb in-plane): the label is the last resort. For a RIGHT hand
-			// the raw cross points out of the BACK of the hand; for a LEFT
-			// hand out of the palm.
+			// No usable geometry at all (flat hand, thumb in-plane): the
+			// label is the last resort. For a RIGHT hand the raw cross points
+			// out of the BACK of the hand; for a LEFT hand out of the palm.
 			palmarSign= side == eHandSide::Right ? -1.f : 1.f;
 		}
 	}
+	else if (fabsf(curlEvidence) >= kCurlOverride && evidenceSign != rememberedSign)
+	{
+		bContradicting= true;
+		if (palmarScore != ioMemory->countedScore)
+		{
+			ioMemory->contradictionCount++;
+			ioMemory->countedScore= palmarScore;
+		}
+		palmarSign= ioMemory->contradictionCount >= kFlipEvidenceCount ? evidenceSign : rememberedSign;
+	}
 	else
 	{
-		// Evidence is not decisive - keep the side we already know
-		palmarSign= glm::dot(normal, ioMemory->palmarNormal) >= 0.f ? 1.f : -1.f;
+		// Agreeing, or too weak to argue with what we already know
+		palmarSign= rememberedSign;
 	}
 
 	if (ioMemory != nullptr)
+	{
+		// The streak has to be CONSECUTIVE: one agreeing or inconclusive
+		// observation spends it, and so does actually flipping
+		if (!bContradicting || palmarSign != rememberedSign)
+		{
+			ioMemory->contradictionCount= 0;
+			ioMemory->countedScore= 0.f;
+		}
 		ioMemory->palmarNormal= normal * palmarSign;
+	}
 
 	// Orthonormalize: Z out of the palmar surface, Y completes right-handed
 	glm::vec3 zAxis= safeNormalize(normal * palmarSign - xAxis * glm::dot(normal * palmarSign, xAxis));

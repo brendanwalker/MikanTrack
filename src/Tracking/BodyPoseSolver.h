@@ -106,6 +106,29 @@ public:
 		const glm::vec3& rayOrigin, const glm::vec3& rayDir,
 		const glm::vec3& sphereCenter, float sphereRadius, RaySphereHit& outHit);
 
+	// Where the elbow can be given BOTH bones: the circle on which the upper
+	// arm's sphere about the shoulder meets the forearm's sphere about the
+	// wrist. Both lengths then hold by construction, and the 2D landmark is
+	// demoted from defining the elbow to picking a point on that circle - a
+	// far weaker demand on a noisy landmark, and one that cannot produce an
+	// anatomically impossible arm however wrong the landmark is.
+	//
+	// Returns the (at most two) circle points nearest the camera ray, nearest
+	// first. An arm that cannot reach - the wrist further than both bones laid
+	// end to end, or nearer than their difference - has no circle; that
+	// straightens to a single point rather than failing, keeping the estimate
+	// CONTINUOUS through full extension the way the ray-sphere clamp does.
+	struct BoneCircleHit
+	{
+		glm::vec3 candidates[2]{};
+		int count= 0;
+		bool bClamped= false;
+	};
+	static bool solveElbowOnBoneCircle(
+		const glm::vec3& shoulder, const glm::vec3& wrist,
+		float upperArmLength, float forearmLength,
+		const glm::vec3& rayOrigin, const glm::vec3& rayDir, BoneCircleHit& outHit);
+
 private:
 	// Constant-velocity residual EMA per solved joint (HandFusion's jitter
 	// pattern), divided by dt^2 so it reads as an ACCELERATION. The hands'
@@ -136,11 +159,6 @@ private:
 		bool bHasShoulder= false;
 		glm::vec3 shoulderPositionWorld{0.f};
 		float shoulderConfidence= 0.f;
-
-		// Consecutive model frames whose shoulder-length check preferred the
-		// OTHER sphere intersection. Only a sustained disagreement overrides
-		// continuity, because the check is individually noisy.
-		int rootDisagreeStreak= 0;
 	};
 
 	struct HeadEstimate

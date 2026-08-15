@@ -13,6 +13,7 @@ BodyDimensions makeDimensions()
 	dimensions.upperArmLengthMeters= 0.30f;
 	dimensions.shoulderWidthMeters= 0.40f;
 	dimensions.headWidthMeters= 0.15f;
+	dimensions.noseForwardMeters= 0.09f;
 	return dimensions;
 }
 
@@ -179,6 +180,94 @@ static int runBodyPoseTest(const TestArgs&)
 		check(fused.poses[0].hasForearmPose, "elbow solved");
 		check(fabsf(glm::length(elbowSolved - wristWorld) - dims.forearmLengthMeters) < 1e-4f,
 			  "elbow sits one forearm length from the wrist");
+	}
+
+	// (c2) With a shoulder, the elbow comes off the circle where the two bone
+	// spheres meet, so BOTH lengths hold and the landmark only picks a point
+	// on it. The bone lengths must survive a badly wrong landmark.
+	{
+		const glm::vec3 shoulder(-0.25f, 0.10f, 1.05f);
+		const glm::vec3 wrist(0.10f, 0.05f, 1.00f);
+		BodyPoseSolver::BoneCircleHit circle;
+		const glm::vec3 cameraPos(0.f);
+
+		// A ray through a plausible elbow first: the solve has to recover it
+		const glm::vec3 elbowTrue= shoulder +
+			glm::normalize(glm::vec3(0.55f, -0.5f, 0.2f)) * dims.upperArmLengthMeters;
+		const bool bSolved= BodyPoseSolver::solveElbowOnBoneCircle(
+			shoulder, wrist, glm::length(elbowTrue - shoulder), glm::length(elbowTrue - wrist),
+			cameraPos, glm::normalize(elbowTrue - cameraPos), circle);
+		check(bSolved && circle.count >= 1, "bone circle solved");
+		check(bSolved && glm::length(circle.candidates[0] - elbowTrue) < 1e-3f,
+			  "the circle point nearest the ray IS the true elbow");
+
+		// Now a ray pointing somewhere else entirely. The answer will be the
+		// wrong point on the circle, but it must still be a REAL arm.
+		BodyPoseSolver::BoneCircleHit wrongRay;
+		const bool bWrongSolved= BodyPoseSolver::solveElbowOnBoneCircle(
+			shoulder, wrist, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+			cameraPos, glm::normalize(glm::vec3(-0.9f, 0.4f, 0.2f)), wrongRay);
+		const bool bBonesHold= bWrongSolved && wrongRay.count >= 1 &&
+			fabsf(glm::length(wrongRay.candidates[0] - shoulder) - dims.upperArmLengthMeters) < 1e-4f &&
+			fabsf(glm::length(wrongRay.candidates[0] - wrist) - dims.forearmLengthMeters) < 1e-4f;
+		check(bBonesHold, "both bone lengths hold even for a badly wrong landmark");
+
+		// A little past reach is a straight arm plus calibration error
+		const float reach= dims.upperArmLengthMeters + dims.forearmLengthMeters;
+		BodyPoseSolver::BoneCircleHit stretched;
+		const glm::vec3 farWrist= shoulder + glm::vec3(0.f, 0.f, 1.f) * (reach + 0.03f);
+		const bool bStretched= BodyPoseSolver::solveElbowOnBoneCircle(
+			shoulder, farWrist, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+			cameraPos, glm::vec3(0.f, 0.f, 1.f), stretched);
+		check(bStretched && stretched.bClamped && stretched.count == 1 &&
+				  fabsf(glm::length(stretched.candidates[0] - shoulder) - dims.upperArmLengthMeters) < 1e-4f,
+			  "an arm a little past full reach straightens instead of failing");
+
+		// Far past reach is a broken shoulder, not a straight arm: declining
+		// sends the caller back to the wrist alone rather than flinging the
+		// elbow toward wherever the shoulder landed
+		BodyPoseSolver::BoneCircleHit impossible;
+		check(!BodyPoseSolver::solveElbowOnBoneCircle(
+				  shoulder, shoulder + glm::vec3(0.f, 0.f, 1.f) * (reach * 2.f),
+				  dims.upperArmLengthMeters, dims.forearmLengthMeters,
+				  cameraPos, glm::vec3(0.f, 0.f, 1.f), impossible),
+			  "an unreachable wrist declines the shoulder rather than trusting it");
+	}
+
+	// (c3) The regression this replaced: a shoulder at the WRIST'S RANGE.
+	// Solving the elbow from the ray and checking the upper arm afterwards is
+	// blind there - the two ray solutions straddle the wrist depth almost
+	// symmetrically, so both look like plausible upper arms and the nearer,
+	// wrong one can score better. Over recording 2026-08-14_20-46-03 that put
+	// the left elbow 23 cm TOWARD the camera from the wrist, at shoulder
+	// height, for every frame. Reaching forward, the elbow trails.
+	{
+		TestRig rig;
+		TrackingFrameResult fused;
+		fused.timestampMs= 1000.0;
+
+		// Shoulder and wrist at the same range, wrist reaching toward the
+		// camera and inboard; the true elbow hangs below and behind
+		const glm::vec3 shoulderTrue(-0.28f, 0.16f, 0.95f);
+		const glm::vec3 wristWorld(-0.02f, 0.26f, 0.92f);
+		const glm::vec3 elbowTrue= shoulderTrue + glm::normalize(glm::vec3(0.25f, 0.30f, 0.55f)) *
+			dims.upperArmLengthMeters;
+
+		setPoseWithWrist(fused.poses[0], 0, wristWorld, 0.8f);
+		rig.setShoulders(dims.shoulderWidthMeters, glm::length(shoulderTrue));
+		rig.setLandmark(ePoseLandmark::LEFT_SHOULDER, shoulderTrue);
+		rig.setLandmark(ePoseLandmark::LEFT_ELBOW, elbowTrue);
+
+		BodyPoseSolver solver;
+		solver.solve(rig.candidates, dims, fused);
+
+		const glm::vec3 elbow= fused.poses[0].getElbowPositionWorld(dims.forearmLengthMeters);
+		check(fused.poses[0].hasForearmPose, "reaching-forward elbow solved");
+		check(glm::length(elbow) > glm::length(wristWorld) - 0.05f,
+			  "a reaching arm keeps the elbow behind the wrist, not toward the camera");
+		check(fabsf(glm::length(elbow - fused.poses[0].shoulderPositionWorld) -
+					dims.upperArmLengthMeters) < 1e-3f,
+			  "the solved elbow is exactly one upper arm from the solved shoulder");
 	}
 
 	// (d) The shoulder RAY breaks the cold-start tie: the two intersections
@@ -353,8 +442,10 @@ static int runBodyPoseTest(const TestArgs&)
 		glm::vec3 leftEar, rightEar;
 		placeSymmetricPair(dims.headWidthMeters, 1.20f, 0.1f, leftEar, rightEar);
 		const glm::vec3 earMid= 0.5f * (leftEar + rightEar);
-		// Nose forward of the ear axis AND skewed along it
-		const glm::vec3 nose= earMid + glm::vec3(0.02f, 0.01f, -0.10f);
+		// Nose forward of the ear axis AND skewed along it, at the modelled
+		// distance so the ray-sphere solve recovers it exactly
+		const glm::vec3 nose=
+			earMid + glm::normalize(glm::vec3(0.02f, 0.01f, -0.10f)) * dims.noseForwardMeters;
 		rig.setLandmark(ePoseLandmark::LEFT_EAR, leftEar);
 		rig.setLandmark(ePoseLandmark::RIGHT_EAR, rightEar);
 		rig.setLandmark(ePoseLandmark::NOSE, nose);
@@ -371,8 +462,69 @@ static int runBodyPoseTest(const TestArgs&)
 			fabsf(glm::dot(frame[1], frame[2])) < 1e-5f && fabsf(glm::length(frame[0]) - 1.f) < 1e-5f &&
 			fabsf(glm::length(frame[1]) - 1.f) < 1e-5f && fabsf(glm::length(frame[2]) - 1.f) < 1e-5f;
 		check(bOrthonormal, "head frame orthonormal");
-		check(glm::dot(frame[1], glm::normalize(leftEar - rightEar)) > 0.999f, "head +Y along the ear axis");
-		check(glm::dot(frame[0], glm::normalize(nose - earMid)) > 0.7f, "head +X toward the nose");
+		// FORWARD is the axis that survives orthonormalization, exactly; the
+		// ear axis gives up its forward component instead. The other way round
+		// deletes yaw, which lives entirely in the nose's skew along the ears.
+		check(glm::dot(frame[0], glm::normalize(nose - earMid)) > 0.9999f, "head +X exactly toward the nose");
+		check(glm::dot(frame[1], glm::normalize(leftEar - rightEar)) > 0.9f, "head +Y near the ear axis");
+	}
+
+	// (i2) A yawed head must report its yaw. The ear axis alone cannot carry
+	// it - both ears are placed at one range, so that axis is always square to
+	// the view - which is why forward has to be the axis the frame is built
+	// from. Deriving forward from the ears instead read 10 degrees of yaw
+	// ANTI-correlated with the truth over recording 2026-08-14_19-53-18, while
+	// 48 degrees were being performed.
+	{
+		const glm::vec3 up(0.f, -1.f, 0.f); // camera +Y is down, so up is -Y
+		const glm::vec3 headCenter(0.f, 0.f, 1.10f);
+		const glm::vec3 zeroYawForward(0.f, 0.f, -1.f); // facing the camera
+
+		auto solveYaw= [&](float trueYawRadians) {
+			const glm::quat rotation= glm::angleAxis(trueYawRadians, up);
+			const glm::vec3 forward= rotation * zeroYawForward;
+			const glm::vec3 left= glm::cross(up, forward);
+
+			TestRig rig;
+			TrackingFrameResult fused;
+			fused.timestampMs= 1000.0;
+			rig.setLandmark(ePoseLandmark::LEFT_EAR, headCenter + left * (dims.headWidthMeters * 0.5f));
+			rig.setLandmark(ePoseLandmark::RIGHT_EAR, headCenter - left * (dims.headWidthMeters * 0.5f));
+			rig.setLandmark(ePoseLandmark::NOSE, headCenter + forward * dims.noseForwardMeters);
+
+			BodyPoseSolver solver;
+			solver.solve(rig.candidates, dims, fused);
+			if (!fused.head.valid)
+				return 0.f;
+
+			const glm::vec3 recovered= glm::mat3_cast(fused.head.orientationWorld)[0];
+			return atan2f(glm::dot(glm::cross(zeroYawForward, recovered), up),
+						  glm::dot(zeroYawForward, recovered));
+		};
+
+		const float turnedLeft= glm::degrees(solveYaw(glm::radians(25.f)));
+		const float turnedRight= glm::degrees(solveYaw(glm::radians(-25.f)));
+		MIKAN_LOG_INFO("test-bodypose")
+			<< "  yaw recovery: +25 deg reads " << turnedLeft << ", -25 deg reads " << turnedRight;
+		check(fabsf(turnedLeft - 25.f) < 6.f, "a head turned one way reports that yaw");
+		check(fabsf(turnedRight + 25.f) < 6.f, "a head turned the other way reports that yaw");
+	}
+
+	// (i3) An implausible range is a collapsed detection, not a distant head
+	{
+		TestRig rig;
+		TrackingFrameResult fused;
+		fused.timestampMs= 1000.0;
+		glm::vec3 leftEar, rightEar;
+		placeSymmetricPair(dims.headWidthMeters, 3.00f, 0.f, leftEar, rightEar);
+		const glm::vec3 earMid= 0.5f * (leftEar + rightEar);
+		rig.setLandmark(ePoseLandmark::LEFT_EAR, leftEar);
+		rig.setLandmark(ePoseLandmark::RIGHT_EAR, rightEar);
+		rig.setLandmark(ePoseLandmark::NOSE, earMid + glm::vec3(0.f, 0.f, -dims.noseForwardMeters));
+
+		BodyPoseSolver solver;
+		solver.solve(rig.candidates, dims, fused);
+		check(!fused.head.valid, "a head beyond the plausible range is withheld");
 	}
 
 	// (j) Gates: low visibility withholds each output
@@ -404,6 +556,42 @@ static int runBodyPoseTest(const TestArgs&)
 		BodyPoseSolver soloSolver;
 		soloSolver.solve(soloRig.candidates, dims, soloFused);
 		check(!soloFused.poses[0].hasShoulder, "a single visible shoulder fixes no depth");
+	}
+
+	// The provided mask has to survive a recording round trip, and it holds
+	// 33 slots - one more than a 32-bit field can address. Untested until
+	// now, which is how a shift-by-33 sat in the legacy read path.
+	{
+		BodyPoseObservation body;
+		body.valid= true;
+		body.modelFrameIndex= 7;
+		body.confidence= 0.8f;
+		for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
+		{
+			body.imagePoints[landmark]= glm::vec3((float)landmark, (float)(landmark * 2), 0.f);
+			body.visibility[landmark]= 0.5f;
+		}
+		// Every slot, including the last one
+		body.providedMask= (1ull << POSE_LANDMARK_COUNT) - 1ull;
+		check(body.isProvided(POSE_LANDMARK_COUNT - 1), "the last slot is addressable");
+
+		BodyPoseObservation restored;
+		TrackingJson::bodyPoseFromJson(TrackingJson::bodyPoseToJson(body), restored);
+		check(restored.providedMask == body.providedMask, "the full mask survives the round trip");
+
+		// Recordings predating the field must read as all-provided, not as
+		// the single slot a truncated shift would leave
+		nlohmann::json legacy= TrackingJson::bodyPoseToJson(body);
+		legacy.erase("providedMask");
+		BodyPoseObservation legacyBody;
+		TrackingJson::bodyPoseFromJson(legacy, legacyBody);
+		int legacyProvided= 0;
+		for (int landmark= 0; landmark < POSE_LANDMARK_COUNT; ++landmark)
+			legacyProvided+= legacyBody.isProvided(landmark) ? 1 : 0;
+		// The value too, so a serialization path that narrowed the field
+		// would be caught even though every slot still read as provided
+		check(legacyProvided == POSE_LANDMARK_COUNT && legacyBody.providedMask == body.providedMask,
+			  "a mask-less recording reads as all 33 provided");
 	}
 
 	if (failures == 0)

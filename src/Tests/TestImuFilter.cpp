@@ -810,10 +810,11 @@ static int runImuFilterTest(const TestArgs& args)
 	// The test asserts the CONTRAST: the unprotected path must flip,
 	// or the fix is being credited for nothing.
 	{
-		// A flat hand whose fingers carry a barely-there curl. The
-		// curl sign alternates, which is what landmark noise does to a
-		// hand held flat, and it keeps the score inside the weak band
-		// where the old code had no stable answer.
+		// A flat hand: the fingers carry a barely-there curl, far too weak
+		// to say anything, and the thumb - the only signal that survives a
+		// flat hand - jitters out of plane instead of holding a side. Both
+		// alternate, which is what landmark noise does to a hand held flat,
+		// so nothing but continuity can answer.
 		auto buildHand= [](float curlSign) {
 			std::array<glm::vec3, HAND_LANDMARK_COUNT> points{};
 			points[(int)eHandLandmark::WRIST]= glm::vec3(0.f, 0.f, 0.f);
@@ -823,11 +824,15 @@ static int runImuFilterTest(const TestArgs& args)
 				const int* joints= FINGER_JOINTS[finger];
 				const glm::vec3 base(0.075f, spread[finger], 0.f);
 				points[joints[0]]= base;
+				// The thumb stays straight and shifts bodily off the palm
+				// plane, so it contributes a side opinion but no curl
+				const bool bThumb= finger == (int)eFinger::Thumb;
 				for (int joint= 1; joint < 4; ++joint)
 				{
 					const float along= 0.022f * (float)joint;
 					// Quadratic droop = a gentle curl; ~0.5 deg per joint
-					const float curl= curlSign * 0.00018f * (float)(joint * joint);
+					const float curl= bThumb ? curlSign * 0.011f
+											 : curlSign * 0.00018f * (float)(joint * joint);
 					points[joints[joint]]= base + glm::vec3(along, 0.f, curl);
 				}
 			}
@@ -950,6 +955,86 @@ static int runImuFilterTest(const TestArgs& args)
 		{
 			MIKAN_LOG_ERROR("test-imufilter")
 				<< "(p) FAILED: a brief contradiction must be ignored and a sustained one adopted";
+			result= 1;
+		}
+	}
+
+	// (q) Weak curl cannot argue with a remembered side, and a flat hand is
+	// seeded from the thumb rather than the handedness label.
+	//
+	// Fingers hyperextend a little, so a flat hand curls its joints slightly
+	// the WRONG way - real geometry, not noise, which is why (p)'s streak
+	// counter alone let it through after 5 frames. Measured over recording
+	// 2026-08-14_19-29-22, that held for 86 frames and rolled the right hand
+	// and forearm over. Only strongly flexed fingers may overturn continuity;
+	// below that the flexion-independent thumb is the one signal left.
+	{
+		auto buildHand= [](float curlCoefficient, float thumbOffset) {
+			std::array<glm::vec3, HAND_LANDMARK_COUNT> points{};
+			points[(int)eHandLandmark::WRIST]= glm::vec3(0.f, 0.f, 0.f);
+			const float spread[FINGER_COUNT]= {0.035f, 0.02f, 0.f, -0.018f, -0.032f};
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				const int* joints= FINGER_JOINTS[finger];
+				const glm::vec3 base(0.075f, spread[finger], 0.f);
+				points[joints[0]]= base;
+				const bool bThumb= finger == (int)eFinger::Thumb;
+				for (int joint= 1; joint < 4; ++joint)
+				{
+					const float along= 0.022f * (float)joint;
+					const float outOfPlane= bThumb ? thumbOffset
+												   : curlCoefficient * (float)(joint * joint);
+					points[joints[joint]]= base + glm::vec3(along, 0.f, outOfPlane);
+				}
+			}
+			return points;
+		};
+		// Distinct landmarks each step: the streak counter advances once per
+		// observation, so a frozen hand would count once however long it lasts
+		int nudge= 0;
+		auto palmZ= [&](float curlCoefficient, float thumbOffset,
+						HandPoseModel::PalmarSideMemory& memory) {
+			std::array<glm::vec3, HAND_LANDMARK_COUNT> points= buildHand(curlCoefficient, thumbOffset);
+			for (glm::vec3& point : points)
+				point.x+= 0.00002f * (float)(nudge++);
+			return glm::vec3(HandPoseModel::computePalmFrame(points, eHandSide::Left, &memory)[2]);
+		};
+
+		HandPoseModel::PalmarSideMemory memory;
+		const glm::vec3 established= palmZ(0.006f, 0.f, memory);
+
+		// Sustained but weak opposite curl - a flat, slightly hyperextended
+		// hand. This coefficient puts |curlEvidence| at 0.82: past the 0.25
+		// that used to be decisive, under the 1.0 that now is, and inside
+		// the 0.29-0.64 the live event measured. Far longer than the streak
+		// counter, and it must still not land.
+		int weakFlips= 0;
+		for (int step= 0; step < 60; ++step)
+			if (glm::dot(palmZ(-0.0012f, 0.f, memory), established) < 0.f)
+				weakFlips++;
+
+		// Properly flexed the other way (|curlEvidence| 2.5): worth believing
+		bool bStrongFlipped= false;
+		for (int step= 0; step < 15 && !bStrongFlipped; ++step)
+			bStrongFlipped= glm::dot(palmZ(-0.006f, 0.f, memory), established) < 0.f;
+
+		// A flat hand with nothing but a thumb opinion, seen for the first
+		// time. The label fallback would pick +Z for a left hand, so the
+		// thumb winning is observable.
+		HandPoseModel::PalmarSideMemory fresh;
+		const glm::vec3 seeded= palmZ(0.f, 0.011f, fresh);
+		const bool bThumbSeeded= seeded.z > 0.f;
+
+		MIKAN_LOG_INFO("test-imufilter")
+			<< "(q) curl strength gate: " << weakFlips << " flips from 60 weak contradicting frames, "
+			<< "strong contradiction adopted=" << bStrongFlipped << ", flat hand seeded from thumb="
+			<< bThumbSeeded;
+
+		if (weakFlips != 0 || !bStrongFlipped || !bThumbSeeded)
+		{
+			MIKAN_LOG_ERROR("test-imufilter")
+				<< "(q) FAILED: only strong flexion may overturn the remembered side, "
+				   "and a flat hand seeds from the thumb";
 			result= 1;
 		}
 	}

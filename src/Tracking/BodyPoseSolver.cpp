@@ -23,18 +23,26 @@ static constexpr float kJitterEmaAlpha= 0.2f;
 // and a filter resuming across one would drag the estimate through the hole)
 static constexpr double kMaxHoldMs= 500.0;
 
-// Escape hatch for a wrong initial choice of sphere intersection. The elbow
-// must also sit one upper-arm length from the shoulder, which is INDEPENDENT
-// of the depth ambiguity that picks the intersection - but measured live it
-// prefers the wrong root on 19-43% of individual frames, so it only overrides
-// continuity after a sustained, clear disagreement. Measured on the same
-// session: fires once per arm over 29 seconds.
-static constexpr float kShoulderLengthMarginM= 0.06f;
-static constexpr int kRootOverrideFrames= 5;
-
 // Two rays closer to parallel than this cannot resolve a separation into a
 // depth (the pair projects to nearly one point)
 static constexpr float kMinRaySeparation= 1e-3f;
+
+// A joint this far from the camera watching it is not on the person. Any
+// solve that divides a known separation by an apparent one blows up when the
+// model collapses that pair: measured on recording 2026-08-14_19-53-18, the
+// head keypoints landed 13 px apart and stacked vertically, dividing out to
+// an 8.4 m head that the smoothing then dragged back over 80 frames. The gap
+// is not close - every good frame that session solved between 0.55 and 0.71 m
+// and every bad one past 4.7 m - so a generous window costs nothing and a
+// wild value never reaches the estimates that hang off it.
+static constexpr float kMinBodyDepthMeters= 0.15f;
+static constexpr float kMaxBodyDepthMeters= 2.0f;
+
+// How far past a straight arm the wrist may sit before the shoulder is not
+// believable. Bone lengths are calibrated proportions, so a little overshoot
+// is ordinary and straightens the arm; a lot means the shoulder is wrong, and
+// the elbow should not be dragged toward it.
+static constexpr float kMaxReachOvershoot= 1.15f;
 
 // One-euro parameters for the body estimates. Slower than the hand palm
 // (3.0 Hz): these are IK hints refreshed at a fraction of the camera rate, so
@@ -109,6 +117,110 @@ bool BodyPoseSolver::intersectRaySphere(
 	outHit.bNearValid= true;
 	outHit.bFarValid= true;
 	outHit.bClamped= true;
+	return true;
+}
+
+bool BodyPoseSolver::solveElbowOnBoneCircle(
+	const glm::vec3& shoulder, const glm::vec3& wrist,
+	float upperArmLength, float forearmLength,
+	const glm::vec3& rayOrigin, const glm::vec3& rayDir, BoneCircleHit& outHit)
+{
+	outHit= BoneCircleHit();
+	if (upperArmLength <= 0.f || forearmLength <= 0.f)
+		return false;
+
+	const glm::vec3 shoulderToWrist= wrist - shoulder;
+	const float span= glm::length(shoulderToWrist);
+	if (span < 1e-4f)
+		return false;
+	const glm::vec3 axis= shoulderToWrist / span;
+
+	// Modestly out of reach is a straight arm plus calibration error, and the
+	// closest the two bones can come to it is exactly straight. WILDLY out of
+	// reach is a broken shoulder, and straightening toward one of those would
+	// fling the elbow: decline instead and let the caller fall back to the
+	// wrist alone, which at least cannot move further than a forearm.
+	if (span > (upperArmLength + forearmLength) * kMaxReachOvershoot)
+		return false;
+
+	if (span >= upperArmLength + forearmLength ||
+		span <= fabsf(upperArmLength - forearmLength))
+	{
+		outHit.candidates[0]= shoulder + axis * upperArmLength;
+		outHit.count= 1;
+		outHit.bClamped= true;
+		return true;
+	}
+
+	// Circle where the two spheres meet: centred on the shoulder-wrist axis
+	const float alongAxis=
+		(span * span + upperArmLength * upperArmLength - forearmLength * forearmLength) / (2.f * span);
+	const float radiusSquared= upperArmLength * upperArmLength - alongAxis * alongAxis;
+	if (radiusSquared <= 1e-8f)
+	{
+		outHit.candidates[0]= shoulder + axis * alongAxis;
+		outHit.count= 1;
+		outHit.bClamped= true;
+		return true;
+	}
+	const float radius= std::sqrt(radiusSquared);
+	const glm::vec3 center= shoulder + axis * alongAxis;
+
+	const glm::vec3 reference= fabsf(axis.z) < 0.9f ? glm::vec3(0.f, 0.f, 1.f) : glm::vec3(1.f, 0.f, 0.f);
+	const glm::vec3 planeX= glm::normalize(glm::cross(reference, axis));
+	const glm::vec3 planeY= glm::cross(axis, planeX);
+
+	auto pointAt= [&](float angle) {
+		return center + (planeX * cosf(angle) + planeY * sinf(angle)) * radius;
+	};
+	// Distance to the ray's LINE. A candidate behind the camera is rejected by
+	// the caller's reach checks, not here, so the metric stays smooth.
+	auto rayDistanceSquared= [&](const glm::vec3& point) {
+		const glm::vec3 fromOrigin= point - rayOrigin;
+		const glm::vec3 perpendicular= fromOrigin - rayDir * glm::dot(fromOrigin, rayDir);
+		return glm::dot(perpendicular, perpendicular);
+	};
+
+	// Distance to the ray around the circle is a degree-2 trigonometric
+	// polynomial, so it has at most two minima. Sampling finds which arcs hold
+	// them and a ternary search sharpens each: closed form here is a quartic,
+	// and this stays readable, deterministic (replay depends on it) and exact
+	// to well under a millimetre.
+	constexpr int kCircleSamples= 64;
+	constexpr int kRefineSteps= 24;
+	float sampled[kCircleSamples];
+	for (int i= 0; i < kCircleSamples; ++i)
+		sampled[i]= rayDistanceSquared(pointAt(glm::two_pi<float>() * (float)i / (float)kCircleSamples));
+
+	for (int i= 0; i < kCircleSamples; ++i)
+	{
+		const int previous= (i + kCircleSamples - 1) % kCircleSamples;
+		const int next= (i + 1) % kCircleSamples;
+		if (sampled[i] > sampled[previous] || sampled[i] > sampled[next])
+			continue;
+
+		const float step= glm::two_pi<float>() / (float)kCircleSamples;
+		float low= step * (float)(i - 1);
+		float high= step * (float)(i + 1);
+		for (int refine= 0; refine < kRefineSteps; ++refine)
+		{
+			const float third= (high - low) / 3.f;
+			const float a= low + third;
+			const float b= high - third;
+			if (rayDistanceSquared(pointAt(a)) < rayDistanceSquared(pointAt(b)))
+				high= b;
+			else
+				low= a;
+		}
+		if (outHit.count < 2)
+			outHit.candidates[outHit.count++]= pointAt(0.5f * (low + high));
+	}
+
+	if (outHit.count == 0)
+		return false;
+	if (outHit.count == 2 &&
+		rayDistanceSquared(outHit.candidates[1]) < rayDistanceSquared(outHit.candidates[0]))
+		std::swap(outHit.candidates[0], outHit.candidates[1]);
 	return true;
 }
 
@@ -227,7 +339,7 @@ void BodyPoseSolver::solveFromObservation(
 			? depthFromKnownSeparation(leftRay, rightRay, dimensions.shoulderWidthMeters)
 			: 0.f;
 
-		if (depth > 0.f)
+		if (depth >= kMinBodyDepthMeters && depth <= kMaxBodyDepthMeters)
 		{
 			const glm::vec3 shoulders[2]= {cameraPos + leftRay * depth, cameraPos + rightRay * depth};
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -276,83 +388,78 @@ void BodyPoseSolver::solveFromObservation(
 
 		const glm::vec3 wristWorld= pose.getWristPositionWorld();
 		const float forearmLength= dimensions.forearmLengthMeters;
+		const glm::vec3 elbowRay= pixelRay(elbowIndex);
 
-		// The elbow lies one forearm from the fused wrist, along the camera
-		// ray through its 2D landmark
-		RaySphereHit hit;
-		if (!intersectRaySphere(cameraPos, pixelRay(elbowIndex), wristWorld, forearmLength, hit))
-		{
-			// Degenerate geometry (the ray behind the camera, or straight
-			// through the wrist). With no model 3D to fall back on, this side
-			// simply has no forearm this frame.
-			tracker.invalidate();
-			arm.bHasForearm= false;
-			m_forearmDirFilter[sideIndex].reset();
-			continue;
-		}
+		glm::vec3 candidates[2];
+		int candidateCount= 0;
 
-		// Two intersections: the elbow is either in front of or behind the
-		// plane through the wrist perpendicular to the view ray. They sit
-		// ~400mm apart on this rig, so choosing wrong teleports the elbow.
-		const glm::vec3 candidates[2]= {hit.nearPoint, hit.farPoint};
-		int chosen= 0;
-		if (hit.bNearValid != hit.bFarValid)
+		if (arm.bHasShoulder)
 		{
-			chosen= hit.bNearValid ? 0 : 1;
-		}
-		else
-		{
-			// The upper arm has to reach: an elbow at the right depth sits
-			// one upper-arm length from the shoulder, and the wrong candidate
-			// typically misses by tens of centimetres. This only means
-			// anything because the shoulder above was solved WITHOUT the
-			// elbow - chained off it, the shoulder agreed with whichever
-			// candidate was picked and could never contradict it.
-			auto upperArmError= [&](int candidate) -> float {
-				return fabsf(glm::length(candidates[candidate] - arm.shoulderPositionWorld) -
-							 dimensions.upperArmLengthMeters);
-			};
-
-			if (!arm.bHasShoulder)
+			// Both bones known: the elbow is on the circle where their spheres
+			// meet, and the ray only picks a point on it. Measuring the ray
+			// against the shoulder the other way round - elbow from the ray,
+			// then check the upper arm reaches - is blind whenever the
+			// shoulder sits at the wrist's range, because the two ray
+			// solutions then straddle it almost symmetrically and score
+			// alike. Measured over recording 2026-08-14_20-46-03, that was
+			// every frame of the left arm (the two differed by 15 mm, and the
+			// nearer, wrong one scored BETTER), against 115 mm on the right.
+			BoneCircleHit circle;
+			if (solveElbowOnBoneCircle(arm.shoulderPositionWorld, wristWorld,
+									   dimensions.upperArmLengthMeters, forearmLength,
+									   cameraPos, elbowRay, circle))
 			{
-				// Nothing to measure against: continuity if there is any,
-				// else the desk prior - hands reach toward the camera, so the
-				// elbow trails behind the wrist.
-				chosen= 1;
-				if (arm.bHasForearm)
-				{
-					const glm::vec3 predicted= wristWorld + arm.forearmDirWorld * forearmLength;
-					chosen= glm::length(candidates[0] - predicted) <= glm::length(candidates[1] - predicted)
-						? 0 : 1;
-				}
+				candidateCount= circle.count;
+				for (int i= 0; i < circle.count; ++i)
+					candidates[i]= circle.candidates[i];
 			}
-			else if (arm.bHasForearm)
+		}
+
+		if (candidateCount == 0)
+		{
+			// No shoulder to close the chain: fall back to the elbow one
+			// forearm from the wrist along the ray, which fixes the forearm
+			// but leaves the upper arm unconstrained
+			RaySphereHit hit;
+			if (!intersectRaySphere(cameraPos, elbowRay, wristWorld, forearmLength, hit))
+			{
+				// Degenerate geometry (the ray behind the camera, or straight
+				// through the wrist). With no model 3D to fall back on, this
+				// side simply has no forearm this frame.
+				tracker.invalidate();
+				arm.bHasForearm= false;
+				m_forearmDirFilter[sideIndex].reset();
+				continue;
+			}
+			if (hit.bNearValid)
+				candidates[candidateCount++]= hit.nearPoint;
+			if (hit.bFarValid && !hit.bClamped)
+				candidates[candidateCount++]= hit.farPoint;
+			if (candidateCount == 0)
+			{
+				tracker.invalidate();
+				arm.bHasForearm= false;
+				m_forearmDirFilter[sideIndex].reset();
+				continue;
+			}
+		}
+
+		// Both candidates are anatomically valid now, so this only decides
+		// WHICH valid arm: continuity when there is any, else the desk prior -
+		// hands reach toward the camera, so the elbow trails behind the wrist.
+		int chosen= 0;
+		if (candidateCount > 1)
+		{
+			if (arm.bHasForearm)
 			{
 				const glm::vec3 predicted= wristWorld + arm.forearmDirWorld * forearmLength;
 				chosen= glm::length(candidates[0] - predicted) <= glm::length(candidates[1] - predicted)
 					? 0 : 1;
-
-				// Sustained disagreement escapes a wrong lock. One frame is
-				// not enough: the 2D shoulder wanders, and frame to frame
-				// continuity is the more reliable signal.
-				const int other= 1 - chosen;
-				if (upperArmError(other) + kShoulderLengthMarginM < upperArmError(chosen))
-				{
-					arm.rootDisagreeStreak++;
-					if (arm.rootDisagreeStreak >= kRootOverrideFrames)
-					{
-						chosen= other;
-						arm.rootDisagreeStreak= 0;
-					}
-				}
-				else
-				{
-					arm.rootDisagreeStreak= 0;
-				}
 			}
 			else
 			{
-				chosen= upperArmError(0) <= upperArmError(1) ? 0 : 1;
+				chosen= glm::length(candidates[0] - cameraPos) >= glm::length(candidates[1] - cameraPos)
+					? 0 : 1;
 			}
 		}
 		const glm::vec3 elbowWorld= candidates[chosen];
@@ -385,8 +492,19 @@ void BodyPoseSolver::solveFromObservation(
 
 		const glm::vec3 leftRay= pixelRay(leftEarIndex);
 		const glm::vec3 rightRay= pixelRay(rightEarIndex);
+
+		// Both ears at one range. Geometrically that should read a turned head
+		// as a receding one, since yaw foreshortens the true ear separation -
+		// but it measurably does NOT on this model, and correcting for it made
+		// things worse. Over recording 2026-08-14_19-53-18 the solved depth
+		// correlates with the yaw evidence at -0.01, and multiplying the
+		// separation by cos(yaw) took that to -0.54 and widened the depth
+		// swing from 149 to 168 mm. RTMPose does not place the ears like
+		// rigid points under rotation; it carries its own head prior and keeps
+		// their apparent separation. Do not reintroduce the correction without
+		// re-measuring that correlation.
 		const float depth= depthFromKnownSeparation(leftRay, rightRay, dimensions.headWidthMeters);
-		if (depth <= 0.f)
+		if (depth < kMinBodyDepthMeters || depth > kMaxBodyDepthMeters)
 		{
 			tracker.invalidate();
 			return;
@@ -421,11 +539,19 @@ void BodyPoseSolver::solveFromObservation(
 
 		const float stability= tracker.update(earMid, dtSeconds, kAccelReference);
 
+		// Stability alone says a head is trustworthy whenever it holds still,
+		// which a wrong one does perfectly: the collapsed-head frames above
+		// reported 1.00 while sitting 3.9 m from the truth. The landmark
+		// scores are the part of that judgement measured jitter cannot see.
+		const float landmarkQuality= std::min(
+			body.visibility[noseIndex],
+			std::min(body.visibility[leftEarIndex], body.visibility[rightEarIndex]));
+
 		m_head.bValid= true;
 		m_head.positionWorld= m_headPositionFilter.filter(earMid, dtSeconds);
 		m_head.leftDirWorld= m_headLeftDirFilter.filter(glm::normalize(leftDirRaw), dtSeconds);
 		m_head.forwardWorld= m_headForwardFilter.filter(glm::normalize(forwardRaw), dtSeconds);
-		m_head.confidence= stability;
+		m_head.confidence= stability * landmarkQuality;
 	}
 }
 
@@ -477,13 +603,23 @@ void BodyPoseSolver::applyEstimates(float forearmLengthMeters, TrackingFrameResu
 	{
 		// Re-orthonormalize here rather than at solve time: the two direction
 		// series are filtered independently, so their orthogonality is only
-		// restored once, on the way out
-		const glm::vec3 up= glm::cross(m_head.forwardWorld, m_head.leftDirWorld);
+		// restored once, on the way out.
+		//
+		// FORWARD is the axis that survives this, not left. Yaw lives entirely
+		// in the nose's offset along the ear axis, so rebuilding forward
+		// perpendicular to the ears is exactly the projection that deletes it -
+		// measured over recording 2026-08-14_19-53-18, that left 10 degrees of
+		// yaw ANTI-correlated with the image evidence (-0.45) against the 48
+		// degrees actually performed. Deriving left from forward instead
+		// tracks it at +0.98. What gets discarded this way is the ear axis's
+		// forward component, which is the quantity the equal-range ear
+		// placement was guessing at anyway.
+		const glm::vec3 forwardUnit= glm::normalize(m_head.forwardWorld);
+		const glm::vec3 up= glm::cross(forwardUnit, m_head.leftDirWorld);
 		if (glm::dot(up, up) < 1e-8f)
 			return;
 		const glm::vec3 upUnit= glm::normalize(up);
-		const glm::vec3 leftUnit= glm::normalize(m_head.leftDirWorld);
-		const glm::vec3 forwardUnit= glm::cross(leftUnit, upUnit);
+		const glm::vec3 leftUnit= glm::cross(upUnit, forwardUnit);
 
 		fused.head.valid= true;
 		fused.head.positionWorld= m_head.positionWorld;
