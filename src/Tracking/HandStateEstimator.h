@@ -73,6 +73,51 @@ struct HandStateEstimatorConfig
 	float maxResidualPx= 25.f;
 	int maxBadFitStreak= 5;
 
+	// Physical innovation gate: a fitted palm step implying more than this
+	// speed is not hand motion, it is a correspondence error (a mislabeled or
+	// phantom cluster whose pixels fit perfectly well - measured: a solo
+	// wrong-side observation teleported the palm 0.7 m in one fuse with a
+	// 15 px residual). Gated steps take the bad-fit hold path, so a genuine
+	// relocation still lands within maxBadFitStreak fuses via the reseed -
+	// the gate can delay truth briefly but never censor it for good.
+	float maxStepMetersPerS= 4.f;
+
+	// Anatomical joint-limit prior: one-sided quadratic penalties beyond the
+	// per-DoF limits (see angleLimits), in RAW angle space where flat hand is
+	// zero. Soft on purpose - the fit must never sit on a hard boundary
+	// discontinuity - and only active outside the limits, so plausible poses
+	// cost nothing. This is what absorbs the single-finger landmark snaps the
+	// measurement rows would otherwise follow.
+	bool jointLimitsEnabled= true;
+	// Excursion beyond a limit at which the penalty reaches unit cost
+	// (smaller = stiffer). The limit fights measurement rows, so stiffness is
+	// relative to pixelSigmaPx.
+	float jointLimitSigmaRad= 0.05f;
+
+	// Inter-joint coupling: DIP flexion is tendon-linked to PIP at roughly
+	// 2/3, so the four fingers get a weak residual pulling distal toward
+	// 0.67 x intermediate. Deviation at which the pull reaches unit cost
+	// (large = weak, deliberately: the link is approximate). Automatically
+	// superseded by a fitted angle prior, which contains the same coupling
+	// empirically. 0 disables.
+	float couplingSigmaRad= 0.25f;
+
+	// Fitted angle prior (per side): weak Mahalanobis pull toward the user's
+	// own pose distribution, fit offline by --fit-angle-prior. This is the
+	// term that tells a coordinated pose change (cheap under the fitted
+	// correlations) from a single-DoF landmark snap (expensive). weight
+	// scales the precision matrix; 1 = trust the fit as-is.
+	struct AnglePrior
+	{
+		static constexpr int k_angleCount= FINGER_COUNT * 4;
+		bool present= false;
+		float weight= 0.3f;
+		std::array<float, k_angleCount> mean{};
+		// Row-major inverse covariance
+		std::array<float, k_angleCount * k_angleCount> precision{};
+	};
+	AnglePrior anglePrior[2];
+
 	// Age at which an observation's weight has fully decayed. EVERY
 	// observation inside this window enters every fit (there is deliberately
 	// no per-camera freshness dedupe): cameras deliver in turn, and a fit
@@ -157,12 +202,21 @@ public:
 						const HandSkeleton& skeleton,
 						Pose& outPose);
 
-	// -- Exposed for the self test -----
+	// -- Exposed for the self test and the metrics tooling -----
 
 	// Predicted 21 world landmarks for a pose: FK joints + the wrist
 	// reconstructed at (-baseInPalm[Middle].x, 0, 0) in the palm frame
 	static void predictWorldLandmarks(const Pose& pose, const HandSkeleton& skeleton,
 									  std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints);
+
+	// Anatomical range of one angle DoF in RAW space (flat hand = 0, positive
+	// bend toward the palmar side; identical for both hands - the palm frame
+	// carries the chirality). dof: 0 lateral, 1 proximal, 2 intermediate,
+	// 3 distal, matching FingerAngles.
+	static void angleLimits(eFinger finger, int dof, float& outLo, float& outHi);
+
+	// Signed excursion of an angle beyond its limits (0 inside the range)
+	static float angleLimitViolation(eFinger finger, int dof, float angleRad);
 
 private:
 	static constexpr int kStateDim= 26; // 3 pos + 3 rot + 20 angles
@@ -204,9 +258,10 @@ private:
 	// prior anchor. Returns iterations run; outPose holds the solution.
 	// monoRayDir non-null makes the position prior anisotropic: tight along
 	// that (world) direction, priorSigma laterally (single-camera fits).
+	// anglePrior is the side's fitted prior (ignored when not present).
 	int solve(const Pose& start, const Pose& anchor, const std::array<float, kStateDim>& priorSigma,
-			  const glm::vec3* monoRayDir, const HandSkeleton& skeleton,
-			  const std::vector<FitView>& views, Pose& outPose) const;
+			  const glm::vec3* monoRayDir, const HandStateEstimatorConfig::AnglePrior& anglePrior,
+			  const HandSkeleton& skeleton, const std::vector<FitView>& views, Pose& outPose) const;
 
 	HandStateEstimatorConfig m_config;
 	std::array<SideState, 2> m_sides;

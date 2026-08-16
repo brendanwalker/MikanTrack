@@ -139,6 +139,55 @@ static void handSkeletonFromJson(const json& hs, HandSkeletonConfig& outHandSkel
 	}
 }
 
+static json anglePriorToJson(const AnglePriorConfig& anglePrior)
+{
+	json out= json::object();
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		if (!anglePrior.present[sideIndex])
+			continue;
+		json side= json::object();
+		side["mean"]= anglePrior.mean[sideIndex];
+		side["precision"]= anglePrior.precision[sideIndex];
+		out[sideIndex == 0 ? "left" : "right"]= side;
+	}
+	return out;
+}
+
+static void anglePriorFromJson(const json& ap, AnglePriorConfig& outAnglePrior)
+{
+	constexpr int kAngles= AnglePriorConfig::k_angleCount;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const char* key= sideIndex == 0 ? "left" : "right";
+		outAnglePrior.present[sideIndex]= false;
+		if (!ap.contains(key))
+			continue;
+		const json& side= ap[key];
+		const json& mean= side.value("mean", json::array());
+		const json& precision= side.value("precision", json::array());
+		if (!mean.is_array() || mean.size() != kAngles ||
+			!precision.is_array() || precision.size() != kAngles * kAngles)
+			continue;
+		// Non-finite floats serialize as null; a null anywhere invalidates the
+		// side rather than silently zeroing one precision entry
+		auto readFloat= [](const json& v, bool& ok) {
+			if (!v.is_number())
+			{
+				ok= false;
+				return 0.f;
+			}
+			return v.get<float>();
+		};
+		bool bAllFinite= true;
+		for (int i= 0; i < kAngles; ++i)
+			outAnglePrior.mean[sideIndex][i]= readFloat(mean[i], bAllFinite);
+		for (int i= 0; i < kAngles * kAngles; ++i)
+			outAnglePrior.precision[sideIndex][i]= readFloat(precision[i], bAllFinite);
+		outAnglePrior.present[sideIndex]= bAllFinite;
+	}
+}
+
 static void restAnglesFromJson(const json& ra, RestAnglesConfig& outRestAngles)
 {
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -288,6 +337,20 @@ HandFusionConfig makeHandFusionConfig(const AppConfig& config)
 	fusionConfig.estimator.huberDeltaPx= config.fusion.estimatorHuberDeltaPx;
 	fusionConfig.estimator.maxIterations= config.fusion.estimatorMaxIterations;
 	fusionConfig.estimator.maxResidualPx= config.fusion.estimatorMaxResidualPx;
+	fusionConfig.estimator.maxStepMetersPerS= config.fusion.estimatorMaxStepMetersPerS;
+	fusionConfig.estimator.jointLimitsEnabled= config.fusion.estimatorJointLimitsEnabled;
+	fusionConfig.estimator.jointLimitSigmaRad= config.fusion.estimatorJointLimitSigmaRad;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		HandStateEstimatorConfig::AnglePrior& prior= fusionConfig.estimator.anglePrior[sideIndex];
+		prior.present= config.anglePrior.present[sideIndex];
+		prior.weight= config.fusion.estimatorAnglePriorWeight;
+		if (prior.present)
+		{
+			prior.mean= config.anglePrior.mean[sideIndex];
+			prior.precision= config.anglePrior.precision[sideIndex];
+		}
+	}
 	// The estimator's measurement window and reacquisition gap follow the
 	// fusion staleness window (same rationale as the candidate gate and the
 	// jitter trackers) rather than being their own knobs
@@ -440,8 +503,13 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.fusion.estimatorHuberDeltaPx= fu.value("estimatorHuberDeltaPx", 10.f);
 	config.fusion.estimatorMaxIterations= fu.value("estimatorMaxIterations", 4);
 	config.fusion.estimatorMaxResidualPx= fu.value("estimatorMaxResidualPx", 25.f);
+	config.fusion.estimatorMaxStepMetersPerS= fu.value("estimatorMaxStepMetersPerS", 4.f);
+	config.fusion.estimatorJointLimitsEnabled= fu.value("estimatorJointLimitsEnabled", true);
+	config.fusion.estimatorJointLimitSigmaRad= fu.value("estimatorJointLimitSigmaRad", 0.05f);
+	config.fusion.estimatorAnglePriorWeight= fu.value("estimatorAnglePriorWeight", 0.3f);
 
 	restAnglesFromJson(j.value("fusedRestAngles", json::object()), config.fusedRestAngles);
+	anglePriorFromJson(j.value("anglePrior", json::object()), config.anglePrior);
 	handSkeletonFromJson(j.value("handSkeleton", json::object()), config.handSkeleton);
 
 	const json& eq= j.value("extrinsicsQuality", json::object());
@@ -548,9 +616,14 @@ std::string AppConfig::toJsonString() const
 		{"estimatorHuberDeltaPx", fusion.estimatorHuberDeltaPx},
 		{"estimatorMaxIterations", fusion.estimatorMaxIterations},
 		{"estimatorMaxResidualPx", fusion.estimatorMaxResidualPx},
+		{"estimatorMaxStepMetersPerS", fusion.estimatorMaxStepMetersPerS},
+		{"estimatorJointLimitsEnabled", fusion.estimatorJointLimitsEnabled},
+		{"estimatorJointLimitSigmaRad", fusion.estimatorJointLimitSigmaRad},
+		{"estimatorAnglePriorWeight", fusion.estimatorAnglePriorWeight},
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);
+	j["anglePrior"]= anglePriorToJson(anglePrior);
 	j["handSkeleton"]= handSkeletonToJson(handSkeleton);
 
 	j["extrinsicsQuality"]= {

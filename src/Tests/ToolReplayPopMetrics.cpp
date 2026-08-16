@@ -9,7 +9,11 @@
 // down while the FK reprojection residual - the anti-cheat metric, since a
 // frozen hand has zero pops - must not regress.
 //
-//   --replay-popmetrics <recording.jsonl> [more recordings...]
+//   --replay-popmetrics <recording.jsonl>... [prior-config.json]
+//
+// The optional .json argument is a config carrying a fitted angle prior
+// (--fit-angle-prior output); it is injected into the estimator pass, so a
+// prior can be A/B'd against recordings whose headers predate it.
 
 namespace
 {
@@ -72,6 +76,13 @@ struct SideMetrics
 	int estimatorFallbacks= 0; // fuses where the classic pose streamed instead
 	int estimatorReseeds= 0;
 	int estimatorHolds= 0;     // bad-fit holds (previous state streamed)
+
+	// Anatomical plausibility: tracked records whose RAW angles land outside
+	// the joint limits, and the worst excursion seen. On clean data this
+	// should be near zero - a high baseline rate is exactly the implausible
+	// output the limit prior exists to remove.
+	int limitViolationRecords= 0;
+	float worstLimitViolationDeg= 0.f;
 };
 
 struct CameraGeometry
@@ -229,6 +240,38 @@ void accumulateFrame(const TrackingFrameResult& fused, const RecordedFrame& reco
 				++side.pathTransitions;
 		}
 
+		// Anatomical plausibility of the RAW angles (streamed + rest offset).
+		// Stereo records only: mono fallback angles carry PER-CAMERA rest
+		// offsets, so adding the fused offset back would manufacture
+		// violations out of a convention mismatch.
+		if (pose.stereoTriangulated)
+		{
+			std::array<FingerAngles, FINGER_COUNT> rawAngles= pose.fingers;
+			if (config.fusedRestAngles.present[sideIndex])
+			{
+				const std::array<FingerAngles, FINGER_COUNT>& rest=
+					config.fusedRestAngles.angles[sideIndex];
+				for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				{
+					rawAngles[finger].lateral+= rest[finger].lateral;
+					rawAngles[finger].proximal+= rest[finger].proximal;
+					rawAngles[finger].intermediate+= rest[finger].intermediate;
+					rawAngles[finger].distal+= rest[finger].distal;
+				}
+			}
+			float worstViolationRad= 0.f;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int dof= 0; dof < 4; ++dof)
+					worstViolationRad= std::max(
+						worstViolationRad,
+						fabsf(HandStateEstimator::angleLimitViolation(
+							(eFinger)finger, dof, angleDof(rawAngles[finger], dof))));
+			if (worstViolationRad > 0.f)
+				++side.limitViolationRecords;
+			side.worstLimitViolationDeg=
+				std::max(side.worstLimitViolationDeg, glm::degrees(worstViolationRad));
+		}
+
 		// FK reprojection against every FRESH camera that saw this hand
 		for (const RecordedCameraInput& fresh : recorded.freshCameras)
 		{
@@ -269,7 +312,9 @@ void logSideMetrics(const char* passName, int sideIndex, const SideMetrics& side
 		<< ", palmar flips " << side.palmarFlips;
 	MIKAN_LOG_INFO("replay-popmetrics")
 		<< "    angle step deg med/p90 " << side.angleStepDeg.median() << "/" << side.angleStepDeg.p90()
-		<< ", jumps >0.3rad " << side.angleJumps;
+		<< ", jumps >0.3rad " << side.angleJumps
+		<< ", limit violations " << side.limitViolationRecords << " records (worst "
+		<< side.worstLimitViolationDeg << " deg)";
 	MIKAN_LOG_INFO("replay-popmetrics")
 		<< "    FK reprojection px med/p90 " << side.fkResidualPx.median() << "/"
 		<< side.fkResidualPx.p90() << " (" << (int)side.fkResidualPx.values.size() << " samples)";
@@ -284,15 +329,47 @@ void logSideMetrics(const char* passName, int sideIndex, const SideMetrics& side
 
 static int runReplayPopMetricsTool(const TestArgs& args)
 {
-	if (args.empty())
+	std::vector<std::string> recordings;
+	std::string priorConfigPath;
+	for (const std::string& arg : args)
+	{
+		if (arg.size() > 6 && arg.substr(arg.size() - 6) == ".jsonl")
+			recordings.push_back(arg);
+		else
+			priorConfigPath= arg;
+	}
+	if (recordings.empty())
 	{
 		MIKAN_LOG_ERROR("replay-popmetrics")
-			<< "Usage: --replay-popmetrics <recording.jsonl> [more recordings...]";
+			<< "Usage: --replay-popmetrics <recording.jsonl>... [prior-config.json]";
 		return 1;
 	}
 
+	AppConfig priorConfig;
+	bool bHavePriorConfig= false;
+	if (!priorConfigPath.empty())
+	{
+		std::ifstream priorFile(priorConfigPath, std::ios::binary);
+		if (!priorFile.is_open())
+		{
+			MIKAN_LOG_ERROR("replay-popmetrics") << "Cannot read " << priorConfigPath;
+			return 1;
+		}
+		std::string text((std::istreambuf_iterator<char>(priorFile)), std::istreambuf_iterator<char>());
+		if (!priorConfig.loadFromJsonString(text))
+		{
+			MIKAN_LOG_ERROR("replay-popmetrics") << "Cannot parse " << priorConfigPath;
+			return 1;
+		}
+		bHavePriorConfig= true;
+		MIKAN_LOG_INFO("replay-popmetrics")
+			<< "Injecting angle prior from " << priorConfigPath << " (left="
+			<< priorConfig.anglePrior.present[0] << " right=" << priorConfig.anglePrior.present[1]
+			<< ") into the estimator pass";
+	}
+
 	int result= 0;
-	for (const std::string& path : args)
+	for (const std::string& path : recordings)
 	{
 		TrackingReplay replay;
 		std::string error;
@@ -308,6 +385,21 @@ static int runReplayPopMetricsTool(const TestArgs& args)
 
 		TrackingReplay::WhatIfParams params= replay.makeDefaultWhatIfParams();
 		params.fusionConfig.estimatorEnabled= true;
+		if (bHavePriorConfig)
+		{
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				HandStateEstimatorConfig::AnglePrior& prior=
+					params.fusionConfig.estimator.anglePrior[sideIndex];
+				prior.present= priorConfig.anglePrior.present[sideIndex];
+				if (prior.present)
+				{
+					prior.mean= priorConfig.anglePrior.mean[sideIndex];
+					prior.precision= priorConfig.anglePrior.precision[sideIndex];
+					prior.weight= priorConfig.fusion.estimatorAnglePriorWeight;
+				}
+			}
+		}
 		replay.runWhatIf(params);
 
 		const AppConfig& config= replay.getRecordedConfig();

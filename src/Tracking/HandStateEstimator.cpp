@@ -32,6 +32,26 @@ constexpr float kReseedPriorScale= 5.f;
 constexpr double kMinDtMs= 1.0;
 constexpr double kMaxDtMs= 250.0;
 
+// Anatomical joint limits in RAW angle space (flat hand = 0), radians,
+// [dof][lo/hi] per finger. The four fingers share one profile: fingers
+// hyperextend only 10-20 degrees (the measured reason flat hands broke the
+// curl-evidence palmar test) while flexing past 90. The thumb's chained
+// CMC/MCP/IP angles ride the pronated hinge and its base genuinely roams, so
+// its ranges are deliberately generous - a too-tight thumb limit would fight
+// real opposition poses.
+constexpr float kFingerLimits[4][2]= {
+	{-0.45f, 0.45f}, // lateral splay
+	{-0.35f, 1.92f}, // proximal (MCP): ~-20..110 deg
+	{-0.17f, 2.00f}, // intermediate (PIP): ~-10..115 deg
+	{-0.17f, 1.60f}, // distal (DIP): ~-10..92 deg
+};
+constexpr float kThumbLimits[4][2]= {
+	{-1.00f, 1.00f}, // lateral about the palm normal
+	{-0.70f, 1.20f}, // CMC-ish proximal
+	{-0.35f, 1.20f}, // MCP flexion
+	{-0.35f, 1.40f}, // IP flexion
+};
+
 float angleComponent(const FingerAngles& angles, int dof)
 {
 	switch (dof)
@@ -121,6 +141,25 @@ bool solveCholesky(std::vector<double>& A, std::array<double, 26>& b, int n)
 void HandStateEstimator::configure(const HandStateEstimatorConfig& config)
 {
 	m_config= config;
+}
+
+void HandStateEstimator::angleLimits(eFinger finger, int dof, float& outLo, float& outHi)
+{
+	const float (*limits)[2]= finger == eFinger::Thumb ? kThumbLimits : kFingerLimits;
+	outLo= limits[dof][0];
+	outHi= limits[dof][1];
+}
+
+float HandStateEstimator::angleLimitViolation(eFinger finger, int dof, float angleRad)
+{
+	float lo= 0.f;
+	float hi= 0.f;
+	angleLimits(finger, dof, lo, hi);
+	if (angleRad > hi)
+		return angleRad - hi;
+	if (angleRad < lo)
+		return angleRad - lo;
+	return 0.f;
 }
 
 void HandStateEstimator::resetSide(eHandSide side)
@@ -214,8 +253,10 @@ float HandStateEstimator::meanResidualPx(const std::vector<glm::vec2>& residuals
 
 int HandStateEstimator::solve(const Pose& start, const Pose& anchor,
 							  const std::array<float, kStateDim>& priorSigma,
-							  const glm::vec3* monoRayDir, const HandSkeleton& skeleton,
-							  const std::vector<FitView>& views, Pose& outPose) const
+							  const glm::vec3* monoRayDir,
+							  const HandStateEstimatorConfig::AnglePrior& anglePrior,
+							  const HandSkeleton& skeleton, const std::vector<FitView>& views,
+							  Pose& outPose) const
 {
 	Pose pose= start;
 	outPose= start;
@@ -350,6 +391,81 @@ int HandStateEstimator::solve(const Pose& start, const Pose& anchor,
 				const double w= invSigma * invSigma;
 				normal[i * kStateDim + i]+= w;
 				rhs[i]-= w * (double)priorResidual[i];
+			}
+		}
+
+		// Joint-limit prior: one-sided quadratic beyond the anatomical range,
+		// re-linearized each iteration (the active set follows the iterate).
+		// Zero cost inside the range, so plausible poses are untouched.
+		if (m_config.jointLimitsEnabled)
+		{
+			const double invSigma= 1.0 / std::max(m_config.jointLimitSigmaRad, 1e-3f);
+			const double w= invSigma * invSigma;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				for (int dof= 0; dof < 4; ++dof)
+				{
+					const float violation= angleLimitViolation(
+						(eFinger)finger, dof, angleComponent(pose.rawAngles[finger], dof));
+					if (violation == 0.f)
+						continue;
+					const int dim= 6 + finger * 4 + dof;
+					normal[dim * kStateDim + dim]+= w;
+					rhs[dim]-= w * (double)violation;
+				}
+			}
+		}
+
+		if (anglePrior.present)
+		{
+			// Fitted angle prior: Mahalanobis pull toward the user's own pose
+			// distribution. The full precision matrix is the point - it makes
+			// a coordinated pose change cheap and an uncorrelated single-DoF
+			// excursion expensive, which is the difference between real
+			// articulation and a landmark snap.
+			constexpr int kAngles= HandStateEstimatorConfig::AnglePrior::k_angleCount;
+			std::array<double, kAngles> deviation;
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int dof= 0; dof < 4; ++dof)
+				{
+					const int k= finger * 4 + dof;
+					deviation[k]= (double)angleComponent(pose.rawAngles[finger], dof) -
+						(double)anglePrior.mean[k];
+				}
+
+			// Linear scale on the precision (weight 1 = trust the fitted
+			// distribution as-is)
+			const double w= (double)anglePrior.weight;
+			for (int i= 0; i < kAngles; ++i)
+			{
+				const int dimI= 6 + i;
+				double pull= 0.0;
+				for (int j= 0; j < kAngles; ++j)
+					pull+= (double)anglePrior.precision[i * kAngles + j] * deviation[j];
+				rhs[dimI]-= w * pull;
+				for (int j= 0; j <= i; ++j)
+					normal[dimI * kStateDim + (6 + j)]+= w * (double)anglePrior.precision[i * kAngles + j];
+			}
+		}
+		else if (m_config.couplingSigmaRad > 0.f)
+		{
+			// Fallback DIP-PIP coupling for the four fingers (not the thumb -
+			// its IP rides a different tendon arrangement): distal tracks
+			// 0.67 x intermediate, weakly. residual r = distal - 0.67*inter.
+			constexpr double kCouplingRatio= 0.67;
+			const double invSigma= 1.0 / std::max(m_config.couplingSigmaRad, 1e-3f);
+			const double w= invSigma * invSigma;
+			for (int finger= (int)eFinger::Index; finger < FINGER_COUNT; ++finger)
+			{
+				const int dimInter= 6 + finger * 4 + 2;
+				const int dimDistal= 6 + finger * 4 + 3;
+				const double residual= (double)pose.rawAngles[finger].distal -
+					kCouplingRatio * (double)pose.rawAngles[finger].intermediate;
+				normal[dimDistal * kStateDim + dimDistal]+= w;
+				normal[dimInter * kStateDim + dimInter]+= w * kCouplingRatio * kCouplingRatio;
+				normal[dimDistal * kStateDim + dimInter]+= -w * kCouplingRatio;
+				rhs[dimDistal]-= w * residual;
+				rhs[dimInter]+= w * kCouplingRatio * residual;
 			}
 		}
 
@@ -514,14 +630,21 @@ HandStateEstimator::UpdateResult HandStateEstimator::update(eHandSide side,
 	result.residualBeforePx= meanResidualPx(residuals);
 
 	Pose fitted;
-	result.iterations=
-		solve(anchor, anchor, priorSigma, bMonoRay ? &monoRay : nullptr, skeleton, views, fitted);
+	result.iterations= solve(anchor, anchor, priorSigma, bMonoRay ? &monoRay : nullptr,
+							 m_config.anglePrior[(int)side], skeleton, views, fitted);
 
 	if (!evalPixelResiduals(fitted, skeleton, views, residuals))
 		return holdOrDrop();
 	result.residualAfterPx= meanResidualPx(residuals);
 
 	if (result.residualAfterPx > m_config.maxResidualPx)
+		return holdOrDrop();
+
+	// Innovation gate: reject a physically impossible palm step however well
+	// it fits (dt-scaled, so held/slow fuses allow a bigger catch-up step)
+	if (!result.bReseeded &&
+		glm::length(fitted.palmPositionWorld - anchor.palmPositionWorld) >
+			m_config.maxStepMetersPerS * dt)
 		return holdOrDrop();
 
 	state.badFitStreak= 0;

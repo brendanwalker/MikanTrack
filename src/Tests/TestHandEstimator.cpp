@@ -156,6 +156,17 @@ float quatErrorRad(const glm::quat& a, const glm::quat& b)
 	const float dot= std::min(fabsf(glm::dot(a, b)), 1.f);
 	return 2.f * acosf(dot);
 }
+
+float angleDofOf(const FingerAngles& angles, int dof)
+{
+	switch (dof)
+	{
+	case 0: return angles.lateral;
+	case 1: return angles.proximal;
+	case 2: return angles.intermediate;
+	default: return angles.distal;
+	}
+}
 } // namespace
 
 static int runHandEstimatorTest(const TestArgs& args)
@@ -170,9 +181,15 @@ static int runHandEstimatorTest(const TestArgs& args)
 	HandStateEstimatorConfig config;
 
 	// -- (a) Clean two-camera recovery from a perturbed seed -----
+	// Priors off: this section verifies the core fit machinery recovers a
+	// known hand EXACTLY, and the (deliberately biased) coupling/limit priors
+	// would blur that assertion. Their own trade-offs are tested in (i)-(k).
 	{
+		HandStateEstimatorConfig coreConfig= config;
+		coreConfig.jointLimitsEnabled= false;
+		coreConfig.couplingSigmaRad= 0.f;
 		HandStateEstimator estimator;
-		estimator.configure(config);
+		estimator.configure(coreConfig);
 
 		const HandStateEstimator::Pose truth= truthPose(0);
 		HandStateEstimator::Pose seed= truth;
@@ -610,6 +627,342 @@ static int runHandEstimatorTest(const TestArgs& args)
 			MIKAN_LOG_ERROR("test-handestimator")
 				<< "FAILED: (h) negative control - the isotropic prior was expected to drift, so "
 				   "this scenario no longer exercises the anisotropic hold";
+			result= 1;
+		}
+	}
+
+	// -- (i) Joint-limit prior: implausible measurements get absorbed, and
+	// plausible poses cost nothing -----
+	{
+		auto fitStatic= [&](const HandStateEstimator::Pose& observed, bool bLimits,
+							HandStateEstimator::Pose& outFinal) {
+			HandStateEstimatorConfig limitConfig= config;
+			limitConfig.jointLimitsEnabled= bLimits;
+			HandStateEstimator estimator;
+			estimator.configure(limitConfig);
+			// Seed from the observed pose itself: the interesting question is
+			// where the fit SETTLES, not how it converges
+			for (int frame= 0; frame < 8; ++frame)
+			{
+				const double timestampMs= 1000.0 + kFrameMs * frame;
+				const auto points0= projectTruth(observed, skeleton, cam0, 0.f, 0);
+				const auto points1= projectTruth(observed, skeleton, cam1, 0.f, 0);
+				const std::vector<HandStateEstimator::Observation> observations= {
+					makeObservation(0, cam0, timestampMs, points0),
+					makeObservation(1, cam1, timestampMs, points1)};
+				estimator.update(eHandSide::Right, observations, timestampMs,
+								 frame == 0 ? &observed : nullptr, skeleton, outFinal);
+			}
+		};
+
+		// Hyperextended index: distal bent 0.5 rad BACKWARD (limit -0.17) and
+		// proximal -0.6 (limit -0.35) - the flat-hand landmark-noise shape
+		HandStateEstimator::Pose implausible= truthPose(0);
+		implausible.rawAngles[(int)eFinger::Index].proximal= -0.6f;
+		implausible.rawAngles[(int)eFinger::Index].distal= -0.5f;
+
+		HandStateEstimator::Pose limited;
+		HandStateEstimator::Pose unlimited;
+		fitStatic(implausible, true, limited);
+		fitStatic(implausible, false, unlimited);
+
+		const float limitedViolationRad= std::max(
+			fabsf(HandStateEstimator::angleLimitViolation(
+				eFinger::Index, 1, limited.rawAngles[(int)eFinger::Index].proximal)),
+			fabsf(HandStateEstimator::angleLimitViolation(
+				eFinger::Index, 3, limited.rawAngles[(int)eFinger::Index].distal)));
+		const float unlimitedViolationRad= std::max(
+			fabsf(HandStateEstimator::angleLimitViolation(
+				eFinger::Index, 1, unlimited.rawAngles[(int)eFinger::Index].proximal)),
+			fabsf(HandStateEstimator::angleLimitViolation(
+				eFinger::Index, 3, unlimited.rawAngles[(int)eFinger::Index].distal)));
+
+		// Plausible pose: limits on vs off must land on the same answer
+		const HandStateEstimator::Pose plausible= truthPose(0);
+		HandStateEstimator::Pose cleanLimited;
+		HandStateEstimator::Pose cleanUnlimited;
+		fitStatic(plausible, true, cleanLimited);
+		fitStatic(plausible, false, cleanUnlimited);
+		const float cleanDeltaDeg= glm::degrees(poseAngleErrorRad(cleanLimited, cleanUnlimited));
+
+		MIKAN_LOG_INFO("test-handestimator")
+			<< "(i) joint limits: violation " << glm::degrees(limitedViolationRad) << " deg limited vs "
+			<< glm::degrees(unlimitedViolationRad) << " deg unlimited, plausible-pose delta "
+			<< cleanDeltaDeg << " deg";
+		if (limitedViolationRad > 0.5f * unlimitedViolationRad || limitedViolationRad > 0.15f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (i) the limit prior must absorb most of an implausible excursion";
+			result= 1;
+		}
+		if (unlimitedViolationRad < 0.2f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (i) negative control - without limits the fit was expected to follow "
+				   "the implausible measurements";
+			result= 1;
+		}
+		if (cleanDeltaDeg > 0.1f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (i) limits must cost a plausible pose nothing";
+			result= 1;
+		}
+	}
+
+	// -- (j) DIP-PIP coupling rescues a garbaged fingertip -----
+	// The tip pixel is the only observation of the distal joint; when it goes
+	// bad (blur, overlap), the coupling is what keeps the distal angle
+	// anatomically coherent with the PIP instead of chasing the garbage.
+	{
+		auto fitWithBadTips= [&](float couplingSigmaRad, HandStateEstimator::Pose& outFinal) {
+			HandStateEstimatorConfig couplingConfig= config;
+			couplingConfig.couplingSigmaRad= couplingSigmaRad;
+			HandStateEstimator estimator;
+			estimator.configure(couplingConfig);
+
+			// Coupled truth: distal = 0.67 x intermediate on every finger
+			HandStateEstimator::Pose truth= truthPose(0);
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				truth.rawAngles[finger].distal= 0.67f * truth.rawAngles[finger].intermediate;
+
+			for (int frame= 0; frame < 8; ++frame)
+			{
+				const double timestampMs= 1000.0 + kFrameMs * frame;
+				auto points0= projectTruth(truth, skeleton, cam0, 0.f, 0);
+				auto points1= projectTruth(truth, skeleton, cam1, 0.f, 0);
+				// Index fingertip garbage in both views (uncorrelated
+				// directions, so no consistent 3D explains them)
+				points0[(int)eHandLandmark::INDEX_TIP]+= glm::vec3(25.f, -18.f, 0.f);
+				points1[(int)eHandLandmark::INDEX_TIP]+= glm::vec3(-20.f, 24.f, 0.f);
+				const std::vector<HandStateEstimator::Observation> observations= {
+					makeObservation(0, cam0, timestampMs, points0),
+					makeObservation(1, cam1, timestampMs, points1)};
+				estimator.update(eHandSide::Right, observations, timestampMs,
+								 frame == 0 ? &truth : nullptr, skeleton, outFinal);
+			}
+			return fabsf(outFinal.rawAngles[(int)eFinger::Index].distal -
+						 0.67f * outFinal.rawAngles[(int)eFinger::Index].intermediate);
+		};
+
+		HandStateEstimator::Pose coupled;
+		HandStateEstimator::Pose uncoupled;
+		const float coupledDevRad= fitWithBadTips(config.couplingSigmaRad, coupled);
+		const float uncoupledDevRad= fitWithBadTips(0.f, uncoupled);
+
+		MIKAN_LOG_INFO("test-handestimator")
+			<< "(j) garbaged fingertip: DIP-PIP deviation " << glm::degrees(coupledDevRad)
+			<< " deg coupled vs " << glm::degrees(uncoupledDevRad) << " deg uncoupled";
+		if (coupledDevRad > 0.6f * uncoupledDevRad || uncoupledDevRad < 0.05f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (j) coupling must hold the distal joint against a garbage tip "
+				   "(and the uncoupled control must actually be dragged)";
+			result= 1;
+		}
+	}
+
+	// -- (k) Fitted angle prior discriminates snap from pose change -----
+	{
+		// Training distribution with real-hand structure: the fingers share
+		// whole-hand curl and splay synergies (plus small independent
+		// jitter), so a SINGLE-finger excursion is genuinely off-manifold.
+		// (A trajectory with independent per-finger motion would teach the
+		// prior that lone-finger curls are normal - and it would then
+		// correctly decline to fight the snap.)
+		auto modelAngles= [&](int sample) {
+			const float curl= 0.45f + 0.35f * pseudoNoise(sample, 100);
+			const float splay= 0.15f * pseudoNoise(sample, 101);
+			std::array<FingerAngles, FINGER_COUNT> angles{};
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				const float jitter= 0.03f;
+				angles[finger].lateral=
+					splay * (float)(finger - 2) * 0.5f + jitter * pseudoNoise(sample, 110 + finger * 4);
+				angles[finger].proximal= curl + jitter * pseudoNoise(sample, 111 + finger * 4);
+				angles[finger].intermediate=
+					curl * 0.9f + jitter * pseudoNoise(sample, 112 + finger * 4);
+				angles[finger].distal= curl * 0.6f + jitter * pseudoNoise(sample, 113 + finger * 4);
+			}
+			return angles;
+		};
+
+		AnglePriorCalibrator calibrator;
+		for (int sample= 0; sample < 600; ++sample)
+			calibrator.addSample(eHandSide::Right, modelAngles(sample));
+		AnglePriorCalibrator::Prior fitted;
+		if (!calibrator.finish(eHandSide::Right, fitted))
+		{
+			MIKAN_LOG_ERROR("test-handestimator") << "FAILED: (k) prior fit refused the trajectory";
+			return 1;
+		}
+
+		// A landmark snap as it actually occurs: ONE camera's ring-finger
+		// pixels jump coherently while the other camera still sees the true
+		// pose. (Against persistent clean STEREO agreement a weak prior
+		// correctly loses - that could be a genuinely unusual pose - so a
+		// consistent-snap variant would test the wrong thing.)
+		auto fitWithPrior= [&](float weight, bool bCorruptRing, HandStateEstimator::Pose& outFinal) {
+			HandStateEstimatorConfig priorConfig= config;
+			priorConfig.anglePrior[(int)eHandSide::Right].present= weight > 0.f;
+			priorConfig.anglePrior[(int)eHandSide::Right].weight= weight;
+			priorConfig.anglePrior[(int)eHandSide::Right].mean= fitted.mean;
+			priorConfig.anglePrior[(int)eHandSide::Right].precision= fitted.precision;
+			HandStateEstimator estimator;
+			estimator.configure(priorConfig);
+			HandStateEstimator::Pose truth= truthPose(12);
+			truth.rawAngles= modelAngles(42); // in-distribution articulation
+			for (int frame= 0; frame < 8; ++frame)
+			{
+				const double timestampMs= 1000.0 + kFrameMs * frame;
+				auto points0= projectTruth(truth, skeleton, cam0, 0.f, 0);
+				const auto points1= projectTruth(truth, skeleton, cam1, 0.f, 0);
+				if (bCorruptRing)
+				{
+					for (int joint= 0; joint < 4; ++joint)
+						points0[FINGER_JOINTS[(int)eFinger::Ring][joint]]+=
+							glm::vec3(18.f, -14.f, 0.f) * (float)(joint + 1) * 0.4f;
+				}
+				const std::vector<HandStateEstimator::Observation> observations= {
+					makeObservation(0, cam0, timestampMs, points0),
+					makeObservation(1, cam1, timestampMs, points1)};
+				estimator.update(eHandSide::Right, observations, timestampMs,
+								 frame == 0 ? &truth : nullptr, skeleton, outFinal);
+			}
+		};
+
+		auto ringErrorRad= [&](const HandStateEstimator::Pose& pose) {
+			const std::array<FingerAngles, FINGER_COUNT> truthAngles= modelAngles(42);
+			float worst= 0.f;
+			for (int dof= 0; dof < 4; ++dof)
+				worst= std::max(worst,
+								fabsf(angleDofOf(pose.rawAngles[(int)eFinger::Ring], dof) -
+									  angleDofOf(truthAngles[(int)eFinger::Ring], dof)));
+			return worst;
+		};
+
+		HandStateEstimator::Pose withPrior;
+		HandStateEstimator::Pose withoutPrior;
+		fitWithPrior(0.3f, true, withPrior);
+		fitWithPrior(0.f, true, withoutPrior);
+		const float errorWithDeg= glm::degrees(ringErrorRad(withPrior));
+		const float errorWithoutDeg= glm::degrees(ringErrorRad(withoutPrior));
+
+		// ...while a pose from the training distribution is left alone
+		HandStateEstimator::Pose cleanWith;
+		HandStateEstimator::Pose cleanWithout;
+		fitWithPrior(0.3f, false, cleanWith);
+		fitWithPrior(0.f, false, cleanWithout);
+		const float cleanDeltaDeg= glm::degrees(poseAngleErrorRad(cleanWith, cleanWithout));
+
+		MIKAN_LOG_INFO("test-handestimator")
+			<< "(k) fitted prior vs one-view ring snap: worst ring error " << errorWithDeg
+			<< " deg with prior vs " << errorWithoutDeg << " deg without, in-distribution delta "
+			<< cleanDeltaDeg << " deg";
+		if (errorWithDeg > 0.75f * errorWithoutDeg || errorWithoutDeg < 3.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (k) the prior must materially reduce a one-view snap's damage "
+				   "(and the no-prior control must actually be damaged)";
+			result= 1;
+		}
+		if (cleanDeltaDeg > 2.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (k) an in-distribution pose must be left (nearly) alone";
+			result= 1;
+		}
+	}
+
+	// -- (l) Innovation gate: teleports held, fast real motion tracked -----
+	// A correspondence error presents as perfectly consistent pixels of a
+	// hand somewhere else entirely (measured live: 0.7 m in one fuse at 15 px
+	// residual). The gate must hold it, then let the streak reseed if it
+	// persists - while genuinely fast motion stays under the speed ceiling
+	// and tracks without a single hold.
+	{
+		auto runTeleport= [&](float maxStepMetersPerS) {
+			HandStateEstimatorConfig gateConfig= config;
+			gateConfig.maxStepMetersPerS= maxStepMetersPerS;
+			HandStateEstimator estimator;
+			estimator.configure(gateConfig);
+
+			const HandStateEstimator::Pose truth= truthPose(0);
+			HandStateEstimator::Pose far= truth;
+			far.palmPositionWorld+= glm::vec3(0.1f, 0.65f, -0.2f);
+
+			float firstFuseStepM= 0.f;
+			HandStateEstimator::Pose output;
+			for (int frame= 0; frame < 4; ++frame)
+			{
+				const double timestampMs= 1000.0 + kFrameMs * frame;
+				// Frames 0-2 the true hand; frame 3 a consistent phantom far away
+				const HandStateEstimator::Pose& observed= frame < 3 ? truth : far;
+				const auto points0= projectTruth(observed, skeleton, cam0, 0.f, 0);
+				const auto points1= projectTruth(observed, skeleton, cam1, 0.f, 0);
+				const std::vector<HandStateEstimator::Observation> observations= {
+					makeObservation(0, cam0, timestampMs, points0),
+					makeObservation(1, cam1, timestampMs, points1)};
+				const glm::vec3 before= output.palmPositionWorld;
+				const HandStateEstimator::UpdateResult update= estimator.update(
+					eHandSide::Right, observations, timestampMs, frame == 0 ? &truth : nullptr,
+					skeleton, output);
+				if (frame == 3 && update.bUpdated)
+					firstFuseStepM= glm::length(output.palmPositionWorld - before);
+			}
+			return firstFuseStepM;
+		};
+
+		const float gatedStepMm= runTeleport(4.f) * 1000.f;
+		const float ungatedStepMm= runTeleport(1000.f) * 1000.f;
+
+		// Fast real motion: a 3 m/s sweep THROUGH the workspace (0.5 m total,
+		// staying in every camera's view) must track hold-free
+		HandStateEstimator estimator;
+		estimator.configure(config);
+		HandStateEstimator::Pose truth= truthPose(0);
+		truth.palmPositionWorld.y-= 0.25f;
+		bool bAnyHold= false;
+		float worstLagMm= 0.f;
+		HandStateEstimator::Pose output;
+		for (int frame= 0; frame < 8; ++frame)
+		{
+			const double timestampMs= 1000.0 + kFrameMs * frame;
+			if (frame >= 3)
+				truth.palmPositionWorld+= glm::vec3(0.f, 0.099f, 0.f); // 3 m/s at 33 ms
+			const auto points0= projectTruth(truth, skeleton, cam0, 0.f, 0);
+			const auto points1= projectTruth(truth, skeleton, cam1, 0.f, 0);
+			const std::vector<HandStateEstimator::Observation> observations= {
+				makeObservation(0, cam0, timestampMs, points0),
+				makeObservation(1, cam1, timestampMs, points1)};
+			const HandStateEstimator::UpdateResult update= estimator.update(
+				eHandSide::Right, observations, timestampMs, frame == 0 ? &truth : nullptr,
+				skeleton, output);
+			bAnyHold|= update.bHeldBadFit;
+			if (frame >= 3)
+				worstLagMm= std::max(
+					worstLagMm, glm::length(output.palmPositionWorld - truth.palmPositionWorld) * 1000.f);
+		}
+
+		MIKAN_LOG_INFO("test-handestimator")
+			<< "(l) teleport first-fuse step " << gatedStepMm << " mm gated vs " << ungatedStepMm
+			<< " mm ungated; 3 m/s slide: holds=" << bAnyHold << ", worst lag " << worstLagMm << " mm";
+		if (gatedStepMm > 20.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (l) an impossible step must be held, not streamed";
+			result= 1;
+		}
+		if (ungatedStepMm < 300.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (l) negative control - without the gate the fit was expected to teleport";
+			result= 1;
+		}
+		if (bAnyHold || worstLagMm > 15.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (l) fast real motion must track under the speed ceiling without holds";
 			result= 1;
 		}
 	}

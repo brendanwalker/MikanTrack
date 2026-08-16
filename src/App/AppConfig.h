@@ -167,6 +167,18 @@ struct RestAnglesConfig
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
 };
 
+// Fitted per-side Gaussian prior over the 20 RAW finger angles (mean +
+// row-major precision matrix), produced by --fit-angle-prior from the user's
+// own stereo-quality recordings. Consumed by the hand state estimator as a
+// weak Mahalanobis pull toward the user's real pose distribution.
+struct AnglePriorConfig
+{
+	static constexpr int k_angleCount= FINGER_COUNT * 4;
+	bool present[2]= {false, false}; // indexed by eHandSide
+	std::array<std::array<float, k_angleCount>, 2> mean{};
+	std::array<std::array<float, k_angleCount * k_angleCount>, 2> precision{};
+};
+
 // Body-pose stage, opt-in per camera. The person detector only fires on
 // cameras that see the user upright, so this stays off for overhead cameras
 // and costs them nothing.
@@ -294,6 +306,16 @@ struct FusionConfig
 	// Post-fit mean residual above this holds the previous state; a streak
 	// of them drops the state for a reseed (divergence guard)
 	float estimatorMaxResidualPx= 25.f;
+	// Palm steps implying more than this speed are correspondence errors,
+	// not motion - they take the bad-fit hold path (physical innovation gate)
+	float estimatorMaxStepMetersPerS= 4.f;
+	// Anatomical joint-limit prior inside the estimator fit (one-sided soft
+	// penalties beyond the per-DoF ranges; zero cost inside them)
+	bool estimatorJointLimitsEnabled= true;
+	float estimatorJointLimitSigmaRad= 0.05f;
+	// Scale on the fitted angle prior's precision (see AnglePriorConfig);
+	// 1 = trust the fitted distribution as-is, smaller = softer
+	float estimatorAnglePriorWeight= 0.3f;
 };
 
 // Declared here (rather than each caller assembling its own) so the live
@@ -325,6 +347,8 @@ public:
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.
 	RestAnglesConfig fusedRestAngles;
+	// Fitted angle prior for the hand state estimator (--fit-angle-prior)
+	AnglePriorConfig anglePrior;
 
 	// Cross-camera extrinsics quality from the last calibration session
 	ExtrinsicsQualityConfig extrinsicsQuality;

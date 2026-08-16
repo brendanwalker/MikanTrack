@@ -26,6 +26,7 @@
 #include "opencv2/imgproc.hpp"
 #include "opencv2/objdetect/charuco_detector.hpp"
 
+#include "AnglePriorCalibrator.h"
 #include "App.h"
 #include "AppConfig.h"
 #include "CalibrationPatternFinder_Aruco.h"

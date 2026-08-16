@@ -35,6 +35,7 @@ SESSIONS = {
     "6f113e65-3d35-483b-ad9c-1e5ecbb32974": "3-camera right-hand dropout: SQPnP fix, minCameraConfidence gate (Aug 12)",
     "8f667e50-cf5d-4d36-8cd6-92b98572a026": "Dedicated linux/macos tracking machine consideration (Aug 12)",
     "356d659d-3cde-4c0b-bbc1-bef43a4d2f3a": "BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12)",
+    "af7ea373-96e6-4a6b-ac6d-5b23d382bfa1": "Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16)",
 }
 
 # Same project folder, not MikanMediaPipe work (MikanXR, UE plugin, ARKit, misc).
