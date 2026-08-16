@@ -715,11 +715,23 @@ static int runVmcTest(const TestArgs&)
 			bMikanWellFormed&= decodeBundle(packet, mikanMessages);
 			mikanBytes+= packet.size();
 		}
-		// The Mikan format is deliberately NOT chunked - it has a shipping
-		// consumer, and rearranging a working wire belongs in its own change
+		// The Mikan format is deliberately NOT chunked: its receiver treats one
+		// bundle as one frame (it publishes a frame event per bundle and counts
+		// loss off the sequence in /mikan/frame), so splitting a frame there is
+		// a two-sided protocol change rather than a sender-side fix.
 		check(mikanPackets.size() == 1, "Mikan mode is still one bundle per frame");
-		MIKAN_LOG_INFO("test-vmc") << "the same frame in Mikan mode is " << mikanPackets.size()
-								   << " datagram, " << mikanBytes << " bytes";
+
+		// The frame just measured carried the 1 Hz skeleton and info messages.
+		// The next one inside the same second does not, and THAT is the size
+		// that has to stay inside a datagram - the 1 Hz frames are the only
+		// ones exposed to IP fragmentation.
+		std::vector<std::vector<uint8_t>> steadyPackets;
+		streamer.encodeFrame(frame, steadyPackets);
+		const size_t steadyBytes= steadyPackets.empty() ? 0 : steadyPackets[0].size();
+		MIKAN_LOG_INFO("test-vmc") << "Mikan mode: " << mikanBytes << " bytes with the 1 Hz skeleton, "
+								   << steadyBytes << " bytes steady state";
+		check(steadyBytes > 0 && steadyBytes <= 1472,
+			  "a steady-state Mikan frame fits one unfragmented datagram");
 		check(bMikanWellFormed, "the Mikan stream still decodes");
 
 		bool bAnyVmc= false;
