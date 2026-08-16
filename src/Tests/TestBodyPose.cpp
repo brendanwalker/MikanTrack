@@ -316,6 +316,185 @@ static int runBodyPoseTest(const TestArgs&)
 			  "the solved elbow is exactly one upper arm from the solved shoulder");
 	}
 
+	// (c5) An arm that swings fast and comes back has to come back with it.
+	// The root choice predicts from the previous elbow, so a predictor that
+	// LAGS the arm keeps endorsing the pose the arm has already left, and the
+	// wrong point of the circle can be taken mid-swing and then held forever -
+	// the smoothed direction converges onto it and endorses it harder. Measured
+	// on recording 2026-08-16_15-03-53: the left elbow spent the last 2.5 s at
+	// shoulder height, 25 cm from where the images put it, while the correct
+	// circle point stayed nearer the elbow ray on every one of those frames.
+	//
+	// The arm swivels about its own shoulder-to-wrist axis here, so the bone
+	// circle is fixed and only the point on it moves: exactly the degree of
+	// freedom the root choice owns.
+	{
+		TestRig rig;
+		glm::vec3 leftShoulder, rightShoulder;
+		placeSymmetricPair(dims.shoulderWidthMeters, 1.10f, -0.2f, leftShoulder, rightShoulder);
+		rig.setLandmark(ePoseLandmark::LEFT_SHOULDER, leftShoulder);
+		rig.setLandmark(ePoseLandmark::RIGHT_SHOULDER, rightShoulder);
+
+		const glm::vec3 wristWorld= leftShoulder + glm::vec3(0.05f, 0.35f, -0.10f);
+		const glm::vec3 axis= glm::normalize(wristWorld - leftShoulder);
+		const glm::vec3 planeX= glm::normalize(glm::cross(glm::vec3(0.f, 0.f, 1.f), axis));
+		const glm::vec3 planeY= glm::cross(axis, planeX);
+
+		// Any target off the circle's axis picks the circle point at that
+		// angle, so this generates exact swivel poses without duplicating the
+		// circle math
+		auto trueElbowAt= [&](float angle) {
+			glm::vec3 elbow(0.f);
+			BodyPoseSolver::solveElbowNearestTo(
+				leftShoulder, wristWorld, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+				leftShoulder + planeX * cosf(angle) + planeY * sinf(angle), elbow);
+			return elbow;
+		};
+
+		BodyPoseSolver solver;
+		int modelFrame= 0;
+		double timestampMs= 1000.0;
+		auto step= [&](float angle) {
+			const glm::vec3 elbowTrue= trueElbowAt(angle);
+			rig.body().modelFrameIndex= ++modelFrame;
+			rig.setLandmark(ePoseLandmark::LEFT_ELBOW, elbowTrue);
+
+			TrackingFrameResult fused;
+			// The model cadence measured on this rig, not the camera rate
+			timestampMs+= 64.0;
+			fused.timestampMs= timestampMs;
+			setPoseWithWrist(fused.poses[0], 0, wristWorld, 0.8f);
+			solver.solve(rig.candidates, dims, fused);
+			return glm::length(
+				fused.poses[0].getElbowPositionWorld(dims.forearmLengthMeters) - elbowTrue);
+		};
+
+		// Out and back through a pose where the two circle points MERGE, which
+		// is where a wrong root gets seeded: while they are one point the
+		// choice carries no information, and whichever branch the predictor is
+		// nearest as they separate again is the one that gets held.
+		constexpr float kRestAngle= 5.0f;
+		constexpr float kSwingRadians= -1.0f;
+		constexpr int kSwingFrames= 3;
+		for (int i= 0; i < 4; ++i)
+			step(kRestAngle); // settle
+		for (int i= 1; i <= kSwingFrames; ++i)
+			step(kRestAngle + kSwingRadians * (float)i / (float)kSwingFrames);
+		for (int i= kSwingFrames - 1; i >= 0; --i)
+			step(kRestAngle + kSwingRadians * (float)i / (float)kSwingFrames);
+
+		// Long enough for the direction smoothing to give back what it borrowed
+		// through the swing: what is under test is WHICH point of the circle,
+		// not the filter's settling time
+		float error= 0.f;
+		for (int i= 0; i < 8; ++i)
+			error= step(kRestAngle);
+
+		MIKAN_LOG_INFO("test-bodypose")
+			<< "(c5) elbow error after the swing returns: " << error * 1000.f << " mm";
+		check(error < 0.02f, "the elbow returns with the arm after a fast swing");
+
+		// Named explicitly, because 'near the truth' and 'on the right root'
+		// only look alike while the solve is working: the failure this covers
+		// parks the elbow on the OTHER point of the same circle.
+		BodyPoseSolver::BoneCircleHit pair;
+		const glm::vec3 elbowTrue= trueElbowAt(kRestAngle);
+		if (BodyPoseSolver::solveElbowOnBoneCircle(
+				leftShoulder, wristWorld, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+				glm::vec3(0.f), glm::normalize(elbowTrue), pair) &&
+			pair.count == 2)
+		{
+			MIKAN_LOG_INFO("test-bodypose")
+				<< "(c5) the root not taken sits " << glm::length(pair.candidates[1] - elbowTrue) * 1000.f
+				<< " mm away";
+			check(glm::length(pair.candidates[1] - elbowTrue) > 0.10f,
+				  "(c5) fixture: the wrong root is a wide miss, not a near-tie");
+		}
+	}
+
+	// (c6) The elbow ray does NOT get to overrule continuity, however long and
+	// however decisively it disagrees. This is deliberate and it was measured:
+	// letting it overrule looks obviously right - the ray is the only new
+	// evidence each frame - but over recording 2026-08-16_02-32-33, with both
+	// elbows plainly down in the recorded frames, the ray preferred the
+	// shoulder-height root for 7 consecutive model frames by 15-36 mm. An
+	// override tuned to fire where the ray IS right (2026-08-16_15-03-53, a
+	// steady 10-15 mm) also fires there: the two cases' margins and absolute
+	// fits overlap. Across six recordings it bought nothing and cost that one
+	// arm 32 jumps over 100 mm.
+	//
+	// So the arm holds its root here. What actually stopped the field failure
+	// is (c5) - predicting from the unsmoothed direction, so the wrong root is
+	// not taken in the first place. If a wrong root ever needs taking back, the
+	// evidence has to come from somewhere other than this ray.
+	{
+		TestRig rig;
+		glm::vec3 leftShoulder, rightShoulder;
+		placeSymmetricPair(dims.shoulderWidthMeters, 1.10f, -0.2f, leftShoulder, rightShoulder);
+		rig.setLandmark(ePoseLandmark::LEFT_SHOULDER, leftShoulder);
+		rig.setLandmark(ePoseLandmark::RIGHT_SHOULDER, rightShoulder);
+
+		const glm::vec3 wristWorld= leftShoulder + glm::vec3(0.05f, 0.35f, -0.10f);
+		const glm::vec3 axis= glm::normalize(wristWorld - leftShoulder);
+		const glm::vec3 planeX= glm::normalize(glm::cross(glm::vec3(0.f, 0.f, 1.f), axis));
+		const glm::vec3 planeY= glm::cross(axis, planeX);
+
+		auto trueElbowAt= [&](float angle) {
+			glm::vec3 elbow(0.f);
+			BodyPoseSolver::solveElbowNearestTo(
+				leftShoulder, wristWorld, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+				leftShoulder + planeX * cosf(angle) + planeY * sinf(angle), elbow);
+			return elbow;
+		};
+
+		BodyPoseSolver solver;
+		int modelFrame= 0;
+		double timestampMs= 1000.0;
+		auto step= [&](const glm::vec3& landmarkFrom) {
+			rig.body().modelFrameIndex= ++modelFrame;
+			rig.setLandmark(ePoseLandmark::LEFT_ELBOW, landmarkFrom);
+
+			TrackingFrameResult fused;
+			timestampMs+= 64.0;
+			fused.timestampMs= timestampMs;
+			setPoseWithWrist(fused.poses[0], 0, wristWorld, 0.8f);
+			solver.solve(rig.candidates, dims, fused);
+			return fused.poses[0].getElbowPositionWorld(dims.forearmLengthMeters);
+		};
+
+		// Let the arm settle wherever it settles, then take the OTHER point of
+		// its own circle as the truth it now has to reach. Reading the held
+		// root out of the solver rather than prescribing one keeps the fixture
+		// honest about which candidate the cold start actually took.
+		glm::vec3 held(0.f);
+		for (int i= 0; i < 5; ++i)
+			held= step(trueElbowAt(1.1f));
+
+		BodyPoseSolver::BoneCircleHit pair;
+		const bool bPair= BodyPoseSolver::solveElbowOnBoneCircle(
+			leftShoulder, wristWorld, dims.upperArmLengthMeters, dims.forearmLengthMeters,
+			glm::vec3(0.f), glm::normalize(held), pair);
+		check(bPair && pair.count == 2, "(c6) fixture: the elbow ray admits two circle points");
+		if (bPair && pair.count == 2)
+		{
+			const glm::vec3 moved= pair.candidates[1];
+			check(glm::length(moved - held) > 0.10f, "(c6) fixture: the two roots are far apart");
+
+			// The ray now points squarely at the other root, and keeps doing so
+			float drift= 0.f;
+			for (int i= 0; i < 10; ++i)
+				drift= glm::length(step(moved) - held);
+			MIKAN_LOG_INFO("test-bodypose")
+				<< "(c6) after 10 contradicting frames the elbow has moved " << drift * 1000.f
+				<< " mm, against " << glm::length(moved - held) * 1000.f << " mm to the ray's root";
+			check(drift < 0.10f, "a contradicting ray does not take the root from continuity");
+
+			// The ray is not being ignored, only demoted: the held root still
+			// tracks it around its own side of the circle
+			check(drift > 0.001f, "the held root still follows the ray on its own side");
+		}
+	}
+
 	// (d) The shoulder RAY breaks the cold-start tie: the two intersections
 	// are ~40cm apart, and one of them can be too far from the shoulder ray
 	// to be reachable by any upper arm - a test that needs no shoulder DEPTH,

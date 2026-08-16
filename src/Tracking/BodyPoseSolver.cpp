@@ -499,7 +499,7 @@ void BodyPoseSolver::solveFromObservation(
 			if (!bCanDeadReckon ||
 				!solveElbowNearestTo(arm.shoulderPositionWorld, wristWorld,
 									 dimensions.upperArmLengthMeters, forearmLength,
-									 wristWorld + arm.forearmDirWorld * forearmLength, elbowWorld))
+									 wristWorld + arm.forearmDirRawWorld * forearmLength, elbowWorld))
 			{
 				tracker.invalidate();
 				arm.bHasForearm= false;
@@ -512,6 +512,7 @@ void BodyPoseSolver::solveFromObservation(
 			// the wrist along the circle rather than rigidly trailing it
 			const glm::vec3 rawDir= glm::normalize(elbowWorld - wristWorld);
 			const glm::vec3 filteredDir= m_forearmDirFilter[sideIndex].filter(rawDir, dtSeconds);
+			arm.forearmDirRawWorld= rawDir;
 			arm.forearmDirWorld= glm::dot(filteredDir, filteredDir) > 1e-8f
 				? glm::normalize(filteredDir) : rawDir;
 
@@ -586,12 +587,25 @@ void BodyPoseSolver::solveFromObservation(
 		// Both candidates are anatomically valid now, so this only decides
 		// WHICH valid arm: continuity when there is any, else the desk prior -
 		// hands reach toward the camera, so the elbow trails behind the wrist.
+		// Continuity predicts from the RAW held direction, never the smoothed
+		// one: a lagging predictor keeps endorsing the pose the arm has already
+		// left, which is how a fast movement seeds the wrong root.
+		//
+		// Continuity WINS OUTRIGHT here, and letting the elbow ray overrule it
+		// was tried and measured worse. The ray does not reliably know which
+		// root is right: over recording 2026-08-16_02-32-33, with both elbows
+		// plainly down in the frames, the ray preferred the shoulder-height
+		// root for 7 consecutive model frames by 15-36 mm, and an override
+		// gated on any margin large enough to fire there also fires on the
+		// runs where the ray is correct. Their margins and their absolute fits
+		// overlap, so there is nothing to threshold on. Anything that takes a
+		// wrong root back has to come from a source other than this ray.
 		int chosen= 0;
 		if (candidateCount > 1)
 		{
 			if (arm.bHasForearm)
 			{
-				const glm::vec3 predicted= wristWorld + arm.forearmDirWorld * forearmLength;
+				const glm::vec3 predicted= wristWorld + arm.forearmDirRawWorld * forearmLength;
 				chosen= glm::length(candidates[0] - predicted) <= glm::length(candidates[1] - predicted)
 					? 0 : 1;
 			}
@@ -610,6 +624,7 @@ void BodyPoseSolver::solveFromObservation(
 		// keeps updating at the full camera rate between model results
 		const glm::vec3 rawDir= glm::normalize(elbowWorld - wristWorld);
 		const glm::vec3 filteredDir= m_forearmDirFilter[sideIndex].filter(rawDir, dtSeconds);
+		arm.forearmDirRawWorld= rawDir;
 		arm.forearmDirWorld= glm::dot(filteredDir, filteredDir) > 1e-8f
 			? glm::normalize(filteredDir) : rawDir;
 		arm.bHasForearm= true;

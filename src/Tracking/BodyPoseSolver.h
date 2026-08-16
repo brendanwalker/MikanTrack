@@ -184,7 +184,16 @@ private:
 	struct ArmEstimate
 	{
 		bool bHasForearm= false;
-		glm::vec3 forearmDirWorld{1.f, 0.f, 0.f}; // unit, wrist -> elbow
+		glm::vec3 forearmDirWorld{1.f, 0.f, 0.f}; // unit, wrist -> elbow, SMOOTHED
+		// The same direction UNSMOOTHED, and the one the root choice predicts
+		// from. Feeding the smoothed direction back into that choice puts a
+		// lagging quantity inside a discrete decision: through a fast arm
+		// movement the prediction still points where the arm was, so the root
+		// that matches the OLD pose keeps winning, and once the choice has
+		// moved to the wrong point of the circle the filter converges onto it
+		// and endorses it harder. Measured on recording 2026-08-16_15-03-53,
+		// that latched the left elbow for the rest of the session.
+		glm::vec3 forearmDirRawWorld{1.f, 0.f, 0.f};
 		float forearmConfidence= 0.f;
 		// Model-time since the elbow landmark was last actually SEEN. While
 		// the elbow is occluded the arm is dead-reckoned on the bone circle,
