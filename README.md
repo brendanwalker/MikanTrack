@@ -166,6 +166,10 @@ data is meaningful (no metric 3D / world space).
 
 ## OSC output
 
+Two wire formats, one active at a time (**OSC panel -> Format**): the native
+`/mikan/*` schema below, or the [VMC protocol](#vmc-output) for VRM receivers.
+They describe the same pose in incompatible terms, so nothing sends both.
+
 Default target `127.0.0.1:8000` (configurable). One OSC 1.0 bundle per frame.
 Hands are streamed as a PARAMETRIC model - palm transform + finger bend
 angles - rather than raw landmarks: angles come from the network's local
@@ -262,6 +266,67 @@ accordingly). In UE: enable the **OSC plugin**, create an OSC Server bound to
 the configured port, and drive your hand rig from the palm transform + finger
 angles - the same representation the Ultraleap SDK feeds it. Solve elbows
 with Two-Bone IK from the palm transform.
+
+## VMC output
+
+Switch **OSC panel -> Format** to *VMC (VRM)* to stream the
+[VMC protocol](https://protocol.vmc.info) instead, for comparing this rig
+against other hand trackers on a receiver that already speaks it (tested
+against [VMC4UE](https://github.com/HAL9HARUKU/VMC4UE)). The port is held
+separately from the Mikan one and defaults to VMC's conventional **39539**, so
+switching formats cannot aim the stream at a listener that speaks the other.
+
+| Address | Types | Meaning |
+|---|---|---|
+| `/VMC/Ext/OK` | `iiii` | loaded, calibration state, calibration mode, tracking status |
+| `/VMC/Ext/T` | `f` | seconds since the socket opened |
+| `/VMC/Ext/Root/Pos` | `sfffffff` | `"root"` + identity; the avatar keeps whatever root it has |
+| `/VMC/Ext/Bone/Pos` | `sfffffff` | bone name + local position xyz (m) + rotation xyzw, Unity convention |
+
+Bones streamed, using Unity's `HumanBodyBones` names: `Head`, both
+`Shoulder`/`UpperArm`/`LowerArm`/`Hand`, and all 30 finger bones. Everything
+else - spine, neck, legs, eyes, jaw - is left alone, because this rig does not
+measure it and a receiver holds an unstreamed bone at the avatar's rest pose.
+
+**Identity means the avatar's rest pose.** Streamed rotations are
+parent-relative and measured against a VRM-style rest: a T-pose with the palms
+facing down, all humanoid bones at identity local rotation. Finger rest
+directions are not assumed - they come from the same `neutralDirInPalm` the
+Mikan schema streams, so a hand held flat emits identity finger rotations
+whatever the avatar's own finger authoring.
+
+**The avatar takes the measured bone lengths.** A VMC receiver replaces both
+the rotation and the translation of every bone it is sent, so each one carries
+a real offset: shoulder width, upper arm and forearm from the Body panel, and
+the finger offsets from the calibrated hand skeleton. The one length nothing
+here measures is neck-to-head, which is the **Head offset** slider (raise it if
+the head sinks into the shoulders).
+
+**Loss is expressed as stillness.** VMC carries no confidence, so past the
+dropout hold a lost hand's bones keep streaming frozen (**Freeze on loss**,
+default on). Turning it off stops the messages instead, which returns that arm
+to the avatar's rest T-pose.
+
+Bones degrade one at a time. Without body pose there is no shoulder, so the
+clavicle and upper arm are simply not streamed and the hand still arrives
+correctly oriented.
+
+**A frame is several datagrams.** 39 bone messages come to about 3.4 KB, which
+is split into complete bundles of at most 1400 bytes each (3 datagrams for a
+fully tracked frame). This is not an optimization: a single oversized datagram
+does not reach common VMC receivers at all. It exceeds a 1500-byte ethernet
+MTU, so it relies on IP fragmentation where one lost fragment costs the whole
+bundle, and tools built on
+[Rug.Osc](https://www.nuget.org/packages/Rug.Osc) - among them
+[VMCProtocolMonitor](https://github.com/gpsnmeajp/VMCProtocolMonitor) -
+allocate a **2048-byte** receive buffer by default, which a 3.4 KB bundle
+cannot fit. Each datagram carries its own `#bundle` header because UDP does
+not reassemble at the OSC layer. The Mikan format is deliberately not chunked.
+
+**Troubleshooting a receiver that sees nothing:** only one process at a time
+gets a unicast UDP port on Windows. A generic OSC monitor left running on
+39539 will take the packets and the avatar tool will sit silent, so close the
+monitor before testing the real receiver.
 
 ## Notes
 

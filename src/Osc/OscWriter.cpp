@@ -1,5 +1,6 @@
 #include "OscWriter.h"
 
+#include <algorithm>
 #include <cstring>
 
 // -- OscEncoding -----
@@ -93,6 +94,14 @@ std::vector<uint8_t> OscMessage::encode() const
 	return buffer;
 }
 
+size_t OscMessage::getEncodedSize() const
+{
+	// Same padding rule as appendPaddedString: at least one null, rounded up
+	const size_t paddedAddress= (m_address.size() + 4) & ~static_cast<size_t>(3);
+	const size_t paddedTags= (m_typeTags.size() + 4) & ~static_cast<size_t>(3);
+	return paddedAddress + paddedTags + m_argData.size();
+}
+
 // -- OscBundle -----
 OscMessage& OscBundle::addMessage(const char* address)
 {
@@ -112,11 +121,27 @@ OscMessage& OscBundle::addMessage(const char* address)
 
 void OscBundle::encode(std::vector<uint8_t>& outBuffer) const
 {
+	encodeRange(0, m_usedMessageCount, outBuffer);
+}
+
+size_t OscBundle::getMessageEncodedSize(size_t messageIndex) const
+{
+	if (messageIndex >= m_usedMessageCount)
+		return 0;
+
+	// + 4 for the element's big-endian int32 size prefix
+	return m_messagePool[messageIndex].getEncodedSize() + 4;
+}
+
+void OscBundle::encodeRange(size_t firstMessage, size_t count, std::vector<uint8_t>& outBuffer) const
+{
+	const size_t end= std::min(firstMessage + count, m_usedMessageCount);
+
 	// "#bundle" + null == exactly 8 bytes, already 4-byte aligned
 	OscEncoding::appendPaddedString(outBuffer, "#bundle", 7);
 	OscEncoding::appendUint64(outBuffer, m_timeTag);
 
-	for (size_t messageIndex= 0; messageIndex < m_usedMessageCount; ++messageIndex)
+	for (size_t messageIndex= firstMessage; messageIndex < end; ++messageIndex)
 	{
 		// Reserve a placeholder for the big-endian int32 element size prefix
 		const size_t sizeOffset= outBuffer.size();
