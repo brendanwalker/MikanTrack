@@ -187,6 +187,21 @@ public:
 		return m_bStereoScaleFresh;
 	}
 
+	// Bone-calibration support: the landmarks this fuse TRIANGULATED for this
+	// side, false when it wasn't stereo-triangulated. These measure the hand
+	// independently of the skeleton, which is what makes them the honest
+	// input for measuring bone lengths - the streamed pose and its FK are
+	// built ON a skeleton, so calibrating from them would be circular.
+	// Fusing thread only.
+	bool getLastTriangulatedPoints(eHandSide side,
+								   std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints) const
+	{
+		if (!m_bLastTriPointsValid[(int)side])
+			return false;
+		outPoints= m_lastTriPoints[(int)side];
+		return true;
+	}
+
 	// Rest-pose capture support: the RAW (pre rest-offset, pre smoothing)
 	// triangulated finger angles from the last fuse() for this side; false
 	// when that side wasn't stereo-triangulated. Fusing thread only.
@@ -329,6 +344,10 @@ private:
 	// Raw triangulated angles of the last fuse (rest-pose capture source)
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_rawTriAngles{};
 	bool m_bRawTriAnglesValid[2]= {false, false};
+
+	// Triangulated landmarks of the last fuse (bone-calibration source)
+	std::array<std::array<glm::vec3, HAND_LANDMARK_COUNT>, 2> m_lastTriPoints{};
+	bool m_bLastTriPointsValid[2]= {false, false};
 
 	double m_fuseTimestampMs= 0.0;
 

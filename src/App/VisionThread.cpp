@@ -1335,12 +1335,15 @@ void VisionThread::threadLoop()
 		{
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
-				const HandPose& pose= outputResult.poses[sideIndex];
-				const TrackedHand& hand= outputResult.hands[sideIndex];
-				if (!pose.tracked || !pose.stereoTriangulated || !hand.tracked || !hand.hasWorldSpace)
+				// Bones are measured from the TRIANGULATED landmarks, asked
+				// for explicitly: the streamed pose is built on a skeleton,
+				// so calibrating from it would re-measure the skeleton the
+				// estimator was already given rather than the user's hand.
+				std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
+				if (!m_fusion.getLastTriangulatedPoints((eHandSide)sideIndex, triPoints))
 					continue;
 
-				m_boneCalibrator.addSample((eHandSide)sideIndex, hand.worldPoints);
+				m_boneCalibrator.addSample((eHandSide)sideIndex, triPoints);
 				m_boneCalibrationSamples[sideIndex]= m_boneCalibrator.getSampleCount((eHandSide)sideIndex);
 			}
 

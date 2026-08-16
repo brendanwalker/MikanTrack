@@ -50,6 +50,9 @@ struct HandStateEstimatorConfig
 
 	// Pixel measurement noise scale (relative weight of measurements vs prior)
 	float pixelSigmaPx= 2.f;
+	// Weight floor for an observation whose confidence was never measured or
+	// has collapsed (see Observation::confidence)
+	float minObservationConfidence= 0.1f;
 	// Single-camera fits hold the palm's ALONG-RAY position this much tighter
 	// than lateral (fraction of palmPosSigma). A mono fit's only depth signal
 	// is apparent scale, which carries the per-camera bias stereo exists to
@@ -142,7 +145,14 @@ public:
 	{
 		int cameraIndex= -1;
 		double timestampMs= 0.0;
-		float presence= 1.f;
+		// MEASURED quality of this camera's view (presence x observed jitter
+		// stability), NOT the model's reported presence. Presence answers
+		// "is a hand here" and stays high on a camera whose landmarks are
+		// swinging - measured live at 126 mm palm jitter and presence 0.99
+		// while a second camera sat at 2.8 mm. Weighting rows by presence
+		// let that camera drag the fit until the residual tripped the
+		// divergence guard. Rows are weighted by sqrt of this.
+		float confidence= 1.f;
 		glm::dmat4 markerFromCamera{1.0};
 		float fx= 0.f;
 		float fy= 0.f;
@@ -236,7 +246,7 @@ private:
 	{
 		const Observation* observation= nullptr;
 		glm::dmat4 cameraFromWorld{1.0};
-		float presenceWeight= 1.f; // sqrt(presence): weight on the residual rows
+		float confidenceWeight= 1.f; // sqrt(confidence x age): row weight
 	};
 
 	// state (+) delta on the manifold: position adds, orientation right-
@@ -251,8 +261,12 @@ private:
 								   const std::vector<FitView>& views,
 								   std::vector<glm::vec2>& outResiduals);
 
-	// Mean |residual| px over all rows (the human-readable fit quality)
-	static float meanResidualPx(const std::vector<glm::vec2>& residuals);
+	// Confidence-weighted mean |residual| px (the fit quality, and what the
+	// divergence guard judges). Weighted by the same row weights the fit
+	// uses: a camera the system has measured as unreliable must not be able
+	// to trip the guard on residuals the fit deliberately discounted.
+	static float meanResidualPx(const std::vector<glm::vec2>& residuals,
+								const std::vector<FitView>& views);
 
 	// One damped Gauss-Newton solve from `pose` toward the measurements +
 	// prior anchor. Returns iterations run; outPose holds the solution.

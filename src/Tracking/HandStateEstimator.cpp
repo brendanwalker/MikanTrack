@@ -240,15 +240,21 @@ bool HandStateEstimator::evalPixelResiduals(const Pose& pose, const HandSkeleton
 	return true;
 }
 
-float HandStateEstimator::meanResidualPx(const std::vector<glm::vec2>& residuals)
+float HandStateEstimator::meanResidualPx(const std::vector<glm::vec2>& residuals,
+										 const std::vector<FitView>& views)
 {
-	if (residuals.empty())
+	if (residuals.empty() || views.empty())
 		return 0.f;
 
 	float sum= 0.f;
-	for (const glm::vec2& residual : residuals)
-		sum+= glm::length(residual);
-	return sum / (float)residuals.size();
+	float weightSum= 0.f;
+	for (size_t row= 0; row < residuals.size(); ++row)
+	{
+		const float weight= views[row / HAND_LANDMARK_COUNT].confidenceWeight;
+		sum+= weight * glm::length(residuals[row]);
+		weightSum+= weight;
+	}
+	return weightSum > 1e-6f ? sum / weightSum : 0.f;
 }
 
 int HandStateEstimator::solve(const Pose& start, const Pose& anchor,
@@ -288,7 +294,7 @@ int HandStateEstimator::solve(const Pose& start, const Pose& anchor,
 				? 1.f
 				: m_config.huberDeltaPx / errorPx;
 			const float weight=
-				views[row / HAND_LANDMARK_COUNT].presenceWeight / std::max(m_config.pixelSigmaPx, 1e-3f);
+				views[row / HAND_LANDMARK_COUNT].confidenceWeight / std::max(m_config.pixelSigmaPx, 1e-3f);
 			rowWeight[row]= (double)(weight * weight * huber);
 		}
 
@@ -531,10 +537,17 @@ HandStateEstimator::UpdateResult HandStateEstimator::update(eHandSide side,
 		const float ageFactor=
 			std::clamp(1.f - (float)(ageMs / std::max(m_config.measurementWindowMs, 1.0)), 0.2f, 1.f);
 
+		// Floor rather than zero: a camera whose confidence was never
+		// measured (rescued from the low-presence pool) or has momentarily
+		// collapsed still carries real 2D geometry, and dropping its rows
+		// outright would throw away the second view a stereo fit needs.
+		const float confidence=
+			std::clamp(observation.confidence, m_config.minObservationConfidence, 1.f);
+
 		FitView view;
 		view.observation= &observation;
 		view.cameraFromWorld= glm::inverse(observation.markerFromCamera);
-		view.presenceWeight= sqrtf(std::clamp(observation.presence, 0.f, 1.f) * ageFactor);
+		view.confidenceWeight= sqrtf(confidence * ageFactor);
 		views.push_back(view);
 	}
 	result.cameraCount= (int)views.size();
@@ -627,7 +640,7 @@ HandStateEstimator::UpdateResult HandStateEstimator::update(eHandSide side,
 	std::vector<glm::vec2> residuals;
 	if (!evalPixelResiduals(anchor, skeleton, views, residuals))
 		return holdOrDrop(); // predicted geometry behind a camera
-	result.residualBeforePx= meanResidualPx(residuals);
+	result.residualBeforePx= meanResidualPx(residuals, views);
 
 	Pose fitted;
 	result.iterations= solve(anchor, anchor, priorSigma, bMonoRay ? &monoRay : nullptr,
@@ -635,7 +648,7 @@ HandStateEstimator::UpdateResult HandStateEstimator::update(eHandSide side,
 
 	if (!evalPixelResiduals(fitted, skeleton, views, residuals))
 		return holdOrDrop();
-	result.residualAfterPx= meanResidualPx(residuals);
+	result.residualAfterPx= meanResidualPx(residuals, views);
 
 	if (result.residualAfterPx > m_config.maxResidualPx)
 		return holdOrDrop();

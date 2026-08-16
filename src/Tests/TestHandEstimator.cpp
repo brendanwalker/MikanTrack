@@ -113,7 +113,7 @@ HandStateEstimator::Observation makeObservation(
 	HandStateEstimator::Observation observation;
 	observation.cameraIndex= cameraIndex;
 	observation.timestampMs= timestampMs;
-	observation.presence= 0.95f;
+	observation.confidence= 0.95f;
 	observation.markerFromCamera= camera.markerFromCamera;
 	observation.fx= camera.fx;
 	observation.fy= camera.fy;
@@ -963,6 +963,62 @@ static int runHandEstimatorTest(const TestArgs& args)
 		{
 			MIKAN_LOG_ERROR("test-handestimator")
 				<< "FAILED: (l) fast real motion must track under the speed ceiling without holds";
+			result= 1;
+		}
+	}
+
+	// -- (m) Rows are weighted by MEASURED confidence, not presence -----
+	// The live failure this encodes: one camera reported presence 0.99 while
+	// its palm swung 126 mm frame to frame, and its rows dragged the fit until
+	// the residual tripped the divergence guard. A camera the system has
+	// measured as bad must not get equal say with a camera measured good.
+	{
+		auto runMixed= [&](float badConfidence, HandStateEstimator::Pose& outFinal) {
+			HandStateEstimator estimator;
+			estimator.configure(config);
+			const HandStateEstimator::Pose truth= truthPose(6);
+
+			for (int frame= 0; frame < 10; ++frame)
+			{
+				const double timestampMs= 1000.0 + kFrameMs * frame;
+				const auto goodPoints= projectTruth(truth, skeleton, cam1, 0.f, 0);
+				// The bad camera sees a hand rotated well away from truth -
+				// coherent, self-consistent, and wrong
+				HandStateEstimator::Pose wrong= truth;
+				wrong.palmOrientationWorld=
+					glm::angleAxis(0.5f, glm::normalize(glm::vec3(0.f, 0.f, 1.f))) *
+					wrong.palmOrientationWorld;
+				const auto badPoints= projectTruth(wrong, skeleton, cam0, 0.f, 1);
+
+				HandStateEstimator::Observation good=
+					makeObservation(1, cam1, timestampMs, goodPoints);
+				good.confidence= 0.95f;
+				HandStateEstimator::Observation bad=
+					makeObservation(0, cam0, timestampMs, badPoints);
+				bad.confidence= badConfidence;
+
+				const std::vector<HandStateEstimator::Observation> observations= {good, bad};
+				estimator.update(eHandSide::Right, observations, timestampMs,
+								 frame == 0 ? &truth : nullptr, skeleton, outFinal);
+			}
+			const HandStateEstimator::Pose truthRef= truthPose(6);
+			return glm::degrees(quatErrorRad(outFinal.palmOrientationWorld,
+											 truthRef.palmOrientationWorld));
+		};
+
+		HandStateEstimator::Pose weighted;
+		HandStateEstimator::Pose equal;
+		const float errorWeightedDeg= runMixed(0.12f, weighted); // measured-bad camera
+		const float errorEqualDeg= runMixed(0.95f, equal);       // presence-style: equal say
+
+		MIKAN_LOG_INFO("test-handestimator")
+			<< "(m) confidence weighting: palm error " << errorWeightedDeg
+			<< " deg with the bad camera down-weighted vs " << errorEqualDeg << " deg at equal weight";
+		if (errorWeightedDeg > 0.5f * errorEqualDeg || errorEqualDeg < 5.f)
+		{
+			MIKAN_LOG_ERROR("test-handestimator")
+				<< "FAILED: (m) a measured-bad camera must lose to a measured-good one "
+				   "(and the equal-weight control must actually be dragged)";
 			result= 1;
 		}
 	}

@@ -83,6 +83,8 @@ void HandFusion::resetTransientState()
 		m_triPalmarMemory[sideIndex].reset();
 		m_rawTriAngles[sideIndex]= {};
 		m_bRawTriAnglesValid[sideIndex]= false;
+		m_lastTriPoints[sideIndex]= {};
+		m_bLastTriPointsValid[sideIndex]= false;
 		m_lastFusedPalm[sideIndex]= glm::vec3(0.f);
 		m_dominantCamera[sideIndex]= -1;
 		m_estimatorSkeleton[sideIndex]= HandSkeleton();
@@ -751,9 +753,12 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	outPose.confidence= std::clamp(
 		maxPresence * triStability * residualFactor(residualRms, m_config.residualReferencePx), 0.f, 1.f);
 
-	// Overlays/debug see the triangulated geometry
+	// The measured landmark channel: overlays/debug, and the source bone
+	// calibration measures the user's hand from (see getLastTriangulatedPoints)
 	outHand.worldPoints= triPoints;
 	outHand.hasWorldSpace= true;
+	m_lastTriPoints[(int)side]= triPoints;
+	m_bLastTriPointsValid[(int)side]= true;
 
 	// The triangulated wrist->middle-MCP bone IS the true hand scale; the
 	// best candidate's world bone carries the currently-assumed scale (the
@@ -792,6 +797,8 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	m_bStereoScaleFresh= false;
 	m_bRawTriAnglesValid[0]= false;
 	m_bRawTriAnglesValid[1]= false;
+	m_bLastTriPointsValid[0]= false;
+	m_bLastTriPointsValid[1]= false;
 
 	// Carry frame bookkeeping from the freshest contributing camera
 	const CameraFrameResult* freshest= nullptr;
@@ -1217,7 +1224,11 @@ void HandFusion::applyEstimator(eHandSide side, HandCluster& cluster, TrackedHan
 		HandStateEstimator::Observation observation;
 		observation.cameraIndex= candidate.camera->cameraIndex;
 		observation.timestampMs= candidate.camera->timestampMs;
-		observation.presence= candidate.pose->presence;
+		// Measured confidence (presence x observed stability), deliberately
+		// NOT candidate.weight: that folds in palm visibility, which ranks
+		// cameras backwards for a multi-view fit - an edge-on camera resolves
+		// exactly the depth its face-on partner cannot.
+		observation.confidence= candidate.confidence;
 		observation.markerFromCamera= candidate.camera->markerFromCamera;
 		observation.fx= candidate.camera->fx;
 		observation.fy= candidate.camera->fy;
@@ -1301,9 +1312,14 @@ void HandFusion::applyEstimator(eHandSide side, HandCluster& cluster, TrackedHan
 			residualFactor(update.residualAfterPx, m_config.residualReferencePx),
 		0.f, 1.f);
 
-	// Overlays and downstream consumers see the fitted geometry
-	HandStateEstimator::predictWorldLandmarks(fitted, m_estimatorSkeleton[sideIndex], outHand.worldPoints);
-	outHand.hasWorldSpace= true;
+	// outHand.worldPoints is deliberately LEFT ALONE: it carries the
+	// triangulated landmarks, the one channel that measures the hand
+	// independently of the skeleton. Overwriting it with this fit's forward
+	// kinematics made bone calibration circular - it would re-measure the
+	// skeleton it was handed instead of the hand in front of the cameras.
+	// Nothing renders from it (the 3D view and overlays build FK from the
+	// streamed pose), so keeping it measured also lets a dump compare the
+	// fitted hand against what the cameras actually triangulated.
 }
 
 void HandFusion::updateTrackingHousekeeping(const TrackingFrameResult& fused)
