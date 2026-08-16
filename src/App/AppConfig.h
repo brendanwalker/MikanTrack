@@ -105,9 +105,6 @@ struct TrackingConfig
 	float palmScoreThresholdRelaxed= 0.25f;
 	// When one camera tracks a hand another camera lost, project it into the
 	// lost camera's image and try the landmark model there directly
-	// RealSense cameras: use the hardware depth stream for the palm transform
-	// (metric measurement replaces the monocular PnP estimate)
-	bool useRealSenseDepth= true;
 	std::string onnxEp= "directml"; // "directml" | "cpu"
 };
 
@@ -188,7 +185,6 @@ struct CameraProfile
 	VideoConfig video;
 	IntrinsicsConfig intrinsics;
 	ExtrinsicsConfig extrinsics;
-	RestAnglesConfig restAngles;
 	BodyPoseCameraConfig bodyPose;
 };
 
@@ -266,14 +262,8 @@ struct FusionConfig
 	// Two cameras' world wrists further apart than this can't be the same
 	// physical hand (cross-camera handedness-conflict gate)
 	float wristMatchMaxDistM= 0.25f;
-	// Drop a camera's observation outright below this confidence
-	// (presence x measured stability). 0 = rely on soft weighting only.
-	float minCameraConfidence= 0.f;
 	// Palm jitter (mm) at which an observation counts as half as trustworthy
 	float jitterReferenceMm= 15.f;
-	// Stereo landmark triangulation (two cameras -> world landmarks straight
-	// from image geometry; the network's monocular depth stays out of it)
-	bool triangulationEnabled= true;
 	// RMS reprojection residual above which a triangulated pairing is
 	// rejected as two different physical hands
 	float triangulationMaxResidualPx= 25.f;

@@ -10,21 +10,18 @@
 
 // Lifts image-space hand landmarks into camera-space meters using the
 // calibrated intrinsics and the hand scale (wrist -> middle-MCP length,
-// seeded by config and live-refined from stereo/depth measurement).
+// seeded by config and live-refined from stereo measurement).
 //
-// Two 3D sources, best first:
-// - Hardware depth (RealSense): metric measurements per landmark, supplied
-//   by the vision thread (see HandDepthMeasurement below).
-// - Monocular PnP: a per-frame metric hand as a DYNAMIC solvePnP object model
-//   against the 2D landmarks - articulation is baked into the model, so PnP
-//   only recovers the global rigid pose. Warm-started from the previous
-//   frame. cameraPoints = R * obj + t. The object model is the user's
-//   CALIBRATED skeleton posed by the landmark model's angles when one has
-//   been measured, and otherwise the landmark model's own metric hand
-//   rescaled so wrist->middleMCP matches the hand scale. That distinction
-//   matters: the model's proportions are not the user's, and rescaling on one
-//   bone leaves an object with too little spread, which PnP can only fit by
-//   placing it too close.
+// The 3D source is monocular PnP: a per-frame metric hand as a DYNAMIC
+// solvePnP object model against the 2D landmarks - articulation is baked
+// into the model, so PnP only recovers the global rigid pose. Warm-started
+// from the previous frame. cameraPoints = R * obj + t. The object model is
+// the user's CALIBRATED skeleton posed by the landmark model's angles when
+// one has been measured, and otherwise the landmark model's own metric hand
+// rescaled so wrist->middleMCP matches the hand scale. That distinction
+// matters: the model's proportions are not the user's, and rescaling on one
+// bone leaves an object with too little spread, which PnP can only fit by
+// placing it too close.
 //
 // Conventions: input pixel coordinates are assumed to be in UNDISTORTED image
 // space (the vision thread undistorts frames before inference), so the
@@ -33,17 +30,6 @@
 //
 // Also fills the parametric HandPose (palm transform + finger angles +
 // skeleton) - see HandPoseModel.
-// Per-hand hardware depth measurements (RealSense): metric camera-space
-// points for whichever landmarks the depth sensor resolved. Sampled by the
-// vision thread (which owns the distortion mapping); consumed here as a
-// replacement for the PnP palm transform.
-struct HandDepthMeasurement
-{
-	bool bValid[HAND_LANDMARK_COUNT]= {};
-	std::array<glm::vec3, HAND_LANDMARK_COUNT> cameraPoints{};
-	int validCount= 0;
-};
-
 class LandmarkTo3D
 {
 public:
@@ -51,12 +37,8 @@ public:
 		const MikanMonoIntrinsics& intrinsics,
 		double refLengthMeters);
 
-	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms.
-	// depthMeasurements (optional, indexed by eHandSide) supplies hardware
-	// depth: when a hand's palm is sufficiently depth-resolved, the metric
-	// measurements replace the monocular PnP/legacy estimate entirely.
-	void process(TrackingFrameResult& ioResult,
-				 const std::array<HandDepthMeasurement, 2>* depthMeasurements= nullptr);
+	// Fills cameraPoints/hasCameraSpace on the frame's hands and arms
+	void process(TrackingFrameResult& ioResult);
 
 	// Returns every cross-frame member to a freshly constructed state (palmar
 	// side memories, PnP warm starts, tracked flags). Called when a tracking
@@ -86,16 +68,6 @@ public:
 	// Per-side rest angles for THIS camera, subtracted from every later
 	// measurement so the captured pose reports zeros. Without them the raw
 	// angles (relative to the flat-hand default) are reported as-is.
-	void setRestAngles(eHandSide side, const std::array<FingerAngles, FINGER_COUNT>& restAngles)
-	{
-		m_restAngles[(int)side]= restAngles;
-		m_bHasRestAngles[(int)side]= true;
-	}
-	void clearRestAngles()
-	{
-		m_bHasRestAngles[0]= false;
-		m_bHasRestAngles[1]= false;
-	}
 
 	// The user's measured hand geometry (HandBoneCalibrator). When set it
 	// replaces the landmark model's proportions in both places they are used:
@@ -124,11 +96,6 @@ public:
 private:
 	glm::vec3 backProject(float u, float v, float z) const;
 	void processHand(TrackedHand& hand);
-	// Hardware-depth path: builds cameraPoints from measured metric points
-	// (surface-to-joint offset applied), back-projecting unresolved landmarks
-	// at their parent joint's depth. Returns false when the palm isn't
-	// sufficiently resolved (caller falls back to PnP/legacy).
-	bool processHandDepth(TrackedHand& hand, const HandDepthMeasurement& measurement);
 	// PnP solve; returns false when it fails (the frame simply produces no
 	// camera space - fusion's staleness window absorbs the gap)
 	bool processHandPnp(TrackedHand& hand);
@@ -157,8 +124,6 @@ private:
 	float m_cy= 0.f;
 	float m_refLengthMeters= 0.08f;
 
-	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_restAngles{};
-	bool m_bHasRestAngles[2]= {false, false};
 
 	std::array<HandSkeleton, 2> m_calibratedSkeleton{};
 	bool m_bHasCalibratedSkeleton[2]= {false, false};

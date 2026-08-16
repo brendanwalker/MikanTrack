@@ -31,7 +31,6 @@
 #include "AppConfig.h"
 #include "CalibrationPatternFinder_Aruco.h"
 #include "CalibrationPatternFinder_Charuco.h"
-#include "DepthFrameView.h"
 #include "DiagnosticDump.h"
 #include "ExtrinsicsValidation.h"
 #include "ExtrinsicsWizard.h"

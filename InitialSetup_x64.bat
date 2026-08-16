@@ -142,27 +142,6 @@ curl -L https://raw.githubusercontent.com/open-mmlab/mmdeploy/main/demo/resource
 IF %ERRORLEVEL% NEQ 0 goto model_failure
 :skip_rtm_demo
 
-:: -------------------------------------------------- librealsense headers
-:: Official Intel librealsense C API headers (Apache-2.0), used by the
-:: dynamically-loaded RealSense backend. The realsense2.dll itself comes from
-:: the official RealSense SDK installer (github.com/IntelRealSense/librealsense
-:: releases) - the app runs fine without it, RealSense devices just won't
-:: appear in the camera list.
-IF EXIST deps\librealsense\include\librealsense2\rs.h goto skip_realsense
-echo "Downloading librealsense headers..."
-IF NOT EXIST deps\librealsense mkdir deps\librealsense
-curl -L https://github.com/IntelRealSense/librealsense/archive/refs/tags/v2.58.3.zip --output deps\librealsense\src.zip
-IF %ERRORLEVEL% NEQ 0 goto model_failure
-pushd deps\librealsense
-tar -xf src.zip "librealsense-2.58.3/include"
-IF %ERRORLEVEL% NEQ 0 (popd & goto model_failure)
-IF NOT EXIST include mkdir include
-xcopy /E /Y /Q "librealsense-2.58.3\include\*" include\ > NUL
-rmdir /S /Q librealsense-2.58.3
-del src.zip
-popd
-:skip_realsense
-
 echo "Initial setup complete!"
 goto exit
 

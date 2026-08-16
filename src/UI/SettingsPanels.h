@@ -17,16 +17,12 @@ struct VisionPreviewFrame;
 // panel itself is a set of free functions)
 struct TrackingPanelState
 {
-	// Seconds left before the rest-pose capture fires; <= 0 = not counting
-	float restPoseCountdown= 0.f;
-	// Transient result banner after a capture
-	float restPoseResultTimer= 0.f;
-	bool bRestPoseResultCaptured[2]= {false, false};
-	// Set when the panel wants the wrist IMU mounting wizard opened; the owner
-	// consumes and clears it (the mounting calibration is a multi-step guided
-	// flow, not something a panel button can drive)
+	// Set when the panel wants a guided multi-step wizard opened; the owner
+	// consumes and clears these (a wizard is not something a panel button can
+	// drive by itself)
 	bool bLaunchMountingWizard= false;
 	bool bLaunchBodyCalibrationWizard= false;
+	bool bLaunchHandCalibrationWizard= false;
 
 	// UI smoothing for the image-quality readout: the per-frame values are
 	// twitchy at camera rate, so the panel shows a ~1s EMA (the dump keeps the
@@ -35,17 +31,6 @@ struct TrackingPanelState
 	static constexpr int kQualityMaxCameras= 8;
 	float qualityEma[kQualityMaxCameras][kQualityMetricCount]= {};
 	bool bQualityEmaValid[kQualityMaxCameras][kQualityMetricCount]= {};
-
-	// Hand bone calibration: countdown, then a sampling window on the vision
-	// thread, then a review table. Nothing reaches the config until the
-	// measurement has been looked at - it replaces the geometry every client
-	// rebuilds the hand from.
-	float boneCountdown= 0.f;
-	bool bBoneReviewPending= false;
-	bool bBoneCaptured[2]= {false, false};
-	std::array<HandSkeleton, 2> boneSkeleton{};
-	float boneWorstSpreadMm[2]= {0.f, 0.f};
-	int boneSampleCount[2]= {0, 0};
 
 	// Hold-still jitter test: countdown, then a sampling window over the
 	// fused output. The result is THE number for A/B-ing camera settings and

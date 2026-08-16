@@ -45,21 +45,11 @@ struct HandFusionConfig
 	float wristMatchMaxDistM= 0.25f;
 	float presenceThreshold= 0.5f;
 
-	// A camera's observation is dropped entirely when its confidence
-	// (presence x stability) falls below this. 0 = never drop, rely on the
-	// soft weighting alone.
-	float minCameraConfidence= 0.f;
 	// Palm jitter (constant-velocity residual) at which an observation is
 	// considered half as trustworthy. Larger = more tolerant of noise, but
 	// also of genuinely fast motion, which produces real residuals.
 	float jitterReferenceM= 0.015f;
 
-	// Stereo landmark triangulation: when two cameras observe the same hand,
-	// triangulate all 21 landmarks from the 2D image points and extract the
-	// pose from the result - the network's (view-dependent, noisy) monocular
-	// depth never enters. Falls back to the per-camera poses when off,
-	// unavailable, or vetoed by the residual gate.
-	bool triangulationEnabled= true;
 	// A triangulated hand whose RMS reprojection residual exceeds this is a
 	// wrong cross-camera pairing (two different physical hands) - reject it
 	float triangulationMaxResidualPx= 25.f;
@@ -327,6 +317,10 @@ private:
 	// FK skeleton the estimator fits with: adopted then slowly blended, so an
 	// uncalibrated (per-frame) skeleton cannot jitter the fit geometry
 	void updateEstimatorSkeleton(eHandSide side, const HandSkeleton& observed);
+	// The ONE place the rest-pose zero is applied: raw angles minus the
+	// captured fusedRestAngles. Every output path (estimator, triangulated,
+	// monocular fallback) goes through this, so streamed zero means one thing.
+	void applyFusedRestOffset(eHandSide side, std::array<FingerAngles, FINGER_COUNT>& ioAngles) const;
 	// Per-fuse per-side housekeeping: reacquisition resets the remembered
 	// palmar side (it describes where the hand WAS)
 	void updateTrackingHousekeeping(const TrackingFrameResult& fused);

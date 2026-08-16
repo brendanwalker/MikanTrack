@@ -14,7 +14,7 @@ MikanMediaPipe went from empty repo to a working multi-camera hand tracker betwe
 | (main) | Aug 1 | Diagnostic dump system + measured-jitter confidence | Kept, changed how every later bug was fixed |
 | multi_camera_3d | Aug 1 | Stereo triangulation as the primary 3D lift | Kept |
 | rtm-pose | Aug 1 | RTMPose hand landmarks as 2D refinement | Won its A/B, parked anyway (cost/benefit) |
-| stereo_camera | Aug 2 | RealSense D455 hardware depth | Kept as an option, rig later moved to dual wide-FOV webcams |
+| stereo_camera | Aug 2 | RealSense D455 hardware depth | Kept as an option; deleted Aug 16 once the estimator's mono prior covered its niche |
 | imu | Aug 2-9 | Wrist IMUs (Joy-Cons) for forearm orientation | Kept |
 | image_metrics | Aug 9-10 | Image-quality diagnostics + record/replay | Kept |
 | extrinsic_calibration | Aug 10-11 | Charuco-board extrinsics, all cameras in one session | Kept |
@@ -127,6 +127,8 @@ A RealSense D455 was added as a backend (dynamically loaded SDK, depth-resolved 
 The rig nevertheless moved to dual wide-FOV webcams. The user's live observation that a 90-degree FOV camera "surprisingly" improved tracking held up: field of view keeps both hands in both frusta, which raises the stereo rate, and stereo frames never read depth anyway. After bone calibration and the seeding fixes, the dual wide-FOV rig hit 93.3% stereo share against the RealSense rig's ~95%, without the depth hardware.
 
 Learned: quantify what a sensor buys before paying for it, on a correctly calibrated rig, with identical-motion replays. And FOV is upstream of almost everything in a stereo hand tracker: a frame that keeps both hands in both views avoids the entire monocular fallback problem that depth existed to soften.
+
+Postscript (Aug 16): with the state estimator permanent - whose anisotropic mono prior softens the same monocular-depth problem the sensor targeted - the RealSense backend, the depth-sampling path, and their recording/replay plumbing were deleted entirely under the settled-experiment rule. The measured verdicts above are the record of what the hardware was worth.
 
 ## 11. Wrist IMUs: model the joint you actually measure
 

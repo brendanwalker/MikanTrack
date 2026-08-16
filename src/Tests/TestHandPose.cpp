@@ -271,32 +271,15 @@ static int runHandPoseTest(const TestArgs& args)
 			for (int joint= 0; joint < 4; ++joint)
 				restPoints[FINGER_JOINTS[finger][joint]]= restJoints[finger][joint];
 
-		// Capturing the rest angles and subtracting them must zero ALL
-		// FOUR degrees of freedom, intermediate and distal included
-		std::array<FingerAngles, FINGER_COUNT> capturedRest{};
-		HandPoseModel::captureRestAngles(restPoints, eHandSide::Right, capturedRest);
-
+		// The rest OFFSET convention (used by fusedRestAngles): the angles a
+		// pose reads against the flat-hand neutral ARE its offset, so
+		// subtracting them makes that exact pose read all-zero on ALL FOUR
+		// degrees of freedom, intermediate and distal included
 		HandSkeleton restSkeleton;
 		HandPoseModel::computeSkeleton(restPoints, eHandSide::Right, restSkeleton);
-		std::array<FingerAngles, FINGER_COUNT> measured{};
+		std::array<FingerAngles, FINGER_COUNT> capturedRest{};
 		HandPoseModel::computeFingerAngles(restPoints, eHandSide::Right,
-										   restSkeleton.neutralDirInPalm, measured);
-
-		float maxRest= 0.f;
-		for (int finger= 0; finger < FINGER_COUNT; ++finger)
-		{
-			maxRest= std::max(maxRest, fabsf(measured[finger].lateral - capturedRest[finger].lateral));
-			maxRest= std::max(maxRest, fabsf(measured[finger].proximal - capturedRest[finger].proximal));
-			maxRest= std::max(
-				maxRest, fabsf(measured[finger].intermediate - capturedRest[finger].intermediate));
-			maxRest= std::max(maxRest, fabsf(measured[finger].distal - capturedRest[finger].distal));
-		}
-		MIKAN_LOG_INFO("test-handpose") << "rest capture: max residual (all 4 DoF) rad=" << maxRest;
-		if (maxRest > 1e-5f)
-		{
-			MIKAN_LOG_ERROR("test-handpose") << "FAILED: a captured rest pose must read zero angles";
-			result= 1;
-		}
+										   restSkeleton.neutralDirInPalm, capturedRest);
 
 		// ...and a DIFFERENT pose must still read its true deviation,
 		// i.e. the offset shifts zero without distorting the scale

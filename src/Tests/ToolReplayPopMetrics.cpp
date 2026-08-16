@@ -239,11 +239,9 @@ void accumulateFrame(const TrackingFrameResult& fused, const RecordedFrame& reco
 				++side.pathTransitions;
 		}
 
-		// Anatomical plausibility of the RAW angles (streamed + rest offset).
-		// Stereo records only: mono fallback angles carry PER-CAMERA rest
-		// offsets, so adding the fused offset back would manufacture
-		// violations out of a convention mismatch.
-		if (pose.stereoTriangulated)
+		// Anatomical plausibility of the RAW angles (streamed + rest offset;
+		// fusedRestAngles is the only rest convention, applied uniformly at
+		// fusion output, so every tracked record reconstructs the same way)
 		{
 			std::array<FingerAngles, FINGER_COUNT> rawAngles= pose.fingers;
 			if (config.fusedRestAngles.present[sideIndex])

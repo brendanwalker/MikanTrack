@@ -437,54 +437,11 @@ static int runFusionTest(const TestArgs& args)
 		}
 	}
 
-	// (l) Hard confidence gate: with minCameraConfidence above what a
-	// jittery camera can reach, its observation is dropped entirely
-	{
-		HandFusion freshFusion;
-		HandFusionConfig gateConfig= fusionConfig;
-		gateConfig.jitterReferenceM= 0.015f;
-		gateConfig.minCameraConfidence= 0.5f;
-		freshFusion.configure(gateConfig);
-
-		TrackingFrameResult fused;
-		for (int step= 0; step < 40; ++step)
-		{
-			const double stepTime= now + step * 33.0;
-			// Alternating 8cm displacement = sustained large jitter
-			const glm::vec3 noise= (step % 2 == 0) ? glm::vec3(0.08f, 0.f, 0.f) : glm::vec3(0.f);
-			const auto camA= makeCameraResult(
-				0, cam1Pos, stepTime,
-				makeObservation(palmTruth + noise, faceUpToCam1, 0.95f, eHandSide::Left, 0.05f, 0.f));
-			freshFusion.fuse({&camA}, stepTime, fused);
-		}
-
-		const HandPose& pose= fused.poses[(int)eHandSide::Left];
-		MIKAN_LOG_INFO("test-fusion") << "(l) confidence gate: tracked=" << pose.tracked;
-		if (pose.tracked)
-		{
-			MIKAN_LOG_ERROR("test-fusion")
-				<< "(l) FAILED: an observation below minCameraConfidence must be dropped";
-			result= 1;
-		}
-
-		// ...and a steady observation at the same presence survives
-		HandFusion steadyFusion;
-		steadyFusion.configure(gateConfig);
-		TrackingFrameResult steadyFused;
-		for (int step= 0; step < 40; ++step)
-		{
-			const double stepTime= now + step * 33.0;
-			const auto camA= makeCameraResult(
-				0, cam1Pos, stepTime,
-				makeObservation(palmTruth, faceUpToCam1, 0.95f, eHandSide::Left, 0.05f, 0.f));
-			steadyFusion.fuse({&camA}, stepTime, steadyFused);
-		}
-		if (!steadyFused.poses[(int)eHandSide::Left].tracked)
-		{
-			MIKAN_LOG_ERROR("test-fusion") << "(l) FAILED: a steady observation must pass the gate";
-			result= 1;
-		}
-	}
+	// (The old (l) hard-confidence-gate test died with minCameraConfidence:
+	// both recorded non-zero uses of that gate caused measured tracking
+	// incidents - it censored exactly the fast-motion frames the jitter
+	// metric mismeasures - so the field was deleted. Confidence remains a
+	// soft weight, covered by (k).)
 
 	// (m) Stereo landmark triangulation: two cameras with full projective
 	// geometry observe one synthetic hand. The fused pose must come from

@@ -69,12 +69,6 @@ public:
 	void setUndistortEnabled(int cameraIndex, bool bEnabled);
 	bool isUndistortEnabled(int cameraIndex) const;
 
-	// Depth preview (RealSense devices): the camera's preview pane shows the
-	// colorized depth stream instead of color. Tracking is unaffected - it
-	// always consumes the color image.
-	void setDepthPreviewEnabled(int cameraIndex, bool bEnabled);
-	bool isDepthPreviewEnabled(int cameraIndex) const;
-
 	// Copies the newest preview frame + per-camera result for a camera.
 	// Returns false if nothing new arrived since the last call.
 	bool fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFrame);
@@ -131,16 +125,16 @@ public:
 	void requestImuBiasCalibration() { m_bImuBiasCalibrationRequested= true; }
 	void cancelImuBiasCalibration() { m_bImuBiasCancelRequested= true; }
 
-	// One camera's captured rest angles for both sides
+	// The captured rest angles for both sides (RAW multi-view angles from the
+	// fuse that serviced the capture; a side is only captured when it was
+	// stereo-quality at that moment)
 	struct RestPoseCapture
 	{
 		std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
 		bool bCaptured[2]= {false, false};
 	};
-	// Fetches a completed capture (one entry per camera, in camera order,
-	// plus the stereo-triangulated fused capture when it was available);
-	// returns false if none is pending
-	bool fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused);
+	// Fetches a completed capture; returns false if none is pending
+	bool fetchRestPoseCapture(RestPoseCapture& outFused);
 
 	// Hand bone calibration: measures the user's own skeleton from the
 	// stereo-triangulated landmarks over a sampling window. Unlike the rest
@@ -250,9 +244,6 @@ private:
 
 		std::atomic_bool bTrackingEnabled{true};
 		std::atomic_bool bUndistortEnabled{true};
-		// Preview shows the colorized depth stream instead of color
-		// (RealSense devices only; ignored when no depth is available)
-		std::atomic_bool bDepthPreview{false};
 
 		// Read by the main thread; written by the vision thread after pipeline
 		// startup (never dereference the pipeline from the main thread)
@@ -296,15 +287,6 @@ private:
 	// camera's search hints (see seedSearchHints) immediately before the
 	// pipeline runs, which is the only point at which hints are consumed
 	bool processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused);
-	// RealSense depth: samples metric depth at each tracked hand's 2D
-	// landmarks (mapping undistorted pipeline pixels back to raw sensor
-	// pixels first). Returns false when the camera has no depth stream.
-	bool sampleHandDepth(CameraContext& context, const struct CameraProfile& profile,
-						 const TrackingFrameResult& result,
-						 std::array<struct HandDepthMeasurement, 2>& outMeasurements);
-	// Colorized depth image for the preview pane (false when the camera has
-	// no depth stream)
-	bool buildDepthPreview(CameraContext& context, const cv::Size& targetSize, cv::Mat& outBgr);
 	// Cross-camera search seeding: hands the fused result tracks but this
 	// camera lost get projected into its image as pipeline search hints
 	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);
@@ -356,7 +338,6 @@ private:
 	// Rest-pose capture handoff
 	std::atomic_bool m_bRestPoseCaptureRequested{false};
 	std::mutex m_restPoseMutex;
-	std::vector<RestPoseCapture> m_capturedRestPose;
 	RestPoseCapture m_capturedFusedRest;
 	bool m_bRestPoseReady= false;
 

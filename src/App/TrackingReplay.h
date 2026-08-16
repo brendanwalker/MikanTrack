@@ -67,10 +67,6 @@ public:
 		HandFusionConfig fusionConfig;
 		// Multiplier on each frame's recorded effective ref length
 		float refLengthScale= 1.f;
-		// Off = ignore recorded depth measurements (forces the PnP path)
-		bool bUseRecordedDepth= true;
-		// Off = clear the per-camera rest angle offsets
-		bool bApplyRestAngles= true;
 		// Off = ignore the recording's measured hand skeleton, falling back to
 		// the landmark model's own proportions (the A/B for a bone calibration)
 		bool bApplyCalibratedSkeleton= true;

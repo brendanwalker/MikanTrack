@@ -1,7 +1,6 @@
 #include "VideoCaptureSystem.h"
 #include "Logger.h"
 #include "MikanWMFVideoDeviceManager.h"
-#include "RealSenseVideoDeviceManager.h"
 #include "VideoModeUtils.h"
 
 #include "opencv2/core.hpp"
@@ -153,13 +152,6 @@ bool VideoCaptureSystem::startup()
 		}
 	}
 
-	if (m_realSenseManager == nullptr)
-	{
-		m_realSenseManager= new RealSenseVideoDeviceManager();
-		m_realSenseManager->addListener(this);
-		m_realSenseManager->startup(); // no-op (zero devices) without the dll
-	}
-
 	return true;
 }
 
@@ -210,14 +202,6 @@ void VideoCaptureSystem::shutdown()
 {
 	m_slots.clear(); // slot destructors close their devices
 
-	if (m_realSenseManager != nullptr)
-	{
-		m_realSenseManager->removeListener(this);
-		m_realSenseManager->shutdown();
-		delete m_realSenseManager;
-		m_realSenseManager= nullptr;
-	}
-
 	if (m_deviceManager != nullptr)
 	{
 		m_deviceManager->removeListener(this);
@@ -234,37 +218,22 @@ void VideoCaptureSystem::shutdown()
 }
 
 // -- Device list -----
-// Enumeration is the WMF list with the RealSense list appended. Note a
-// RealSense camera's COLOR sensor also shows up as a plain WMF/UVC device -
-// both entries work, but only the rs:// entry carries the depth stream.
 void VideoCaptureSystem::refreshDeviceList()
 {
 	if (m_deviceManager != nullptr)
 	{
 		m_deviceManager->refreshConnectedDevices();
 	}
-	if (m_realSenseManager != nullptr)
-	{
-		m_realSenseManager->refreshConnectedDevices();
-	}
 }
 
 size_t VideoCaptureSystem::getDeviceCount() const
 {
-	const size_t wmfCount= m_deviceManager != nullptr ? m_deviceManager->getDeviceCount() : 0;
-	const size_t realSenseCount= m_realSenseManager != nullptr ? m_realSenseManager->getDeviceCount() : 0;
-	return wmfCount + realSenseCount;
+	return m_deviceManager != nullptr ? m_deviceManager->getDeviceCount() : 0;
 }
 
-// Merged-index lookup: [0, wmfCount) = WMF, [wmfCount, ...) = RealSense
 IUsbVideoDevice* VideoCaptureSystem::getMergedDeviceByIndex(size_t index) const
 {
-	const size_t wmfCount= m_deviceManager != nullptr ? m_deviceManager->getDeviceCount() : 0;
-	if (index < wmfCount)
-		return m_deviceManager->getDeviceByIndex(index);
-	if (m_realSenseManager != nullptr)
-		return m_realSenseManager->getDeviceByIndex(index - wmfCount);
-	return nullptr;
+	return m_deviceManager != nullptr ? m_deviceManager->getDeviceByIndex(index) : nullptr;
 }
 
 bool VideoCaptureSystem::getDevicePath(size_t index, std::string& outDevicePath) const
@@ -571,12 +540,9 @@ void VideoCaptureSystem::convertFrameToBGR(const VideoFrameBlock& block, cv::Mat
 						section.stride); // stride is already in bytes per row
 		cv::cvtColor(yuy2Mat, outBgr, cv::COLOR_YUV2BGR_YUY2);
 	}
-	else if (block.format == eUSBVideoFrameBufferFormat::USBVideo_RGB24 ||
-			 block.format == eUSBVideoFrameBufferFormat::USBVideo_RGB24_DEPTH16)
+	else if (block.format == eUSBVideoFrameBufferFormat::USBVideo_RGB24)
 	{
-		// RGB24 format: convert to BGR. The RealSense composite carries its
-		// Z16 depth plane in section[1]; the color plane converts identically
-		// (depth is consumed separately via getDepthView()).
+		// RGB24 format: convert to BGR
 		const UsbVideoFrameSection& section= block.sections[0];
 		cv::Mat rgb24Mat(section.pixel_height, section.pixel_width, CV_8UC3,
 						 (void*)(frameData + section.start_offset),
@@ -600,23 +566,7 @@ void VideoCaptureSystem::convertFrameToBGR(const VideoFrameBlock& block, cv::Mat
 
 IUsbVideoDevice* VideoCaptureSystem::findDeviceByPath(const std::string& devicePath) const
 {
-	if (RealSenseVideoDeviceManager::isRealSensePath(devicePath))
-		return m_realSenseManager != nullptr ? m_realSenseManager->getDeviceByPath(devicePath.c_str()) : nullptr;
-
 	return m_deviceManager != nullptr ? m_deviceManager->getDeviceByPath(devicePath.c_str()) : nullptr;
-}
-
-bool VideoCaptureSystem::getDepthView(int cameraIndex, DepthFrameView& outView)
-{
-	const CameraSlot* slot= getSlot(cameraIndex);
-	if (slot == nullptr || slot->device == nullptr || m_realSenseManager == nullptr)
-		return false;
-
-	const std::string devicePath= slot->device->getDevicePath();
-	if (!RealSenseVideoDeviceManager::isRealSensePath(devicePath))
-		return false;
-
-	return m_realSenseManager->fetchDepthView(devicePath, 0.0, outView);
 }
 
 // -- IUsbVideoDeviceManagerListener -----

@@ -12,7 +12,6 @@
 #include "LandmarkTo3D.h"
 #include "Logger.h"
 #include "OscStreamer.h"
-#include "DepthFrameView.h"
 #include "SpaceTransforms.h"
 #include "ThreadUtils.h"
 #include "VideoCaptureSystem.h"
@@ -139,17 +138,6 @@ bool VisionThread::isUndistortEnabled(int cameraIndex) const
 	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bUndistortEnabled;
 }
 
-void VisionThread::setDepthPreviewEnabled(int cameraIndex, bool bEnabled)
-{
-	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
-		m_cameras[cameraIndex]->bDepthPreview= bEnabled;
-}
-
-bool VisionThread::isDepthPreviewEnabled(int cameraIndex) const
-{
-	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bDepthPreview;
-}
-
 bool VisionThread::fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFrame)
 {
 	if (cameraIndex < 0 || cameraIndex >= (int)m_cameras.size())
@@ -178,13 +166,12 @@ bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
 	return true;
 }
 
-bool VisionThread::fetchRestPoseCapture(std::vector<RestPoseCapture>& outCaptures, RestPoseCapture& outFused)
+bool VisionThread::fetchRestPoseCapture(RestPoseCapture& outFused)
 {
 	std::lock_guard<std::mutex> lock(m_restPoseMutex);
 	if (!m_bRestPoseReady)
 		return false;
 
-	outCaptures= m_capturedRestPose;
 	outFused= m_capturedFusedRest;
 	m_bRestPoseReady= false;
 	return true;
@@ -533,20 +520,6 @@ void VisionThread::refreshConfigOnThread()
 			context.bodyPoseTracker= nullptr;
 		}
 
-		// This camera's own rest angles. Per camera: the model landmarks are
-		// view-dependent, so removing each camera's bias is what makes their
-		// angles agree well enough for fusion to blend them.
-		if (context.landmarkTo3D != nullptr)
-		{
-			context.landmarkTo3D->clearRestAngles();
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				if (profile.restAngles.present[sideIndex])
-					context.landmarkTo3D->setRestAngles((eHandSide)sideIndex,
-														profile.restAngles.angles[sideIndex]);
-			}
-		}
-
 		// Invalidate the last result so stale calibration state can't leak
 		// through a config change
 		context.lastResult= CameraFrameResult();
@@ -698,75 +671,6 @@ void VisionThread::seedSearchHints(CameraContext& context, const TrackingFrameRe
 	}
 }
 
-bool VisionThread::sampleHandDepth(CameraContext& context, const CameraProfile& profile,
-								   const TrackingFrameResult& result,
-								   std::array<HandDepthMeasurement, 2>& outMeasurements)
-{
-	DepthFrameView depthView;
-	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
-		return false;
-
-	// Plausible hand range for a desk-mounted camera (bounds also reject the
-	// desk surface bleeding through around finger silhouettes)
-	constexpr float kMinHandDepthM= 0.15f;
-	constexpr float kMaxHandDepthM= 1.5f;
-
-	// The pipeline ran on the UNDISTORTED image; factory depth calibration
-	// expects RAW sensor pixels, so map back through the charuco distortion
-	// model when undistortion is active
-	const bool bUndistorted= context.bUndistortEnabled && context.undistorter != nullptr;
-	const MikanMonoIntrinsics& intrinsics= profile.intrinsics.intrinsics;
-	const MikanMatrix3d& undistortedK= intrinsics.undistorted_camera_matrix;
-	const MikanMatrix3d& distortedK= intrinsics.distorted_camera_matrix;
-	const MikanDistortionCoefficients& d= intrinsics.distortion_coefficients;
-	auto toRawPixel= [&](float u, float v, float& outU, float& outV) {
-		if (!bUndistorted)
-		{
-			outU= u;
-			outV= v;
-			return;
-		}
-		const double x= (u - undistortedK.z0) / undistortedK.x0;
-		const double y= (v - undistortedK.z1) / undistortedK.y1;
-		const double r2= x * x + y * y;
-		const double radial= (1.0 + d.k1 * r2 + d.k2 * r2 * r2 + d.k3 * r2 * r2 * r2) /
-			(1.0 + d.k4 * r2 + d.k5 * r2 * r2 + d.k6 * r2 * r2 * r2);
-		const double xd= x * radial + 2.0 * d.p1 * x * y + d.p2 * (r2 + 2.0 * x * x);
-		const double yd= y * radial + d.p1 * (r2 + 2.0 * y * y) + 2.0 * d.p2 * x * y;
-		outU= (float)(distortedK.x0 * xd + distortedK.z0);
-		outV= (float)(distortedK.y1 * yd + distortedK.z1);
-	};
-
-	bool bAnyResolved= false;
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		HandDepthMeasurement& measurement= outMeasurements[sideIndex];
-		measurement= HandDepthMeasurement();
-
-		const TrackedHand& hand= result.hands[sideIndex];
-		if (!hand.tracked)
-			continue;
-
-		for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
-		{
-			float rawU= 0.f, rawV= 0.f;
-			toRawPixel(hand.imagePoints[i].x, hand.imagePoints[i].y, rawU, rawV);
-
-			glm::vec3 cameraPoint(0.f);
-			if (depthView.sampleCameraPointAtColorPixel(rawU, rawV, kMinHandDepthM, kMaxHandDepthM,
-														cameraPoint))
-			{
-				measurement.bValid[i]= true;
-				measurement.cameraPoints[i]= cameraPoint;
-				measurement.validCount++;
-			}
-		}
-		bAnyResolved|= measurement.validCount > 0;
-	}
-
-	return bAnyResolved;
-}
-
 bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused)
 {
 	VideoFrameBlock* block= m_videoCapture->tryPopFrame(context.cameraIndex);
@@ -861,7 +765,6 @@ bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFram
 		// LandmarkTo3D call below consumes them
 		if (m_recorder != nullptr && m_recorder->isRecording())
 		{
-			context.pendingRecordInput.bHaveDepth= false;
 			context.pendingRecordInput.refLengthMeters= 0.f;
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
@@ -885,26 +788,16 @@ bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFram
 		// Image space -> camera space (needs intrinsics + hand scale)
 		if (context.landmarkTo3D != nullptr)
 		{
-			// Hardware depth (RealSense): sample metric depth at each 2D
-			// landmark so the palm transform comes from measurement, not from
-			// a monocular estimate
-			std::array<HandDepthMeasurement, 2> depthMeasurements;
-			const bool bHaveDepth= m_config->tracking.useRealSenseDepth &&
-				sampleHandDepth(context, profile, result, depthMeasurements);
-
-			// Recording tap, part 2: the depth measurements and the hand
-			// scale in effect for this exact process() call (the auto-scale
-			// EMA feedback loop becomes a recorded input)
+			// Recording tap, part 2: the hand scale in effect for this exact
+			// process() call (the auto-scale EMA feedback loop becomes a
+			// recorded input)
 			if (m_recorder != nullptr && m_recorder->isRecording())
 			{
-				context.pendingRecordInput.bHaveDepth= bHaveDepth;
-				if (bHaveDepth)
-					context.pendingRecordInput.depth= depthMeasurements;
 				context.pendingRecordInput.refLengthMeters=
 					context.landmarkTo3D->getRefLengthMeters();
 			}
 
-			context.landmarkTo3D->process(result, bHaveDepth ? &depthMeasurements : nullptr);
+			context.landmarkTo3D->process(result);
 
 			// Camera space -> marker/world space (needs extrinsics)
 			if (profile.extrinsics.present)
@@ -953,64 +846,16 @@ bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFram
 	}
 	context.lastResult.result= result;
 
-	// Publish this camera's preview (latest-wins). Depth preview mode swaps
-	// in the colorized depth stream (tracking above always used color).
+	// Publish this camera's preview (latest-wins)
 	{
-		cv::Mat depthPreview;
-		const bool bShowDepth=
-			context.bDepthPreview && buildDepthPreview(context, activeFrame->size(), depthPreview);
-
 		std::lock_guard<std::mutex> lock(context.previewMutex);
-		if (bShowDepth)
-			depthPreview.copyTo(context.previewFrame.bgr);
-		else
-			activeFrame->copyTo(context.previewFrame.bgr);
+		activeFrame->copyTo(context.previewFrame.bgr);
 		context.previewFrame.result= result;
 		context.previewFrame.valid= true;
 		context.bPreviewFresh= true;
 	}
 
 	return bProducedTracking;
-}
-
-bool VisionThread::buildDepthPreview(CameraContext& context, const cv::Size& targetSize, cv::Mat& outBgr)
-{
-	DepthFrameView depthView;
-	if (!m_videoCapture->getDepthView(context.cameraIndex, depthView))
-		return false;
-
-	// Fixed desk-scale range: near = warm, far = cool, holes = black.
-	// (The range is a visualization window, not a tracking gate.)
-	constexpr float kNearM= 0.15f;
-	constexpr float kFarM= 1.2f;
-
-	const cv::Mat depth16(depthView.depthHeight, depthView.depthWidth, CV_16UC1,
-						  (void*)depthView.depthData);
-
-	// Z16 -> normalized 8-bit within the window
-	cv::Mat depthMeters;
-	depth16.convertTo(depthMeters, CV_32F, depthView.depthUnitsMeters);
-	cv::Mat normalized;
-	depthMeters.convertTo(normalized, CV_8U, 255.0 / (kFarM - kNearM), -255.0 * kNearM / (kFarM - kNearM));
-	// Invert so NEAR maps to the warm end of the colormap
-	cv::Mat inverted;
-	cv::subtract(cv::Scalar(255), normalized, inverted);
-
-	cv::Mat colorized;
-	cv::applyColorMap(inverted, colorized, cv::COLORMAP_TURBO);
-
-	// Holes (raw 0) and out-of-window depth render black - the holes are the
-	// entire point of this view (see exactly which fingers depth loses)
-	cv::Mat validMask= (depth16 > (uint16_t)(kNearM / depthView.depthUnitsMeters)) &
-		(depth16 < (uint16_t)(kFarM / depthView.depthUnitsMeters));
-	cv::Mat masked= cv::Mat::zeros(colorized.size(), CV_8UC3);
-	colorized.copyTo(masked, validMask);
-
-	// Scale to the color preview's size so the pane geometry (and the
-	// skeleton overlay, approximately - depth and color FOVs differ slightly)
-	// stays consistent when cycling views
-	cv::resize(masked, outBgr, targetSize, 0.0, 0.0, cv::INTER_NEAREST);
-	return true;
 }
 
 void VisionThread::threadLoop()
@@ -1365,28 +1210,12 @@ void VisionThread::threadLoop()
 			}
 		}
 
-		// Rest-pose capture: EVERY camera records what it currently reports for
-		// each hand, so each one's own view-dependent bias is removed
+		// Rest-pose capture: the zero reference is the RAW multi-view angles
+		// of the fuse that just ran (stereo-quality only - a monocular pose
+		// carries the model's view-dependent bias, which is exactly what a
+		// zero reference must not bake in)
 		if (m_bRestPoseCaptureRequested.exchange(false))
 		{
-			std::vector<RestPoseCapture> captures;
-			for (const std::unique_ptr<CameraContext>& context : m_cameras)
-			{
-				RestPoseCapture capture;
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					const TrackedHand& hand= context->lastResult.result.hands[sideIndex];
-					if (!context->lastResult.valid || !hand.tracked)
-						continue;
-
-					HandPoseModel::captureRestAngles(hand.modelPoints, hand.side, capture.angles[sideIndex]);
-					capture.bCaptured[sideIndex]= true;
-				}
-				captures.push_back(capture);
-			}
-
-			// The stereo-triangulated path has its own zero reference: the raw
-			// (pre-offset) triangulated angles of the fuse that just ran
 			RestPoseCapture fusedCapture;
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
@@ -1396,7 +1225,6 @@ void VisionThread::threadLoop()
 			}
 
 			std::lock_guard<std::mutex> lock(m_restPoseMutex);
-			m_capturedRestPose= std::move(captures);
 			m_capturedFusedRest= fusedCapture;
 			m_bRestPoseReady= true;
 		}

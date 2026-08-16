@@ -202,18 +202,18 @@ calibration they fall back to OpenCV camera space (`/mikan/info` says which).
 - **Zero = the rest pose.** Forward kinematics starts from the per-finger
   `neutralDirInPalm` streamed in the skeleton message (the flat-hand default:
   four fingers parallel to palm +X, thumb along its own metacarpal) - use it,
-  don't derive one. **Tracking panel -> Capture Rest Pose** then records what
-  each camera reports for your hands held flat and subtracts it, so your rest
-  pose reads zeros on all four angles. Without it a hand hovering over a
-  keyboard reports 20-50 degrees of knuckle flexion, which is *correct* but
-  rarely what a client wants as its origin.
+  don't derive one. **Tracking panel -> Calibrate Hands...** measures your
+  bone lengths and then captures your rest pose (in that order - measured
+  bones move the thumb's angle zero), so your rest pose reads zeros on all
+  four angles. Without the capture a hand hovering over a keyboard reports
+  20-50 degrees of knuckle flexion, which is *correct* but rarely what a
+  client wants as its origin.
 
-  The capture is **per camera, and needs every camera to see both hands**,
-  because MediaPipe's model landmarks are view-dependent: two cameras
-  watching the same physical hand disagree about its articulation by tens of
-  degrees (41 degrees on one finger, measured on this rig). Removing each
-  camera's own bias is also what makes their angles comparable enough for
-  fusion to blend them rather than average two different biases.
+  The capture needs **both hands seen by two cameras**: the zero reference
+  is taken from the stereo-triangulated angles, because MediaPipe's model
+  landmarks are view-dependent (two cameras watching the same physical hand
+  disagree about its articulation by tens of degrees) and a single camera's
+  reading would bake that camera's bias into the zero.
 - **`lateral`** rotates about palm **+Z, positive counter-clockwise**, i.e.
   toward palm **+Y = cross(palmZ, palmX)**. Purely geometric and identical
   for both hands (the palm frame carries the chirality), so on a right hand

@@ -234,7 +234,6 @@ static void cameraProfileFromJson(const json& j, CameraProfile& profile)
 	if (in.contains("distortion"))
 		distortionFromJson(in["distortion"], mono.distortion_coefficients);
 
-	restAnglesFromJson(j.value("restAngles", json::object()), profile.restAngles);
 
 	const json& bp= j.value("bodyPose", json::object());
 	profile.bodyPose.enabled= bp.value("enabled", false);
@@ -276,7 +275,6 @@ static json cameraProfileToJson(const CameraProfile& profile)
 			 {"undistortedCameraMatrix", matrix3dToJson(mono.undistorted_camera_matrix)},
 			 {"distortion", distortionToJson(mono.distortion_coefficients)},
 		 }},
-		{"restAngles", restAnglesToJson(profile.restAngles)},
 		{"bodyPose",
 		 {
 			 {"enabled", profile.bodyPose.enabled},
@@ -313,9 +311,7 @@ HandFusionConfig makeHandFusionConfig(const AppConfig& config)
 	HandFusionConfig fusionConfig;
 	fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
 	fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
-	fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
 	fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
-	fusionConfig.triangulationEnabled= config.fusion.triangulationEnabled;
 	fusionConfig.triangulationMaxResidualPx= config.fusion.triangulationMaxResidualPx;
 	fusionConfig.residualReferencePx= config.fusion.residualReferencePx;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -484,9 +480,7 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	const json& fu= j.value("fusion", json::object());
 	config.fusion.stalenessWindowMs= fu.value("stalenessWindowMs", 66.0);
 	config.fusion.wristMatchMaxDistM= fu.value("wristMatchMaxDistM", 0.25f);
-	config.fusion.minCameraConfidence= fu.value("minCameraConfidence", 0.f);
 	config.fusion.jitterReferenceMm= fu.value("jitterReferenceMm", 15.f);
-	config.fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
 	config.fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
 	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
 	config.fusion.estimatorPalmPosSigmaMPerS= fu.value("estimatorPalmPosSigmaMPerS", 0.3f);
@@ -560,7 +554,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.tracking.flipHandedness= tr.value("flipHandedness", true);
 	config.tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 	config.tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
-	config.tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
 	config.tracking.onnxEp= tr.value("onnxEp", "directml");
 
 	const json& os= j.value("osc", json::object());
@@ -591,9 +584,7 @@ std::string AppConfig::toJsonString() const
 	j["fusion"]= {
 		{"stalenessWindowMs", fusion.stalenessWindowMs},
 		{"wristMatchMaxDistM", fusion.wristMatchMaxDistM},
-		{"minCameraConfidence", fusion.minCameraConfidence},
 		{"jitterReferenceMm", fusion.jitterReferenceMm},
-		{"triangulationEnabled", fusion.triangulationEnabled},
 		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
 		{"residualReferencePx", fusion.residualReferencePx},
 		{"estimatorPalmPosSigmaMPerS", fusion.estimatorPalmPosSigmaMPerS},
@@ -672,7 +663,6 @@ std::string AppConfig::toJsonString() const
 		{"flipHandedness", tracking.flipHandedness},
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
-		{"useRealSenseDepth", tracking.useRealSenseDepth},
 		{"onnxEp", tracking.onnxEp},
 	};
 

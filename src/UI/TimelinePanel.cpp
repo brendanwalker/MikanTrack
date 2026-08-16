@@ -372,12 +372,6 @@ void TimelinePanel::drawWhatIfSection()
 	}
 
 	HandFusionConfig& fusion= m_whatIfParams.fusionConfig;
-	ImGui::Checkbox("Triangulation", &fusion.triangulationEnabled);
-	ImGui::SameLine();
-	ImGui::Checkbox("Use depth", &m_whatIfParams.bUseRecordedDepth);
-	ImGui::SameLine();
-	ImGui::Checkbox("Rest angles", &m_whatIfParams.bApplyRestAngles);
-	ImGui::SameLine();
 	ImGui::Checkbox("Hand bones", &m_whatIfParams.bApplyCalibratedSkeleton);
 	ImGui::SetItemTooltip(
 		"Off = fall back to the landmark model's own proportions, which is\n"
@@ -389,7 +383,6 @@ void TimelinePanel::drawWhatIfSection()
 		fusion.jitterReferenceM= jitterReferenceMm * 0.001f;
 	ImGui::SliderFloat("Max tri residual", &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");
 	ImGui::SliderFloat("Residual reference", &fusion.residualReferencePx, 2.f, 30.f, "%.0f px");
-	ImGui::SliderFloat("Min camera confidence", &fusion.minCameraConfidence, 0.f, 1.f, "%.2f");
 	float stalenessMs= (float)fusion.stalenessWindowMs;
 	if (ImGui::SliderFloat("Staleness window", &stalenessMs, 20.f, 200.f, "%.0f ms"))
 		fusion.stalenessWindowMs= stalenessMs;

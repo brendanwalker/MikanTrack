@@ -60,7 +60,7 @@ static int runReplayTest(const TestArgs& args)
 
 	// Builds one camera's recorded input for a frame (the source of
 	// truth for both the live pass and, via the file, replay)
-	auto buildCameraInput= [&](int cameraIndex, int frameIdx, bool bValid, bool bWithDepth) {
+	auto buildCameraInput= [&](int cameraIndex, int frameIdx, bool bValid) {
 		RecordedCameraInput input;
 		input.cameraIndex= cameraIndex;
 		input.timestampMs= 1000.0 + frameIdx * 33.0;
@@ -92,16 +92,6 @@ static int runReplayTest(const TestArgs& args)
 				glm::vec3(camFromWorld[cameraIndex] * glm::dvec4(glm::dvec3(worldPoint), 1.0));
 			hand.imagePoints[lm]= glm::vec3(fx * cameraPoint.x / cameraPoint.z + cx,
 											fy * cameraPoint.y / cameraPoint.z + cy, 0.f);
-			if (bWithDepth)
-			{
-				input.depth[(int)eHandSide::Right].bValid[lm]= true;
-				input.depth[(int)eHandSide::Right].cameraPoints[lm]= cameraPoint;
-			}
-		}
-		if (bWithDepth)
-		{
-			input.bHaveDepth= true;
-			input.depth[(int)eHandSide::Right].validCount= HAND_LANDMARK_COUNT;
 		}
 		return input;
 	};
@@ -144,21 +134,19 @@ static int runReplayTest(const TestArgs& args)
 
 			// Freshness plan: frame 0 = cam0 only, invalid (the
 			// passthrough case); i%5==3 = cam0 only (stale-candidate
-			// case); frame 20 = cam1 fresh-but-invalid; 30..32 = cam0
-			// carries synthetic depth
+			// case); frame 20 = cam1 fresh-but-invalid
 			std::vector<RecordedCameraInput> fresh;
 			if (frameIdx == 0)
 			{
-				fresh.push_back(buildCameraInput(0, frameIdx, false, false));
+				fresh.push_back(buildCameraInput(0, frameIdx, false));
 			}
 			else
 			{
-				const bool bDepth= frameIdx >= 30 && frameIdx <= 32;
-				fresh.push_back(buildCameraInput(0, frameIdx, true, bDepth));
+				fresh.push_back(buildCameraInput(0, frameIdx, true));
 				if (frameIdx == 20)
-					fresh.push_back(buildCameraInput(1, frameIdx, false, false));
+					fresh.push_back(buildCameraInput(1, frameIdx, false));
 				else if (frameIdx % 5 != 3)
-					fresh.push_back(buildCameraInput(1, frameIdx, true, false));
+					fresh.push_back(buildCameraInput(1, frameIdx, true));
 			}
 
 			// Per-camera stage (mirrors VisionThread::processCameraFrame)
@@ -190,8 +178,7 @@ static int runReplayTest(const TestArgs& args)
 						hand.modelPoints= recordedHand.modelPoints;
 					}
 					landmarkTo3D[cameraIndex].setRefLengthMeters(input.refLengthMeters);
-					landmarkTo3D[cameraIndex].process(
-						camResult, input.bHaveDepth ? &input.depth : nullptr);
+					landmarkTo3D[cameraIndex].process(camResult);
 					applyWorldTransform(camResult,
 										config.cameras[cameraIndex].extrinsics.markerFromCamera);
 				}
@@ -307,7 +294,9 @@ static int runReplayTest(const TestArgs& args)
 	// -- (c) What-if must diverge while plain replay matches -------
 	{
 		TrackingReplay::WhatIfParams params= replay.makeDefaultWhatIfParams();
-		params.fusionConfig.triangulationEnabled= false;
+		// Any parameter edit that reaches the solve works as the probe; the
+		// hand scale multiplier touches every camera-space lift
+		params.refLengthScale= 1.1f;
 		replay.runWhatIf(params);
 
 		int whatIfDifferent= 0;
@@ -323,7 +312,7 @@ static int runReplayTest(const TestArgs& args)
 		if (whatIfDifferent == 0)
 		{
 			MIKAN_LOG_ERROR("test-replay")
-				<< "(c) FAILED: disabling triangulation must change the output";
+				<< "(c) FAILED: a what-if parameter edit must change the output";
 			result= 1;
 		}
 	}

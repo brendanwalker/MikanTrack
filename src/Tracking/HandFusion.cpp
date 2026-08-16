@@ -536,9 +536,6 @@ bool HandFusion::triangulatePairPoints(const HandCandidate& obsA, const HandCand
 void HandFusion::rescueSoloClusters(std::vector<HandCandidate>& rescuePool,
 									std::vector<HandCluster>& clusters) const
 {
-	if (!m_config.triangulationEnabled)
-		return;
-
 	for (size_t clusterIndex= 0; clusterIndex < clusters.size(); ++clusterIndex)
 	{
 		HandCluster& cluster= clusters[clusterIndex];
@@ -716,20 +713,7 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	m_rawTriAngles[(int)side]= rawAngles;
 	m_bRawTriAnglesValid[(int)side]= true;
 
-	// Fused rest offset (captured from a triangulated rest pose): NOT the
-	// per-camera offsets - those correct each camera's own model bias, which
-	// stereo geometry doesn't have
-	if (m_config.bHasFusedRestAngles[(int)side])
-	{
-		const std::array<FingerAngles, FINGER_COUNT>& rest= m_config.fusedRestAngles[(int)side];
-		for (int finger= 0; finger < FINGER_COUNT; ++finger)
-		{
-			rawAngles[finger].lateral-= rest[finger].lateral;
-			rawAngles[finger].proximal-= rest[finger].proximal;
-			rawAngles[finger].intermediate-= rest[finger].intermediate;
-			rawAngles[finger].distal-= rest[finger].distal;
-		}
-	}
+	applyFusedRestOffset(side, rawAngles);
 	outPose.fingers= rawAngles;
 
 	float maxPresence= 0.f;
@@ -853,11 +837,11 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 			candidate.stability= stabilityFactor(candidate.jitterM, m_config.jitterReferenceM);
 			candidate.confidence= pose.presence * candidate.stability;
 
-			if (candidate.confidence < m_config.minCameraConfidence)
-			{
-				rescuePool.push_back(candidate);
-				continue;
-			}
+			// There is deliberately NO hard confidence cutoff here: a low
+			// confidence is soft evidence, and a gate on it censors exactly
+			// the fast-motion frames the jitter metric mismeasures (both
+			// recorded non-zero uses of the old minCameraConfidence caused
+			// measured tracking incidents).
 
 			// Blend weight additionally folds in geometric conditioning (how
 			// face-on the palm is), which ranks cameras but isn't meaningful
@@ -1062,8 +1046,7 @@ void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, Tracke
 	// Primary path: triangulate the 21 landmarks across two cameras and
 	// extract the pose from real stereo geometry - no monocular depth, no
 	// cross-camera blending of disagreeing articulation.
-	if (m_config.triangulationEnabled && candidates.size() >= 2 &&
-		triangulateCluster(side, cluster, outHand, outPose))
+	if (candidates.size() >= 2 && triangulateCluster(side, cluster, outHand, outPose))
 	{
 		outPose.tracked= true;
 		outPose.hasWorldPose= true;
@@ -1075,6 +1058,7 @@ void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, Tracke
 	// between them. Keep the best single observation instead.
 	if (cluster.triVetoed)
 	{
+		applyFusedRestOffset(side, outPose.fingers);
 		outPose.tracked= true;
 		outPose.hasWorldPose= true;
 		return;
@@ -1107,8 +1091,25 @@ void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, Tracke
 		updateStereoScale(cluster);
 	}
 
+	applyFusedRestOffset(side, outPose.fingers);
 	outPose.tracked= true;
 	outPose.hasWorldPose= true;
+}
+
+void HandFusion::applyFusedRestOffset(eHandSide side, std::array<FingerAngles, FINGER_COUNT>& ioAngles) const
+{
+	const int sideIndex= (int)side;
+	if (!m_config.bHasFusedRestAngles[sideIndex])
+		return;
+
+	const std::array<FingerAngles, FINGER_COUNT>& rest= m_config.fusedRestAngles[sideIndex];
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		ioAngles[finger].lateral-= rest[finger].lateral;
+		ioAngles[finger].proximal-= rest[finger].proximal;
+		ioAngles[finger].intermediate-= rest[finger].intermediate;
+		ioAngles[finger].distal-= rest[finger].distal;
+	}
 }
 
 void HandFusion::updateEstimatorSkeleton(eHandSide side, const HandSkeleton& observed)

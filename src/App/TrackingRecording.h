@@ -7,7 +7,6 @@
 
 #include "nlohmann/json.hpp"
 
-#include "LandmarkTo3D.h" // HandDepthMeasurement
 #include "TrackingTypes.h"
 
 // Tracking recording format: everything the post-MediaPipe stages consume,
@@ -58,9 +57,6 @@ struct RecordedCameraInput
 	float lumaFlickerHz= 0.f;
 
 	std::array<RecordedHandInput, 2> hands;
-
-	bool bHaveDepth= false;
-	std::array<HandDepthMeasurement, 2> depth;
 
 	// Body-pose observation from this camera's opt-in body-pose stage. The
 	// stage runs upstream of this tap, so divider cadence (held re-emits) is

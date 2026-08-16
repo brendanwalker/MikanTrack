@@ -126,29 +126,6 @@ void handInputFromJson(const json& j, RecordedHandInput& outHand)
 	}
 }
 
-json depthToJson(const HandDepthMeasurement& depth)
-{
-	uint32_t validMask= 0;
-	for (int landmark= 0; landmark < HAND_LANDMARK_COUNT; ++landmark)
-		if (depth.bValid[landmark])
-			validMask|= 1u << landmark;
-	return {{"validMask", validMask}, {"points", landmarksToJson(depth.cameraPoints)}};
-}
-
-void depthFromJson(const json& j, HandDepthMeasurement& outDepth)
-{
-	outDepth= HandDepthMeasurement();
-	const uint32_t validMask= j.value("validMask", 0u);
-	outDepth.validCount= 0;
-	for (int landmark= 0; landmark < HAND_LANDMARK_COUNT; ++landmark)
-	{
-		outDepth.bValid[landmark]= (validMask & (1u << landmark)) != 0;
-		if (outDepth.bValid[landmark])
-			++outDepth.validCount;
-	}
-	landmarksFromJson(j.value("points", json::array()), outDepth.cameraPoints);
-}
-
 json cameraInputToJson(const RecordedCameraInput& camera)
 {
 	json out= {
@@ -165,8 +142,6 @@ json cameraInputToJson(const RecordedCameraInput& camera)
 		{"lumaFlickerHz", camera.lumaFlickerHz},
 		{"hands", json::array({handInputToJson(camera.hands[0]), handInputToJson(camera.hands[1])})},
 	};
-	if (camera.bHaveDepth)
-		out["depth"]= json::array({depthToJson(camera.depth[0]), depthToJson(camera.depth[1])});
 	if (camera.bHaveBodyPose)
 		out["body"]= bodyPoseToJson(camera.body);
 	return out;
@@ -191,12 +166,8 @@ bool cameraInputFromJson(const json& j, RecordedCameraInput& outCamera)
 	const json& hands= j.value("hands", json::array());
 	for (int sideIndex= 0; sideIndex < 2 && sideIndex < (int)hands.size(); ++sideIndex)
 		handInputFromJson(hands[sideIndex], outCamera.hands[sideIndex]);
-	if (j.contains("depth") && j["depth"].is_array() && j["depth"].size() == 2)
-	{
-		outCamera.bHaveDepth= true;
-		depthFromJson(j["depth"][0], outCamera.depth[0]);
-		depthFromJson(j["depth"][1], outCamera.depth[1]);
-	}
+	// (Old recordings may carry a "depth" block from the removed RealSense
+	// experiment; it is simply not read - those frames replay through PnP.)
 	if (j.contains("body"))
 	{
 		outCamera.bHaveBodyPose= true;

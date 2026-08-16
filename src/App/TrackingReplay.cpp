@@ -156,17 +156,6 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 			landmarkTo3D= std::make_unique<LandmarkTo3D>();
 			landmarkTo3D->configure(profile.intrinsics.intrinsics,
 									m_recordedConfig.handScale.refLengthMeters);
-			landmarkTo3D->clearRestAngles();
-			const bool bApplyRest= !bWhatIf || whatIfParams->bApplyRestAngles;
-			if (bApplyRest)
-			{
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					if (profile.restAngles.present[sideIndex])
-						landmarkTo3D->setRestAngles((eHandSide)sideIndex,
-													profile.restAngles.angles[sideIndex]);
-				}
-			}
 
 			// The measured hand geometry the session ran with. Not per camera,
 			// and applied the same way the vision thread applies it, or replay
@@ -265,10 +254,7 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 						? fresh.refLengthMeters * whatIfParams->refLengthScale
 						: fresh.refLengthMeters;
 					landmarkTo3D->setRefLengthMeters(refLength);
-
-					const bool bUseDepth=
-						fresh.bHaveDepth && (!bWhatIf || whatIfParams->bUseRecordedDepth);
-					landmarkTo3D->process(result, bUseDepth ? &fresh.depth : nullptr);
+					landmarkTo3D->process(result);
 
 					const ExtrinsicsConfig& extrinsics= effectiveExtrinsics(cameraIndex);
 					if (extrinsics.present)

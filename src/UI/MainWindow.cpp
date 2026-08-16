@@ -10,6 +10,7 @@
 #include "ExtrinsicsWizard.h"
 #include "IntrinsicsWizard.h"
 #include "BodyCalibrationWizard.h"
+#include "HandCalibrationWizard.h"
 #include "MountingWizard.h"
 #include "LogPanel.h"
 #include "Logger.h"
@@ -31,6 +32,8 @@ MainWindow::MainWindow(App* app)
 	, m_mountingWizard(std::make_unique<MountingWizard>(app->getConfig(), app->getVisionThread()))
 	, m_bodyCalibrationWizard(
 		  std::make_unique<BodyCalibrationWizard>(app->getConfig(), app->getVisionThread()))
+	, m_handCalibrationWizard(
+		  std::make_unique<HandCalibrationWizard>(app->getConfig(), app->getVisionThread()))
 	, m_timelinePanel(std::make_unique<TimelinePanel>())
 {
 	// Hotplug / disconnect notifications refresh the device panel
@@ -162,7 +165,8 @@ void MainWindow::drawDockspaceAndMenuBar()
 		{
 			const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
 							  m_mountingWizard->isActive() ||
-							  m_bodyCalibrationWizard->isActive();
+							  m_bodyCalibrationWizard->isActive() ||
+							  m_handCalibrationWizard->isActive();
 			AppConfig* config= m_app->getConfig();
 
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
@@ -236,7 +240,8 @@ void MainWindow::update(float deltaSeconds)
 
 	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
 							  m_mountingWizard->isActive() ||
-							  m_bodyCalibrationWizard->isActive();
+							  m_bodyCalibrationWizard->isActive() ||
+							  m_handCalibrationWizard->isActive();
 
 	// Panels
 	m_devicePanel->draw();
@@ -257,6 +262,13 @@ void MainWindow::update(float deltaSeconds)
 		m_trackingPanelState.bLaunchBodyCalibrationWizard= false;
 		if (!bWizardActive)
 			m_bodyCalibrationWizard->enter();
+	}
+
+	if (m_trackingPanelState.bLaunchHandCalibrationWizard)
+	{
+		m_trackingPanelState.bLaunchHandCalibrationWizard= false;
+		if (!bWizardActive)
+			m_handCalibrationWizard->enter();
 	}
 
 	const CalibrationPanel::DrawResult calibrationAction= m_calibrationPanel->draw(bWizardActive);
@@ -383,6 +395,12 @@ void MainWindow::update(float deltaSeconds)
 		// ruler, so they have to keep arriving
 		if (!m_bodyCalibrationWizard->update(deltaSeconds, m_latestPreviews, m_latestFused))
 			m_bodyCalibrationWizard->exit();
+	}
+	else if (m_handCalibrationWizard->isActive())
+	{
+		// Also leaves tracking running: both stages measure the tracked hands
+		if (!m_handCalibrationWizard->update(deltaSeconds, m_latestFused))
+			m_handCalibrationWizard->exit();
 	}
 
 	if (m_bShowLogPanel)
