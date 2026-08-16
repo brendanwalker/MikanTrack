@@ -292,15 +292,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		"depth instead of the monocular PnP estimate. Fingertip depth holes\n"
 		"fall back to parent-joint depth. No effect on plain webcams.");
 
-	ImGui::SeparatorText("Smoothing");
-	bChanged|= ImGui::Checkbox("Enabled", &tracking.smoothingEnabled);
-	ImGui::TextDisabled("Palm transform (latency is visible - keep responsive)");
-	bChanged|= ImGui::SliderFloat("Palm min cutoff", &tracking.palmMinCutoff, 0.1f, 10.f, "%.2f Hz");
-	bChanged|= ImGui::SliderFloat("Palm beta", &tracking.palmBeta, 0.f, 0.5f, "%.3f");
-	ImGui::TextDisabled("Finger angles (latency is invisible - keep steady)");
-	bChanged|= ImGui::SliderFloat("Angle min cutoff", &tracking.angleMinCutoff, 0.1f, 5.f, "%.2f Hz");
-	bChanged|= ImGui::SliderFloat("Angle beta", &tracking.angleBeta, 0.f, 0.5f, "%.3f");
-
 	if (config->cameraCount() > 1)
 	{
 		ImGui::SeparatorText("Fusion");

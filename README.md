@@ -1,7 +1,7 @@
 # MikanMediaPipe
 
 <!-- AI_USAGE_BADGES:BEGIN -->
-![AI tokens](https://img.shields.io/badge/AI_tokens-4.2M_out_%2F_1.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~71_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~214_L-blue)
+![AI tokens](https://img.shields.io/badge/AI_tokens-5.3M_out_%2F_1.8B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~93_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~279_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
@@ -104,7 +104,7 @@ Two-Bone IK from the palm transform.
   records every input to the post-MediaPipe stages (per-camera landmarks,
   depth samples, timestamps - no video, ~1 MB/s) as JSONL under
   `%APPDATA%/MikanMediaPipe/recordings/`, then re-runs the whole
-  triangulation/fusion/smoothing pipeline offline, verified bit-exact by
+  triangulation/fusion/estimation pipeline offline, verified bit-exact by
   per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
   the 3D scene view, marks any divergent frames, and re-simulates the same
   incident with edited fusion parameters ("what-if") to judge a candidate

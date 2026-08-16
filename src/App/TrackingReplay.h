@@ -53,6 +53,12 @@ public:
 		// setCaptureDiagnostics range - they are large)
 		FusionDiagnostics diagnostics;
 		bool bHasDiagnostics= false;
+
+		// The what-if pass's own diagnostics over the same capture range, so a
+		// tool can attribute what-if behavior (estimator reseeds/holds) rather
+		// than infer it from the output alone
+		FusionDiagnostics whatIfDiagnostics;
+		bool bHasWhatIfDiagnostics= false;
 	};
 
 	// Parameters for the what-if pass, seeded from the recording's config

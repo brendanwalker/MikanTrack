@@ -100,35 +100,54 @@ void buildSide(
 		}
 	}
 
-	// Upper arm. The elbow is the same value /mikan/hand/{s}/elbow carries -
-	// derived from the measured forearm direction, so no elbow without one.
+	// Upper arm and forearm. THE ARM CHAIN IS ALWAYS EMITTED, even with no
+	// elbow: a receiver leaves an unstreamed bone at the avatar's REST pose,
+	// so skipping these snaps the arm to the T-pose while the hand below
+	// keeps its measured world orientation - and the arm's entire rotation
+	// then has nowhere to go but the wrist joint, which reads as the hand
+	// spinning about the wrist. An approximately posed arm is far better than
+	// a T-posed one with a broken wrist, so when the elbow is unavailable the
+	// arm is straightened toward the hand and the forearm takes the hand's
+	// own orientation (a neutral wrist).
 	const bool bHasElbow= pose.hasForearmPose;
-	if (bHasElbow && pose.hasShoulder)
+	const glm::quat handWorld= pose.palmOrientationWorld * glm::inverse(restPalmRotation);
+
 	{
-		const glm::vec3 elbow= pose.getElbowPositionWorld(lengths.forearmLengthMeters);
-		const glm::vec3 direction= safeNormalize(elbow - pose.shoulderPositionWorld);
-		if (glm::dot(direction, direction) > 0.f)
+		glm::vec3 direction(0.f);
+		if (bHasElbow && pose.hasShoulder)
 		{
-			const eVmcBone bone= side == eHandSide::Left ? eVmcBone::LeftUpperArm : eVmcBone::RightUpperArm;
-			emitBone(outPose, bone, armRest * (lengths.shoulderWidthMeters * 0.5f),
-					 chain.swingTo(armRest, direction));
+			const glm::vec3 elbow= pose.getElbowPositionWorld(lengths.forearmLengthMeters);
+			direction= safeNormalize(elbow - pose.shoulderPositionWorld);
 		}
+		else if (pose.hasShoulder)
+		{
+			// Straight-arm approximation: aim the upper arm at the wrist
+			direction= safeNormalize(pose.getWristPositionWorld() - pose.shoulderPositionWorld);
+		}
+		if (glm::dot(direction, direction) <= 0.f)
+			direction= handWorld * armRest; // no shoulder either: follow the hand
+
+		const eVmcBone bone= side == eHandSide::Left ? eVmcBone::LeftUpperArm : eVmcBone::RightUpperArm;
+		emitBone(outPose, bone, armRest * (lengths.shoulderWidthMeters * 0.5f),
+				 chain.swingTo(armRest, direction));
 	}
 
-	// Forearm. Its full frame is measured, unlike the bones above: the forearm
-	// frame is defined as the palm frame at a neutral wrist, so its rest frame
-	// is the rest palm frame and its roll (pronation) survives the retarget
-	// instead of being dumped into the hand.
-	if (bHasElbow)
 	{
+		// The forearm's full frame is measured, unlike the bones above: it is
+		// defined as the palm frame at a neutral wrist, so its rest frame is
+		// the rest palm frame and its roll (pronation) survives the retarget
+		// instead of being dumped into the hand. Without one, the hand's own
+		// frame is the honest stand-in - it puts the wrist at zero bend
+		// rather than inventing a twist.
 		const eVmcBone bone= side == eHandSide::Left ? eVmcBone::LeftLowerArm : eVmcBone::RightLowerArm;
-		const glm::quat forearmWorld= pose.forearmOrientationWorld * glm::inverse(restPalmRotation);
+		const glm::quat forearmWorld= bHasElbow
+			? pose.forearmOrientationWorld * glm::inverse(restPalmRotation)
+			: handWorld;
 		emitBone(outPose, bone, armRest * lengths.upperArmLengthMeters, chain.frameTo(forearmWorld));
 	}
 
 	// Hand. Its offset puts the bone at the WRIST, which is half a palm back
 	// from the palm origin, so the finger offsets below are wrist-relative.
-	const glm::quat handWorld= pose.palmOrientationWorld * glm::inverse(restPalmRotation);
 	{
 		const eVmcBone bone= side == eHandSide::Left ? eVmcBone::LeftHand : eVmcBone::RightHand;
 		emitBone(outPose, bone, armRest * lengths.forearmLengthMeters, chain.frameTo(handWorld));

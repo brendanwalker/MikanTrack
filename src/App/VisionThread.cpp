@@ -557,26 +557,8 @@ void VisionThread::refreshConfigOnThread()
 	// a refresh (e.g. after saving a new calibrated scale) resets the EMA
 	m_autoScaleFactor= 1.f;
 
-	// Fusion
-	HandFusionConfig fusionConfig;
-	fusionConfig.stalenessWindowMs= m_config->fusion.stalenessWindowMs;
-	fusionConfig.wristMatchMaxDistM= m_config->fusion.wristMatchMaxDistM;
-	fusionConfig.minCameraConfidence= m_config->fusion.minCameraConfidence;
-	fusionConfig.jitterReferenceM= m_config->fusion.jitterReferenceMm * 0.001f;
-	fusionConfig.smoothingEnabled= m_config->tracking.smoothingEnabled;
-	fusionConfig.palmMinCutoff= m_config->tracking.palmMinCutoff;
-	fusionConfig.palmBeta= m_config->tracking.palmBeta;
-	fusionConfig.angleMinCutoff= m_config->tracking.angleMinCutoff;
-	fusionConfig.angleBeta= m_config->tracking.angleBeta;
-	fusionConfig.triangulationEnabled= m_config->fusion.triangulationEnabled;
-	fusionConfig.triangulationMaxResidualPx= m_config->fusion.triangulationMaxResidualPx;
-	fusionConfig.residualReferencePx= m_config->fusion.residualReferencePx;
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		fusionConfig.bHasFusedRestAngles[sideIndex]= m_config->fusedRestAngles.present[sideIndex];
-		fusionConfig.fusedRestAngles[sideIndex]= m_config->fusedRestAngles.angles[sideIndex];
-	}
-	m_fusion.configure(fusionConfig);
+	// Fusion (one shared mapping - see makeHandFusionConfig)
+	m_fusion.configure(makeHandFusionConfig(*m_config));
 
 	// Wrist IMU
 	{
@@ -1353,12 +1335,15 @@ void VisionThread::threadLoop()
 		{
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
-				const HandPose& pose= outputResult.poses[sideIndex];
-				const TrackedHand& hand= outputResult.hands[sideIndex];
-				if (!pose.tracked || !pose.stereoTriangulated || !hand.tracked || !hand.hasWorldSpace)
+				// Bones are measured from the TRIANGULATED landmarks, asked
+				// for explicitly: the streamed pose is built on a skeleton,
+				// so calibrating from it would re-measure the skeleton the
+				// estimator was already given rather than the user's hand.
+				std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
+				if (!m_fusion.getLastTriangulatedPoints((eHandSide)sideIndex, triPoints))
 					continue;
 
-				m_boneCalibrator.addSample((eHandSide)sideIndex, hand.worldPoints);
+				m_boneCalibrator.addSample((eHandSide)sideIndex, triPoints);
 				m_boneCalibrationSamples[sideIndex]= m_boneCalibrator.getSampleCount((eHandSide)sideIndex);
 			}
 

@@ -495,8 +495,12 @@ static int runVmcTest(const TestArgs&)
 	}
 
 	// (e) Degradation. A bone the receiver never hears about stays at the
-	// avatar's rest pose, which IS the identity the rotations are relative to,
-	// so a hand without an arm still has to arrive correctly oriented.
+	// avatar's REST pose - which for an arm is the T-pose, not a neutral. The
+	// hand's world orientation survives either way (rest locals are identity),
+	// but skipping the arm leaves the T-posed forearm under a correctly
+	// oriented hand, so the arm's whole rotation surfaces as WRIST BEND. That
+	// is what the elbow dropouts looked like in VSeeFace, so the arm chain is
+	// always streamed and the wrist has to stay near neutral without an elbow.
 	{
 		const glm::quat palmRotation= glm::angleAxis(0.8f, glm::normalize(glm::vec3(0.2f, 0.4f, 0.9f)));
 		HandPose left= makePose(eHandSide::Left, palmRotation, glm::vec3(0.3f, 0.2f, 0.9f),
@@ -509,23 +513,28 @@ static int runVmcTest(const TestArgs&)
 		VmcPose vmc;
 		buildPose(poses, bLeftOnly, noHead, lengths, vmc);
 
-		check(!vmc.bones[(int)eVmcBone::LeftShoulder].present &&
-				  !vmc.bones[(int)eVmcBone::LeftUpperArm].present &&
-				  !vmc.bones[(int)eVmcBone::LeftLowerArm].present,
-			  "an unmeasured arm streams no arm bones");
+		check(vmc.bones[(int)eVmcBone::LeftUpperArm].present &&
+				  vmc.bones[(int)eVmcBone::LeftLowerArm].present,
+			  "an arm with no elbow still streams its chain");
 		check(!vmc.bones[(int)eVmcBone::RightHand].present, "an invalid side streams nothing");
 		check(vmc.bones[(int)eVmcBone::LeftHand].present, "the hand still streams without an arm");
 
-		// With every parent at rest, the hand's LOCAL rotation is its world one
 		BoneWorld chestBone;
-		const BoneWorld hand= composeBone(vmc, eVmcBone::LeftHand,
-										  composeBone(vmc, eVmcBone::LeftLowerArm,
-													  composeBone(vmc, eVmcBone::LeftUpperArm,
-																  composeBone(vmc, eVmcBone::LeftShoulder,
-																			  chestBone))));
+		const BoneWorld forearm= composeBone(vmc, eVmcBone::LeftLowerArm,
+											 composeBone(vmc, eVmcBone::LeftUpperArm,
+														 composeBone(vmc, eVmcBone::LeftShoulder,
+																	 chestBone)));
+		const BoneWorld hand= composeBone(vmc, eVmcBone::LeftHand, forearm);
+
 		const glm::quat rebuiltPalm= hand.rotation * glm::quat_cast(restPalmFrame(eHandSide::Left));
 		check(isIdentity(glm::inverse(palmRotation) * rebuiltPalm, 1e-4f),
 			  "the hand orientation survives the missing arm");
+
+		// The point of the change: with no elbow the forearm takes the hand's
+		// own frame, so the wrist reads neutral instead of carrying the arm
+		const glm::quat wristBend= glm::inverse(forearm.rotation) * hand.rotation;
+		check(isIdentity(wristBend, 1e-4f),
+			  "a missing elbow leaves the wrist neutral, not carrying the arm's rotation");
 	}
 
 	// (f) Head. Its measured frame is already the avatar frame, so the streamed

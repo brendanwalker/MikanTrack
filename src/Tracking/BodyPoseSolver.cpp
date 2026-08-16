@@ -44,6 +44,15 @@ static constexpr float kMaxBodyDepthMeters= 2.0f;
 // the elbow should not be dragged toward it.
 static constexpr float kMaxReachOvershoot= 1.15f;
 
+// How long an arm may be carried on the bone circle with its elbow landmark
+// unseen. The circle keeps both bones exact however the wrist moves, so the
+// only thing that decays is WHICH point on the circle - continuity cannot
+// tell that the arm rotated about the shoulder-to-wrist axis while it was
+// occluded. Measured occlusions on this rig (one hand crossing the other
+// elbow) run 6-17 model frames, so a second is generous cover with the
+// confidence already faded most of the way out by then.
+static constexpr double kMaxDeadReckonMs= 1000.0;
+
 // One-euro parameters for the body estimates. Slower than the hand palm
 // (3.0 Hz): these are IK hints refreshed at a fraction of the camera rate, so
 // a little latency buys a lot of steadiness. Beta keeps genuine arm motion
@@ -117,6 +126,87 @@ bool BodyPoseSolver::intersectRaySphere(
 	outHit.bNearValid= true;
 	outHit.bFarValid= true;
 	outHit.bClamped= true;
+	return true;
+}
+
+bool BodyPoseSolver::solveElbowNearestTo(
+	const glm::vec3& shoulder, const glm::vec3& wrist,
+	float upperArmLength, float forearmLength,
+	const glm::vec3& target, glm::vec3& outElbow)
+{
+	BoneCircleGeometry circle;
+	if (!computeBoneCircle(shoulder, wrist, upperArmLength, forearmLength, circle))
+		return false;
+
+	// Fully extended (or folded): the circle collapsed to a point
+	if (circle.bDegenerate)
+	{
+		outElbow= circle.center;
+		return true;
+	}
+
+	// Closest point on a circle to a point: drop the target into the circle's
+	// plane, then push it out to the radius
+	glm::vec3 inPlane= target - circle.center;
+	inPlane-= circle.axis * glm::dot(inPlane, circle.axis);
+	if (glm::dot(inPlane, inPlane) < 1e-10f)
+	{
+		// The target sits on the circle's axis, so every point is equally
+		// near. Any deterministic choice will do; take the plane's own X.
+		outElbow= circle.center + circle.planeX * circle.radius;
+		return true;
+	}
+
+	outElbow= circle.center + glm::normalize(inPlane) * circle.radius;
+	return true;
+}
+
+bool BodyPoseSolver::computeBoneCircle(
+	const glm::vec3& shoulder, const glm::vec3& wrist,
+	float upperArmLength, float forearmLength, BoneCircleGeometry& outCircle)
+{
+	outCircle= BoneCircleGeometry();
+	if (upperArmLength <= 0.f || forearmLength <= 0.f)
+		return false;
+
+	const glm::vec3 shoulderToWrist= wrist - shoulder;
+	const float span= glm::length(shoulderToWrist);
+	if (span < 1e-4f)
+		return false;
+	const glm::vec3 axis= shoulderToWrist / span;
+	outCircle.axis= axis;
+
+	// Modestly out of reach is a straight arm plus calibration error, and the
+	// closest the two bones can come to it is exactly straight. WILDLY out of
+	// reach is a broken shoulder, and straightening toward one of those would
+	// fling the elbow: decline instead and let the caller fall back to the
+	// wrist alone, which at least cannot move further than a forearm.
+	if (span > (upperArmLength + forearmLength) * kMaxReachOvershoot)
+		return false;
+
+	if (span >= upperArmLength + forearmLength ||
+		span <= fabsf(upperArmLength - forearmLength))
+	{
+		outCircle.center= shoulder + axis * upperArmLength;
+		outCircle.bDegenerate= true;
+		return true;
+	}
+
+	// Circle where the two spheres meet: centred on the shoulder-wrist axis
+	const float alongAxis=
+		(span * span + upperArmLength * upperArmLength - forearmLength * forearmLength) / (2.f * span);
+	const float radiusSquared= upperArmLength * upperArmLength - alongAxis * alongAxis;
+	outCircle.center= shoulder + axis * alongAxis;
+	if (radiusSquared <= 1e-8f)
+	{
+		outCircle.bDegenerate= true;
+		return true;
+	}
+
+	outCircle.radius= std::sqrt(radiusSquared);
+	const glm::vec3 reference= fabsf(axis.z) < 0.9f ? glm::vec3(0.f, 0.f, 1.f) : glm::vec3(1.f, 0.f, 0.f);
+	outCircle.planeX= glm::normalize(glm::cross(reference, axis));
+	outCircle.planeY= glm::cross(axis, outCircle.planeX);
 	return true;
 }
 
@@ -378,16 +468,65 @@ void BodyPoseSolver::solveFromObservation(
 		ArmEstimate& arm= m_arms[sideIndex];
 
 		const HandPose& pose= fused.poses[sideIndex];
-		if (!pose.tracked || !pose.hasWorldPose || !isVisible(elbowIndex))
+		if (!pose.tracked || !pose.hasWorldPose)
 		{
 			tracker.invalidate();
 			arm.bHasForearm= false;
+			arm.deadReckonMs= 0.0;
 			m_forearmDirFilter[sideIndex].reset();
 			continue;
 		}
 
 		const glm::vec3 wristWorld= pose.getWristPositionWorld();
 		const float forearmLength= dimensions.forearmLengthMeters;
+
+		// -- Elbow occluded: dead-reckon on the bone circle --
+		// One hand passing in front of the other elbow is routine on this rig,
+		// and dropping the forearm there is expensive out of proportion to the
+		// missing landmark: a consumer that leaves unstreamed arm bones at the
+		// avatar's rest pose (VMC) snaps the whole arm to a T-pose, and the
+		// arm's entire rotation then surfaces at the WRIST. So the arm is kept
+		// alive from the shoulder and the wrist - both still measured - with
+		// the circle point picked by continuity. Both bone lengths hold by
+		// construction, which holding the last elbow position could not do.
+		if (!isVisible(elbowIndex))
+		{
+			arm.deadReckonMs+= (double)(dtSeconds * 1000.f);
+			const bool bCanDeadReckon= arm.bHasForearm && arm.bHasShoulder &&
+				arm.deadReckonMs <= kMaxDeadReckonMs;
+
+			glm::vec3 elbowWorld(0.f);
+			if (!bCanDeadReckon ||
+				!solveElbowNearestTo(arm.shoulderPositionWorld, wristWorld,
+									 dimensions.upperArmLengthMeters, forearmLength,
+									 wristWorld + arm.forearmDirWorld * forearmLength, elbowWorld))
+			{
+				tracker.invalidate();
+				arm.bHasForearm= false;
+				arm.deadReckonMs= 0.0;
+				m_forearmDirFilter[sideIndex].reset();
+				continue;
+			}
+
+			// The direction is republished (not just held) so the elbow tracks
+			// the wrist along the circle rather than rigidly trailing it
+			const glm::vec3 rawDir= glm::normalize(elbowWorld - wristWorld);
+			const glm::vec3 filteredDir= m_forearmDirFilter[sideIndex].filter(rawDir, dtSeconds);
+			arm.forearmDirWorld= glm::dot(filteredDir, filteredDir) > 1e-8f
+				? glm::normalize(filteredDir) : rawDir;
+
+			// Confidence decays with the gap and deliberately does NOT include
+			// the jitter tracker: a dead-reckoned elbow is smooth by
+			// construction, and scoring smoothness here would report a
+			// confident arm precisely when it is being inferred (the frozen
+			// head that scored 1.00, in another form).
+			const float decay= 1.f - (float)(arm.deadReckonMs / kMaxDeadReckonMs);
+			tracker.invalidate();
+			arm.forearmConfidence= pose.confidence * std::clamp(decay, 0.f, 1.f);
+			continue;
+		}
+		arm.deadReckonMs= 0.0;
+
 		const glm::vec3 elbowRay= pixelRay(elbowIndex);
 
 		glm::vec3 candidates[2];

@@ -7,7 +7,7 @@
 #include "glm/ext/matrix_double4x4.hpp"
 
 #include "HandPoseModel.h"
-#include "OneEuroFilter.h"
+#include "HandStateEstimator.h"
 #include "TrackingTypes.h"
 
 // One camera's latest processed tracking output, tagged for fusion.
@@ -54,15 +54,6 @@ struct HandFusionConfig
 	// also of genuinely fast motion, which produces real residuals.
 	float jitterReferenceM= 0.015f;
 
-
-	// Split smoothing: palm transform (position + quaternion) vs finger
-	// angles. Palm latency is user-visible, angle latency isn't.
-	bool smoothingEnabled= true;
-	float palmMinCutoff= 3.f;
-	float palmBeta= 0.1f;
-	float angleMinCutoff= 0.75f;
-	float angleBeta= 0.02f;
-
 	// Stereo landmark triangulation: when two cameras observe the same hand,
 	// triangulate all 21 landmarks from the 2D image points and extract the
 	// pose from the result - the network's (view-dependent, noisy) monocular
@@ -83,6 +74,13 @@ struct HandFusionConfig
 	// which triangulation does not have).
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> fusedRestAngles{};
 	bool bHasFusedRestAngles[2]= {false, false};
+
+	// Angle-space multi-view state estimator: a temporally continuous
+	// per-hand state fit to all fresh cameras' 2D landmarks, overriding the
+	// per-frame tri/mono pose paths (which keep running as the seed and
+	// fallback, and remain the output for cameras without intrinsics). Its
+	// temporal prior is the output smoother; there is no filter after it.
+	HandStateEstimatorConfig estimator;
 };
 
 // Introspection into the last fuse() call's clustering + side assignment,
@@ -109,7 +107,11 @@ struct FusionDiagnostics
 		float bestWeight= 0.f;
 		// Side-affinity components, indexed [side][0=vote,1=temporal,2=spatial]
 		float affinity[2][3]{};
-		int assignedSide= -1; // -1 = dropped (more clusters than hands)
+		int assignedSide= -1; // -1 = dropped (more clusters than hands) or refused
+		// The winning side's raw affinity was negative while that side was
+		// recently tracked: assignment by elimination, refused (the side
+		// went untracked this fuse rather than adopting the wrong cluster)
+		bool assignmentRefused= false;
 
 		// Stereo triangulation outcome for this cluster's fused pose
 		bool triangulated= false;      // pose came from landmark triangulation
@@ -119,27 +121,33 @@ struct FusionDiagnostics
 		int triCameraA= -1;            // which two cameras were paired
 		int triCameraB= -1;
 		float triParallaxDeg= 0.f;     // angle their rays subtend at the hand
+
+		// State-estimator outcome
+		bool estimatorUsed= false;         // estimator pose overrode the classic one
+		int estimatorCameraCount= 0;       // cameras whose rows entered the fit
+		int estimatorIterations= 0;
+		float estimatorResidualBeforePx= 0.f; // mean px residual at prediction
+		float estimatorResidualAfterPx= 0.f;  // ...and at the solution
+		bool estimatorReseeded= false;     // state (re)seeded this fuse
+		bool estimatorHeldBadFit= false;   // fit over the guard: previous state streamed
 	};
 
 	int totalObservations= 0;
 	std::vector<Cluster> clusters; // includes dropped clusters
 };
 
-// Fuses per-camera PARAMETRIC hand poses into one TrackingFrameResult:
-// visibility-weighted blending of the palm transform (position average +
-// quaternion blend) and the finger angles. Poses and angles compose across
-// disagreeing observations - blending raw landmarks (the earlier approach)
-// distorted bones whenever two cameras saw different articulation.
+// Fuses per-camera PARAMETRIC hand poses into one TrackingFrameResult. The
+// output pose comes from the angle-space state estimator: one temporally
+// continuous 26-DoF state per hand fit to all fresh cameras' 2D landmarks by
+// FK reprojection. The classic per-frame extraction (stereo triangulation,
+// blending, monocular fallback) runs first every fuse as the estimator's
+// seed and fallback, and remains the output when no camera has intrinsics.
 //
 // Left/Right assignment happens HERE, not per camera: observations from all
 // cameras are clustered by world palm proximity (one cluster = one physical
 // hand), then clusters are assigned sides by weighted per-camera classifier
 // votes plus temporal continuity of the fused tracks. A camera that sees only
 // one hand routinely mislabels it (nothing to disambiguate against).
-//
-// A single fresh candidate passes through exactly (the N=1 identity path).
-// Owns the post-fusion one-euro smoothing (position + quaternion components
-// + 20 finger angles per side).
 class HandFusion
 {
 public:
@@ -177,6 +185,21 @@ public:
 	{
 		outCorrectionFactor= m_stereoScaleCorrection;
 		return m_bStereoScaleFresh;
+	}
+
+	// Bone-calibration support: the landmarks this fuse TRIANGULATED for this
+	// side, false when it wasn't stereo-triangulated. These measure the hand
+	// independently of the skeleton, which is what makes them the honest
+	// input for measuring bone lengths - the streamed pose and its FK are
+	// built ON a skeleton, so calibrating from them would be circular.
+	// Fusing thread only.
+	bool getLastTriangulatedPoints(eHandSide side,
+								   std::array<glm::vec3, HAND_LANDMARK_COUNT>& outPoints) const
+	{
+		if (!m_bLastTriPointsValid[(int)side])
+			return false;
+		outPoints= m_lastTriPoints[(int)side];
+		return true;
 	}
 
 	// Rest-pose capture support: the RAW (pre rest-offset, pre smoothing)
@@ -242,6 +265,15 @@ private:
 		int triCameraA= -1; // the pair that was triangulated, and the parallax
 		int triCameraB= -1; // it subtended - a pair chosen for its per-camera
 		float triParallaxDeg= 0.f; // scores alone reconstructs badly up close
+
+		// Estimator outcome (mirrored into FusionDiagnostics after fusing)
+		bool estimatorUsed= false;
+		int estimatorCameraCount= 0;
+		int estimatorIterations= 0;
+		float estimatorResidualBeforePx= 0.f;
+		float estimatorResidualAfterPx= 0.f;
+		bool estimatorReseeded= false;
+		bool estimatorHeldBadFit= false;
 	};
 
 	// Cost of merging an observation into a cluster (lateral-aware position
@@ -279,27 +311,29 @@ private:
 	// triangulated geometry and returns true; records the residual (and any
 	// veto) on the cluster either way.
 	bool triangulateCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
-	// Keep the last triangulated angles through a brief mono fallback (the
-	// mono articulation carries pose-dependent per-camera bias; switching to
-	// it and back snaps the fingers)
-	void applyTriAngleHold(eHandSide side, HandPose& outPose) const;
-	// Keep the last triangulated palm depth through a brief mono fallback:
-	// pins the along-ray component of the mono position (where its error
-	// lives) to the last triangulated palm, keeping lateral motion. source
-	// provides the observing camera for the ray.
-	void applyTriPositionHold(eHandSide side, const HandCandidate& source, HandPose& outPose) const;
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
-	void applySmoothing(TrackingFrameResult& ioFused);
+	// The per-frame extraction paths (tri / vetoed / blend / mono). Runs
+	// every fuse: it advances the shared bookkeeping (jitter trackers, stereo
+	// scale, palmar memories) and its output is the estimator's seed and
+	// fallback - and the output itself when no camera has intrinsics.
+	void fuseClusterClassic(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// Fits the state estimator to the cluster's observations and overrides the
+	// classic pose on success (records the outcome on the cluster either way)
+	void applyEstimator(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// Cold-start seed for the estimator, from the classic output plus the best
+	// available RAW angles (streamed angles carry the rest offset)
+	bool makeEstimatorSeed(eHandSide side, const HandCluster& cluster, const HandPose& classicPose,
+						   HandStateEstimator::Pose& outSeed);
+	// FK skeleton the estimator fits with: adopted then slowly blended, so an
+	// uncalibrated (per-frame) skeleton cannot jitter the fit geometry
+	void updateEstimatorSkeleton(eHandSide side, const HandSkeleton& observed);
+	// Per-fuse per-side housekeeping: reacquisition resets the remembered
+	// palmar side (it describes where the hand WAS)
+	void updateTrackingHousekeeping(const TrackingFrameResult& fused);
 
 	HandFusionConfig m_config;
 
-	// Post-fusion smoothing state (per side): palm position, palm quaternion
-	// components (hemisphere-aligned before filtering), 20 finger angles
-	std::array<OneEuroFilterVec3, 2> m_positionFilters;
-	std::array<std::array<OneEuroFilter, 4>, 2> m_quaternionFilters;
-	std::array<std::array<OneEuroFilter, FINGER_COUNT * 4>, 2> m_angleFilters;
-	glm::quat m_lastFilteredQuat[2]= {glm::quat(1, 0, 0, 0), glm::quat(1, 0, 0, 0)};
-	double m_lastTimestampMs= -1.0;
+	// Previous fuse's tracked state per side (reacquisition housekeeping)
 	bool m_bSideWasTracked[2]= {false, false};
 
 	// Remembered palmar side for the triangulated (world-space) palm frame.
@@ -311,33 +345,18 @@ private:
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> m_rawTriAngles{};
 	bool m_bRawTriAnglesValid[2]= {false, false};
 
-	// Articulation-source selection state (non-triangulated multi-camera
-	// path): incumbent camera per side + challenger streak for hysteresis
-	int m_articulationSource[2]= {-1, -1};
-	int m_articulationChallenger[2]= {-1, -1};
-	int m_articulationChallengerFrames[2]= {0, 0};
+	// Triangulated landmarks of the last fuse (bone-calibration source)
+	std::array<std::array<glm::vec3, HAND_LANDMARK_COUNT>, 2> m_lastTriPoints{};
+	bool m_bLastTriPointsValid[2]= {false, false};
 
-	// Triangulated-angle hold: per-camera model bias is POSE-DEPENDENT
-	// (verified in the 2026-08-01_19-41-32 dump: ~0.2 rad shift on the index
-	// between rest and pointing), so a tri->mono fallback snaps the angles by
-	// the bias delta. Brief fallbacks keep the last triangulated angles
-	// instead; only a sustained mono stretch adopts the mono articulation.
-	std::array<FingerAngles, FINGER_COUNT> m_lastTriAngles[2]{};
-	HandSkeleton m_lastTriSkeleton[2];
-	// Position twin of the angle hold: the mono palm position's error
-	// concentrates ALONG THE VIEW RAY (measured 15-25cm on this rig), so a
-	// brief tri->mono fallback pins the along-ray component to the last
-	// triangulated position while keeping the (trustworthy) lateral motion.
-	// Measured trigger: a 90ms frame stutter pushed one camera past the
-	// staleness window for a single fuse and the mono position popped the
-	// fused palm by 160-212mm (recording 2026-08-10_00-57-02 frame 348).
-	glm::vec3 m_lastTriPalmWorld[2]= {glm::vec3(0.f), glm::vec3(0.f)};
-	double m_lastTriTimestampMs[2]= {-1e12, -1e12};
 	double m_fuseTimestampMs= 0.0;
 
-	// Temporal side-assignment prior: last fused palm position per side
+	// Temporal side-assignment prior: last fused palm position per side, and
+	// when the side last produced a tracked pose (the assignment-refusal
+	// window: negative-affinity evidence only counts while this is recent)
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};
 	bool m_bLastFusedPalmValid[2]= {false, false};
+	double m_lastTrackedMs[2]= {-1e12, -1e12};
 
 	// Single-cluster hysteresis: while only one hand is tracked, its side
 	// assignment sticks unless decisively contradicted (prevents the L/R
@@ -366,6 +385,13 @@ private:
 
 	float m_stereoScaleCorrection= 1.f;
 	bool m_bStereoScaleFresh= false;
+
+	// Angle-space multi-view state estimator + the stable FK skeleton it
+	// fits with
+	HandStateEstimator m_estimator;
+	HandSkeleton m_estimatorSkeleton[2];
+	bool m_bEstimatorSkeletonValid[2]= {false, false};
+	float m_estimatorJitterM[2]= {0.f, 0.f};
 
 	FusionDiagnostics m_lastDiagnostics;
 };

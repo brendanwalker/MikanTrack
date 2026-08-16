@@ -1,7 +1,7 @@
 # AI Token Usage
 
 <!-- AI_USAGE_BADGES:BEGIN -->
-![AI tokens](https://img.shields.io/badge/AI_tokens-4.2M_out_%2F_1.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~71_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~214_L-blue)
+![AI tokens](https://img.shields.io/badge/AI_tokens-5.3M_out_%2F_1.8B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~93_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~279_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
@@ -32,7 +32,7 @@ Anthropic publishes no per-token energy figures, so the estimate chains public r
 **For scale:** the central estimate (~70 kWh) is about two and a half days of average US household electricity, or roughly 140 hours of the RTX 3090 dev machine at full load. The central water estimate (~200 L) is about one bathtub.
 
 <!-- TOKEN_STATS:BEGIN -->
-Last regenerated 2026-08-13 06:36 UTC by `tools/token_stats.py`.
+Last regenerated 2026-08-16 09:14 UTC by `tools/token_stats.py`.
 
 ## Per-session usage
 
@@ -48,22 +48,24 @@ Last regenerated 2026-08-13 06:36 UTC by `tools/token_stats.py`.
 | LEARNINGS.md and token stats (Aug 12) | claude-fable-5 | 21 | 42,320 | 2,036,500 | 116,150 |
 | 3-camera right-hand dropout: SQPnP fix, minCameraConfidence gate (Aug 12) | claude-fable-5 | 163 | 150,814 | 31,096,087 | 303,891 |
 | Dedicated linux/macos tracking machine consideration (Aug 12) | claude-fable-5 | 14 | 13,324 | 1,013,749 | 70,154 |
-| BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-fable-5 | 137 | 152,388 | 29,411,367 | 357,302 |
-| BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-opus-5 | 25 | 33,445 | 1,966,281 | 210,621 |
+| BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-fable-5 | 151 | 176,162 | 34,416,298 | 379,915 |
+| BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-opus-5 | 785 | 882,945 | 373,642,254 | 3,352,535 |
+| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-fable-5 | 196 | 253,473 | 68,628,999 | 505,500 |
+| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-opus-5 | 7 | 10,969 | 438,888 | 70,819 |
 
 ## Totals per model
 
 | Model | API calls | Input | Cache write | Cache read | Output | Weighted |
 |---|---|---|---|---|---|---|
-| claude-fable-5 | 1,748 | 14,139 | 8,984,006 | 589,985,393 | 2,252,854 | 16,301,391 |
-| claude-opus-5 | 1,762 | 20,727 | 9,146,306 | 753,256,272 | 1,937,513 | 19,293,360 |
-| **total** | 3,510 | 34,866 | 18,130,312 | 1,343,241,665 | 4,190,367 | **35,594,751** |
+| claude-fable-5 | 1,958 | 14,557 | 9,512,119 | 663,619,323 | 2,530,101 | 18,183,428 |
+| claude-opus-5 | 2,529 | 22,260 | 12,359,039 | 1,125,371,133 | 2,797,982 | 28,399,616 |
+| **total** | 4,487 | 36,817 | 21,871,158 | 1,788,990,456 | 5,328,083 | **46,583,045** |
 
 ## Energy and water estimate
 
 | Scenario | Wh per 1k weighted tokens | Energy | Water (onsite cooling) | Water (incl. generation) |
 |---|---|---|---|---|
-| low | 0.5 | 18 kWh | 20 L | 53 L |
-| central | 2.0 | 71 kWh | 78 L | 214 L |
-| high | 6.0 | 214 kWh | 235 L | 641 L |
+| low | 0.5 | 23 kWh | 26 L | 70 L |
+| central | 2.0 | 93 kWh | 102 L | 279 L |
+| high | 6.0 | 279 kWh | 307 L | 838 L |
 <!-- TOKEN_STATS:END -->

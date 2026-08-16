@@ -44,7 +44,6 @@ static int runFusionTest(const TestArgs& args)
 	};
 
 	HandFusionConfig fusionConfig;
-	fusionConfig.smoothingEnabled= false; // exactness for pass-through checks
 	HandFusion fusion;
 	fusion.configure(fusionConfig);
 
@@ -512,7 +511,11 @@ static int runFusionTest(const TestArgs& args)
 			anglesTruth[finger].lateral= 0.04f * (float)(finger - 2);
 			anglesTruth[finger].proximal= 0.25f + 0.1f * (float)finger;
 			anglesTruth[finger].intermediate= 0.35f;
-			anglesTruth[finger].distal= 0.15f;
+			// Coupling-consistent (distal = 0.67 x intermediate): the streamed
+			// pose carries the estimator's weak DIP-PIP prior, and a truth that
+			// violates the ratio would read a couple of degrees of deliberate
+			// prior bias as triangulation error
+			anglesTruth[finger].distal= 0.2345f;
 		}
 
 		// World-space hand at palmTruth (identity orientation: palm +Z up,
@@ -737,76 +740,11 @@ static int runFusionTest(const TestArgs& args)
 			}
 		}
 
-		// (p) Triangulated-angle hold: after a stereo fuse, a brief
-		// single-camera fallback must keep the triangulated angles
-		// (the mono articulation carries pose-dependent bias, +0.2 rad
-		// here); a sustained fallback adopts the mono angles
-		{
-			HandFusion holdFusion;
-			holdFusion.configure(fusionConfig);
+		// (The old (p)/(q) tri angle + palm-depth hold tests died with their
+		// machinery: the estimator's temporal prior and anisotropic mono
+		// handling carry those guarantees now, tested in --test-handestimator
+		// (c)/(h) and section (s) below.)
 
-			TrackingFrameResult holdFused;
-			holdFusion.fuse({&camA, &camB}, now, holdFused);
-			const float triProx= holdFused.poses[(int)eHandSide::Right].fingers[1].proximal;
-
-			auto camASolo= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
-			camASolo.timestampMs= now + 100.0;
-			holdFusion.fuse({&camASolo}, now + 100.0, holdFused);
-			const HandPose& heldPose= holdFused.poses[(int)eHandSide::Right];
-			const float heldProx= heldPose.fingers[1].proximal;
-
-			auto camALate= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
-			camALate.timestampMs= now + 500.0;
-			holdFusion.fuse({&camALate}, now + 500.0, holdFused);
-			const float lateProx= holdFused.poses[(int)eHandSide::Right].fingers[1].proximal;
-
-			const float monoProx= anglesTruth[1].proximal + 0.2f;
-			MIKAN_LOG_INFO("test-fusion") << "(p) angle hold: tri=" << triProx << " held=" << heldProx
-				<< " late=" << lateProx << " (mono=" << monoProx << ")";
-			if (heldPose.stereoTriangulated || fabsf(heldProx - triProx) > 1e-4f ||
-				fabsf(lateProx - monoProx) > 1e-4f)
-			{
-				MIKAN_LOG_ERROR("test-fusion")
-					<< "(p) FAILED: brief fallback must hold tri angles; sustained fallback goes mono";
-				result= 1;
-			}
-		}
-
-		// (q) Triangulated palm-depth hold: the mono pose carries a
-		// 30mm along-ray depth error; a brief single-camera fallback
-		// must pin the along-ray component to the last triangulated
-		// palm (the mono lateral is exact here, so the held position
-		// is exact), and a sustained fallback adopts the mono depth
-		{
-			HandFusion holdFusion;
-			holdFusion.configure(fusionConfig);
-
-			TrackingFrameResult holdFused;
-			holdFusion.fuse({&camA, &camB}, now, holdFused);
-			const glm::vec3 triPalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
-
-			auto camASolo= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
-			camASolo.timestampMs= now + 100.0;
-			holdFusion.fuse({&camASolo}, now + 100.0, holdFused);
-			const glm::vec3 heldPalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
-			const float heldErrMm= glm::length(heldPalm - triPalm) * 1000.f;
-
-			auto camALate= makeStereoResult(0, camAPos, worldHand, worldHand, palmTruth);
-			camALate.timestampMs= now + 500.0;
-			holdFusion.fuse({&camALate}, now + 500.0, holdFused);
-			const glm::vec3 latePalm= holdFused.poses[(int)eHandSide::Right].palmPositionWorld;
-			const glm::vec3 monoPalm= camALate.result.poses[(int)eHandSide::Right].palmPositionWorld;
-			const float lateErrMm= glm::length(latePalm - monoPalm) * 1000.f;
-
-			MIKAN_LOG_INFO("test-fusion") << "(q) palm hold: held err mm=" << heldErrMm
-				<< " (mono depth error was 30), late-vs-mono mm=" << lateErrMm;
-			if (heldErrMm > 1.f || lateErrMm > 0.01f)
-			{
-				MIKAN_LOG_ERROR("test-fusion")
-					<< "(q) FAILED: brief fallback must hold the tri palm depth; sustained goes mono";
-				result= 1;
-			}
-		}
 		// (r) The triangulation PAIR is chosen for its geometry, not for the
 		// two cameras' own scores.
 		//
@@ -872,52 +810,218 @@ static int runFusionTest(const TestArgs& args)
 
 	}
 
-	// (n) Articulation-source hysteresis (non-triangulated path): the
-	// incumbent camera keeps supplying angles until a challenger beats
-	// its weight decisively for several consecutive fuses - weight noise
-	// alone must not flip the source
-	{
-		HandFusion selFusion;
-		selFusion.configure(fusionConfig);
+	// (The old (n) articulation-source hysteresis test died with its
+	// machinery: the non-triangulated blend path just takes the best camera
+	// now that its output is only the estimator's seed and fallback.)
 
-		auto fuseStep= [&](int step, float presenceA, float presenceB, TrackingFrameResult& outFused) {
+	// (s) State estimator end to end through HandFusion: two projective
+	// cameras track a static hand whose MONOCULAR poses carry a 3cm along-ray
+	// depth error, then one camera goes stale for good. Losing a camera just
+	// removes measurement rows from the fit, so the output must not step -
+	// this is the pop class (the old tri-hold expiry adopting mono depth)
+	// the estimator was built to remove.
+	{
+		HandSkeleton skeleton;
+		const float baseY[FINGER_COUNT]= {0.045f, 0.03f, 0.f, -0.01f, -0.03f};
+		const float baseX[FINGER_COUNT]= {-0.01f, 0.035f, 0.04f, 0.035f, 0.03f};
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			skeleton.baseInPalm[finger]= glm::vec3(baseX[finger], baseY[finger], 0.f);
+			skeleton.phalanxLengths[finger]= {0.045f, 0.027f, 0.022f};
+		}
+		skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
+
+		std::array<FingerAngles, FINGER_COUNT> anglesTruth{};
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			anglesTruth[finger].proximal= 0.3f;
+			anglesTruth[finger].intermediate= 0.3f;
+			anglesTruth[finger].distal= 0.15f;
+		}
+
+		std::array<glm::vec3, HAND_LANDMARK_COUNT> worldHand;
+		{
+			glm::mat4 palmTransform(1.f);
+			palmTransform[3]= glm::vec4(palmTruth, 1.f);
+			std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+			HandPoseModel::buildFingerJoints(palmTransform, skeleton, anglesTruth, joints);
+			worldHand[(int)eHandLandmark::WRIST]=
+				palmTruth + glm::vec3(-skeleton.baseInPalm[(int)eFinger::Middle].x, 0.f, 0.f);
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int joint= 0; joint < 4; ++joint)
+					worldHand[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+		}
+
+		auto makeLookAtCamera= [](const glm::vec3& cameraPos, const glm::vec3& target) {
+			const glm::vec3 z= glm::normalize(target - cameraPos);
+			const glm::vec3 x= glm::normalize(glm::cross(glm::vec3(0.f, 1.f, 0.f), z));
+			const glm::vec3 y= glm::cross(z, x);
+			glm::dmat4 markerFromCamera(1.0);
+			markerFromCamera[0]= glm::dvec4(x, 0.0);
+			markerFromCamera[1]= glm::dvec4(y, 0.0);
+			markerFromCamera[2]= glm::dvec4(z, 0.0);
+			markerFromCamera[3]= glm::dvec4(cameraPos, 1.0);
+			return markerFromCamera;
+		};
+
+		const float fx= 600.f, fy= 600.f, cx= 640.f, cy= 360.f;
+		const glm::vec3 camAPos= palmTruth + glm::vec3(0.f, 0.f, 0.8f);
+		const glm::vec3 camBPos= palmTruth + glm::vec3(0.f, -0.55f, 0.4f);
+
+		auto makeEstimatorResult= [&](int cameraIndex, const glm::vec3& cameraPos, double timestampMs) {
+			const glm::dmat4 markerFromCamera= makeLookAtCamera(cameraPos, palmTruth);
+			const glm::dmat4 cameraFromWorld= glm::inverse(markerFromCamera);
+
+			TrackingFrameResult frame;
+			TrackedHand& hand= frame.hands[(int)eHandSide::Right];
+			hand.tracked= true;
+			hand.side= eHandSide::Right;
+			hand.presence= 0.9f;
+			hand.handednessScore= 0.9f;
+			hand.rightProb= 0.9f;
+			for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+			{
+				const glm::dvec4 camPoint= cameraFromWorld * glm::dvec4(glm::dvec3(worldHand[i]), 1.0);
+				hand.imagePoints[i]= glm::vec3((float)(fx * camPoint.x / camPoint.z + cx),
+											   (float)(fy * camPoint.y / camPoint.z + cy), 0.f);
+			}
+			hand.worldPoints= worldHand;
+			hand.hasWorldSpace= true;
+
+			HandPose& pose= frame.poses[(int)eHandSide::Right];
+			pose.tracked= true;
+			pose.side= eHandSide::Right;
+			pose.presence= 0.9f;
+			pose.hasWorldPose= true;
+			// Monocular depth error: 3cm along the observing camera's view ray
+			pose.palmPositionWorld= palmTruth + glm::normalize(palmTruth - cameraPos) * 0.03f;
+			pose.palmOrientationWorld= glm::quat(1.f, 0.f, 0.f, 0.f);
+			pose.fingers= anglesTruth;
+			pose.skeleton= skeleton;
+
+			CameraFrameResult camera;
+			camera.cameraIndex= cameraIndex;
+			camera.valid= true;
+			camera.timestampMs= timestampMs;
+			camera.hasExtrinsics= true;
+			camera.markerFromCamera= markerFromCamera;
+			camera.hasIntrinsics= true;
+			camera.fx= fx;
+			camera.fy= fy;
+			camera.cx= cx;
+			camera.cy= cy;
+			camera.result= frame;
+			return camera;
+		};
+
+		// One full run: 10 two-camera fuses, then camera B's mirror goes stale
+		// (frozen timestamp, exactly like a live lastResult mirror) for 15
+		// more. Worst frame-to-frame palm step once tracking is warm, measured
+		// across the whole sequence including the transition. (The classic
+		// negative control popped 30 mm here before its arm was deleted; the
+		// 3 cm mono depth error in the fixture is what it would have adopted.)
+		HandFusion sequenceFusion;
+		sequenceFusion.configure(fusionConfig);
+
+		float worstStepM= 0.f;
+		glm::vec3 previousPalm(0.f);
+		bool bHavePrevious= false;
+		const double staleTimestamp= now + 9 * 33.0;
+		for (int step= 0; step < 25; ++step)
+		{
 			const double stepTime= now + step * 33.0;
-			const auto camA= makeCameraResult(
-				0, cam1Pos, stepTime,
-				makeObservation(palmTruth, faceUpToCam1, presenceA, eHandSide::Left, 0.1f, 0.5f));
-			const auto camB= makeCameraResult(
-				1, cam2Pos, stepTime,
-				makeObservation(palmTruth, faceUpToCam1, presenceB, eHandSide::Left, 0.1f, 0.9f));
-			selFusion.fuse({&camA, &camB}, stepTime, outFused);
+			const auto camA= makeEstimatorResult(0, camAPos, stepTime);
+			const auto camB=
+				makeEstimatorResult(1, camBPos, std::min(stepTime, staleTimestamp));
+			TrackingFrameResult fused;
+			sequenceFusion.fuse({&camA, &camB}, stepTime, fused);
+
+			const HandPose& pose= fused.poses[(int)eHandSide::Right];
+			if (!pose.tracked)
+				continue;
+			if (bHavePrevious && step >= 3)
+				worstStepM= std::max(worstStepM, glm::length(pose.palmPositionWorld - previousPalm));
+			previousPalm= pose.palmPositionWorld;
+			bHavePrevious= true;
+		}
+
+		const float estimatorStepMm= worstStepM * 1000.f;
+		MIKAN_LOG_INFO("test-fusion") << "(s) camera loss with 3cm mono depth error: worst step "
+			<< estimatorStepMm << " mm";
+		if (estimatorStepMm > 5.f)
+		{
+			MIKAN_LOG_ERROR("test-fusion")
+				<< "(s) FAILED: the estimator must ride out a camera loss without stepping";
+			result= 1;
+		}
+	}
+
+	// (t) Side-assignment refusal: a cluster whose winning affinity is
+	// negative while that side was recently tracked is elimination, not
+	// evidence - the side must go untracked for the fuse instead of adopting
+	// the wrong cluster (measured live: 0.7 m teleports at good fit
+	// residuals). After a real dropout the temporal prior is stale testimony,
+	// so the SAME cluster must be accepted - refusal that could deadlock
+	// reacquisition would repeat the hard-confidence-gate mistake.
+	{
+		HandFusion refuseFusion;
+		refuseFusion.configure(fusionConfig);
+
+		const glm::vec3 leftPalm(0.10f, 0.20f, 0.10f);
+		const glm::vec3 rightPalm(0.10f, -0.20f, 0.10f);
+		// Phantom on the LEFT side of the board with a weak right-ish vote:
+		// vote weakly positive, temporal strongly against (far from the right
+		// hand), spatial against (left side) -> negative total for right
+		const glm::vec3 phantomPalm(0.10f, 0.45f, 0.10f);
+
+		auto fuseBothHands= [&](double timestampMs, TrackingFrameResult& outFused) {
+			TrackingFrameResult frameA= makeObservation(leftPalm, faceUpToCam1, 0.9f,
+														eHandSide::Left, 0.05f, 0.4f);
+			// Same camera frame carries the right hand too
+			TrackingFrameResult frameRight= makeObservation(rightPalm, faceUpToCam1, 0.9f,
+															eHandSide::Right, 0.95f, 0.4f);
+			frameA.hands[(int)eHandSide::Right]= frameRight.hands[(int)eHandSide::Right];
+			frameA.poses[(int)eHandSide::Right]= frameRight.poses[(int)eHandSide::Right];
+			const auto camA= makeCameraResult(0, cam1Pos, timestampMs, frameA);
+			refuseFusion.fuse({&camA}, timestampMs, outFused);
+		};
+		auto fuseLeftPlusPhantom= [&](double timestampMs, TrackingFrameResult& outFused) {
+			TrackingFrameResult frameA= makeObservation(leftPalm, faceUpToCam1, 0.9f,
+														eHandSide::Left, 0.05f, 0.4f);
+			TrackingFrameResult framePhantom= makeObservation(phantomPalm, faceUpToCam1, 0.7f,
+															  eHandSide::Right, 0.65f, 0.4f);
+			frameA.hands[(int)eHandSide::Right]= framePhantom.hands[(int)eHandSide::Right];
+			frameA.poses[(int)eHandSide::Right]= framePhantom.poses[(int)eHandSide::Right];
+			const auto camA= makeCameraResult(0, cam1Pos, timestampMs, frameA);
+			refuseFusion.fuse({&camA}, timestampMs, outFused);
 		};
 
 		TrackingFrameResult fused;
-		// Establish camera A as the incumbent
-		for (int step= 0; step < 3; ++step)
-			fuseStep(step, 0.9f, 0.7f, fused);
-		const float bendIncumbent= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
+		for (int step= 0; step < 4; ++step)
+			fuseBothHands(now + step * 33.0, fused);
+		const bool bBothTracked= fused.poses[0].tracked && fused.poses[1].tracked;
 
-		// Challenger decisively ahead (incumbent presence stays at the
-		// candidate threshold so it isn't dropped outright): the
-		// incumbent must survive the first kArticulationSwitchFrames-1
-		// fuses...
-		float bendHolding= -1.f;
-		for (int step= 3; step < 3 + 4; ++step)
-		{
-			fuseStep(step, 0.5f, 0.99f, fused);
-			bendHolding= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
-		}
-		// ...and lose the job on the 5th
-		fuseStep(7, 0.5f, 0.99f, fused);
-		const float bendSwitched= fused.poses[(int)eHandSide::Left].fingers[0].proximal;
+		// Mid-track: the phantom replaces the right hand for one fuse
+		fuseLeftPlusPhantom(now + 4 * 33.0, fused);
+		const bool bRefused= !fused.poses[(int)eHandSide::Right].tracked &&
+			fused.poses[(int)eHandSide::Left].tracked;
+		bool bDiagRefused= false;
+		for (const FusionDiagnostics::Cluster& cluster : refuseFusion.getLastDiagnostics().clusters)
+			bDiagRefused|= cluster.assignmentRefused;
 
-		MIKAN_LOG_INFO("test-fusion") << "(n) articulation selection: incumbent bend=" << bendIncumbent
-			<< " holding bend=" << bendHolding << " switched bend=" << bendSwitched;
-		if (fabsf(bendIncumbent - 0.5f) > 1e-6f || fabsf(bendHolding - 0.5f) > 1e-6f ||
-			fabsf(bendSwitched - 0.9f) > 1e-6f)
+		// Past the refusal window with the right side still untracked, the
+		// same cluster is a legitimate reacquisition candidate and must land
+		fuseLeftPlusPhantom(now + 4 * 33.0 + 400.0, fused);
+		const bool bReacquired= fused.poses[(int)eHandSide::Right].tracked &&
+			glm::length(fused.poses[(int)eHandSide::Right].palmPositionWorld - phantomPalm) < 0.05f;
+
+		MIKAN_LOG_INFO("test-fusion") << "(t) assignment refusal: refused=" << bRefused
+			<< " (diag=" << bDiagRefused << "), post-window reacquired=" << bReacquired;
+		if (!bBothTracked || !bRefused || !bDiagRefused || !bReacquired)
 		{
 			MIKAN_LOG_ERROR("test-fusion")
-				<< "(n) FAILED: source must hold through the hysteresis window, then switch";
+				<< "(t) FAILED: a negative-affinity assignment must be refused while the side is "
+				   "recently tracked, and accepted as reacquisition after the window";
 			result= 1;
 		}
 	}

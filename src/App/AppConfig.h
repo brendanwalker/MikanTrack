@@ -108,15 +108,6 @@ struct TrackingConfig
 	// RealSense cameras: use the hardware depth stream for the palm transform
 	// (metric measurement replaces the monocular PnP estimate)
 	bool useRealSenseDepth= true;
-	// Post-fusion one-euro smoothing, split by signal: palm transform latency
-	// is visible (the hand drags through space) while finger articulation
-	// latency isn't - so the palm gets a high cutoff (responsive) and the
-	// angles a low one (steady). One-euro: cutoff= minCutoff + beta * |dx|.
-	float palmMinCutoff= 3.0f;
-	float palmBeta= 0.1f;
-	float angleMinCutoff= 0.75f;
-	float angleBeta= 0.02f;
-	bool smoothingEnabled= true;
 	std::string onnxEp= "directml"; // "directml" | "cpu"
 };
 
@@ -165,6 +156,18 @@ struct RestAnglesConfig
 {
 	bool present[2]= {false, false}; // indexed by eHandSide
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> angles{};
+};
+
+// Fitted per-side Gaussian prior over the 20 RAW finger angles (mean +
+// row-major precision matrix), produced by --fit-angle-prior from the user's
+// own stereo-quality recordings. Consumed by the hand state estimator as a
+// weak Mahalanobis pull toward the user's real pose distribution.
+struct AnglePriorConfig
+{
+	static constexpr int k_angleCount= FINGER_COUNT * 4;
+	bool present[2]= {false, false}; // indexed by eHandSide
+	std::array<std::array<float, k_angleCount>, 2> mean{};
+	std::array<std::array<float, k_angleCount * k_angleCount>, 2> precision{};
 };
 
 // Body-pose stage, opt-in per camera. The person detector only fires on
@@ -278,12 +281,42 @@ struct FusionConfig
 	// trustworthy - a TRUE pose-quality signal (unlike presence, which stays
 	// high on ill-conditioned views), folded into the fused confidence
 	float residualReferencePx= 8.f;
+
+	// Angle-space multi-view state estimator: one temporally continuous state
+	// per hand fit to all fresh cameras' 2D landmarks (the output pose path).
+	// Temporal-prior process sigmas (how far each block may move per second)
+	float estimatorPalmPosSigmaMPerS= 0.3f;
+	float estimatorPalmRotSigmaRadPerS= 2.f;
+	float estimatorAngleSigmaRadPerS= 2.5f;
+	// Measurement weighting
+	float estimatorPixelSigmaPx= 2.f;
+	float estimatorHuberDeltaPx= 10.f;
+	int estimatorMaxIterations= 4;
+	// Post-fit mean residual above this holds the previous state; a streak
+	// of them drops the state for a reseed (divergence guard)
+	float estimatorMaxResidualPx= 25.f;
+	// Palm steps implying more than this speed are correspondence errors,
+	// not motion - they take the bad-fit hold path (physical innovation gate)
+	float estimatorMaxStepMetersPerS= 4.f;
+	// Anatomical joint-limit prior inside the estimator fit (one-sided soft
+	// penalties beyond the per-DoF ranges; zero cost inside them)
+	bool estimatorJointLimitsEnabled= true;
+	float estimatorJointLimitSigmaRad= 0.05f;
+	// Scale on the fitted angle prior's precision (see AnglePriorConfig);
+	// 1 = trust the fitted distribution as-is, smaller = softer
+	float estimatorAnglePriorWeight= 0.3f;
 };
 
 // Declared here (rather than each caller assembling its own) so the live
 // solve and a replayed one cannot drift apart
 struct BodyDimensions;
 BodyDimensions makeBodyDimensions(const class AppConfig& config);
+
+// Same drift-proofing for the fusion config: the vision thread, the replay
+// engine and the replay self-test all build it from an AppConfig through this
+// one mapping
+struct HandFusionConfig;
+HandFusionConfig makeHandFusionConfig(const class AppConfig& config);
 
 class AppConfig
 {
@@ -303,6 +336,8 @@ public:
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.
 	RestAnglesConfig fusedRestAngles;
+	// Fitted angle prior for the hand state estimator (--fit-angle-prior)
+	AnglePriorConfig anglePrior;
 
 	// Cross-camera extrinsics quality from the last calibration session
 	ExtrinsicsQualityConfig extrinsicsQuality;

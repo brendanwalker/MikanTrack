@@ -112,20 +112,7 @@ static int runReplayTest(const TestArgs& args)
 	{
 		HandFusion fusion;
 		// Build the fusion config exactly as the vision thread does
-		HandFusionConfig fusionConfig;
-		fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
-		fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
-		fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
-		fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
-		fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;
-		fusionConfig.palmMinCutoff= config.tracking.palmMinCutoff;
-		fusionConfig.palmBeta= config.tracking.palmBeta;
-		fusionConfig.angleMinCutoff= config.tracking.angleMinCutoff;
-		fusionConfig.angleBeta= config.tracking.angleBeta;
-		fusionConfig.triangulationEnabled= config.fusion.triangulationEnabled;
-		fusionConfig.triangulationMaxResidualPx= config.fusion.triangulationMaxResidualPx;
-		fusionConfig.residualReferencePx= config.fusion.residualReferencePx;
-		fusion.configure(fusionConfig);
+		fusion.configure(makeHandFusionConfig(config));
 		fusion.resetTransientState();
 
 		std::array<LandmarkTo3D, 2> landmarkTo3D;

@@ -129,7 +129,38 @@ public:
 		float upperArmLength, float forearmLength,
 		const glm::vec3& rayOrigin, const glm::vec3& rayDir, BoneCircleHit& outHit);
 
+	// The same bone circle, picked WITHOUT a camera ray: the point nearest
+	// `target` (closed form - the closest point on a circle to a point is its
+	// radial projection onto the circle's plane). This is what keeps an arm
+	// alive while the elbow landmark is occluded, which on this rig happens
+	// whenever one hand passes in front of the other elbow.
+	//
+	// Both bone lengths hold BY CONSTRUCTION, which is the whole reason to
+	// re-solve rather than hold the last elbow POSITION: the wrist keeps
+	// moving while the elbow is unseen, and a held position would stretch the
+	// forearm to whatever the gap became.
+	static bool solveElbowNearestTo(
+		const glm::vec3& shoulder, const glm::vec3& wrist,
+		float upperArmLength, float forearmLength,
+		const glm::vec3& target, glm::vec3& outElbow);
+
 private:
+	// The bone circle itself, shared by the ray-picked and target-picked
+	// solves above. bDegenerate marks a straight (or folded) arm, where the
+	// circle collapses to the single point in `center`.
+	struct BoneCircleGeometry
+	{
+		glm::vec3 center{0.f};
+		glm::vec3 axis{1.f, 0.f, 0.f};
+		glm::vec3 planeX{0.f, 1.f, 0.f};
+		glm::vec3 planeY{0.f, 0.f, 1.f};
+		float radius= 0.f;
+		bool bDegenerate= false;
+	};
+	static bool computeBoneCircle(
+		const glm::vec3& shoulder, const glm::vec3& wrist,
+		float upperArmLength, float forearmLength, BoneCircleGeometry& outCircle);
+
 	// Constant-velocity residual EMA per solved joint (HandFusion's jitter
 	// pattern), divided by dt^2 so it reads as an ACCELERATION. The hands'
 	// plain-distance form assumes a fixed sample rate; the pose models run at
@@ -155,6 +186,11 @@ private:
 		bool bHasForearm= false;
 		glm::vec3 forearmDirWorld{1.f, 0.f, 0.f}; // unit, wrist -> elbow
 		float forearmConfidence= 0.f;
+		// Model-time since the elbow landmark was last actually SEEN. While
+		// the elbow is occluded the arm is dead-reckoned on the bone circle,
+		// and this both decays its confidence and bounds how long that may
+		// continue (see kMaxDeadReckonMs).
+		double deadReckonMs= 0.0;
 
 		bool bHasShoulder= false;
 		glm::vec3 shoulderPositionWorld{0.f};
