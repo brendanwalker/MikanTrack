@@ -49,6 +49,10 @@ public:
 	/// Convenience: encode into a freshly allocated buffer.
 	std::vector<uint8_t> encode() const;
 
+	/// Bytes encode() would append, without encoding anything. Lets a caller
+	/// split a frame across datagrams before it commits to one.
+	size_t getEncodedSize() const;
+
 private:
 	std::string m_address;
 	std::string m_typeTags= ","; // always starts with ','
@@ -81,6 +85,18 @@ public:
 
 	/// Convenience: encode into a freshly allocated buffer.
 	std::vector<uint8_t> encode() const;
+
+	/// Encode messages [firstMessage, firstMessage + count) as a bundle in
+	/// their own right, header and time tag included. A datagram has to carry
+	/// a COMPLETE bundle - UDP does not reassemble at the OSC layer - so a
+	/// frame too large for one packet is split here rather than fragmented.
+	void encodeRange(size_t firstMessage, size_t count, std::vector<uint8_t>& outBuffer) const;
+
+	/// Bytes one message contributes to a bundle, its size prefix included
+	size_t getMessageEncodedSize(size_t messageIndex) const;
+
+	/// Bytes a bundle costs before any message ("#bundle\0" + the time tag)
+	static constexpr size_t k_headerSize= 16;
 
 private:
 	uint64_t m_timeTag= k_oscTimeTagImmediate;

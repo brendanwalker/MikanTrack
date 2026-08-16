@@ -1,8 +1,10 @@
 #pragma once
 
+#include "OscOutputMode.h"
 #include "OscWriter.h"
 #include "TrackingTypes.h"
 #include "UdpSocket.h"
+#include "VmcRetarget.h"
 
 #include <atomic>
 #include <chrono>
@@ -16,7 +18,11 @@ struct TrackingFrameResult;
 struct OscStreamerConfig
 {
 	bool enabled= true;
+	// Which wire format to speak. Mutually exclusive - see eOscOutputMode.
+	eOscOutputMode outputMode= eOscOutputMode::Mikan;
 	std::string targetIp= "127.0.0.1";
+	// The caller picks the port for the active mode; the two formats have
+	// different conventional listeners (VMC's is 39539).
 	uint16_t targetPort= 8000;
 	float maxRateHz= 60.f; // <= 0 disables rate limiting
 	// Hands whose fused confidence falls below this are reported untracked
@@ -38,6 +44,21 @@ struct OscStreamerConfig
 	// be diffed against it frame for frame. One line per hand per frame.
 	bool logPalmFrames= false;
 	std::string appVersion= "MikanMediaPipe";
+
+	// -- VMC mode only ------------------------------------------------------
+	// Bone offsets the streamed skeleton carries. A VMC receiver replaces both
+	// the rotation AND the translation of every bone it is sent, so these are
+	// not optional: the avatar takes these proportions.
+	float shoulderWidthMeters= 0.40f;
+	float upperArmLengthMeters= 0.30f;
+	// Neck -> head bone offset. Nothing on this rig measures it, so it is a
+	// setting: too small and the head sinks into the neck, too large and it
+	// floats.
+	float vmcHeadOffsetMeters= 0.08f;
+	// VMC carries no confidence and no tracked flag, so a lost hand can only be
+	// expressed as motion. Freezing the last streamed bones reads far better
+	// than going silent, which drops the arm back to the avatar's T-pose.
+	bool vmcFreezeOnLoss= true;
 };
 
 /// Streams per-frame parametric hand poses as OSC 1.0 bundles over UDP
@@ -84,6 +105,17 @@ struct OscStreamerConfig
 ///     sent, confidence 0 carries invalidity; live-only (no dropout hold).
 ///   /mikan/info ,ss "space=...;units=m;handed=RH;up=Z;...;angles=deg" appVersion
 ///     (at most once per second)
+///
+/// In VMC mode the bundle is the VMC protocol instead (see VmcRetarget.h for
+/// the retarget and its conventions):
+///   /VMC/Ext/OK ,iiii loaded calibrationState calibrationMode trackingStatus
+///   /VMC/Ext/T ,f seconds since the socket opened
+///   /VMC/Ext/Root/Pos ,sfffffff "root" + identity. Deliberately identity:
+///     this is an upper-body tracker anchored to a desk marker, not a
+///     room-scale root, so pushing the marker frame onto the avatar would
+///     teleport it.
+///   /VMC/Ext/Bone/Pos ,sfffffff name + local position xyz + rotation xyzw,
+///     once per measured bone (head, clavicles, arms, hands, fingers)
 class OscStreamer
 {
 public:
@@ -107,6 +139,21 @@ public:
 	/// Called from the inference thread; allocation-light after warm-up
 	/// (reuses a pooled bundle and a scratch encode buffer).
 	void sendFrame(const TrackingFrameResult& frame);
+
+	/// Encode one frame in the active output format without touching the
+	/// socket, advancing the same streaming state (sequence, dropout holds).
+	/// sendFrame is this plus the rate gate and the send, so a test reads
+	/// exactly the bytes a receiver would rather than a reconstruction of them.
+	/// One entry per datagram: a frame too large for a single packet is split
+	/// into several complete bundles (see k_maxDatagramBytes).
+	void encodeFrame(const TrackingFrameResult& frame, std::vector<std::vector<uint8_t>>& outPackets);
+
+	/// Largest datagram VMC mode will put on the wire. Sized to stay inside a
+	/// 1500-byte ethernet MTU (so nothing depends on IP fragmentation, where
+	/// one lost fragment costs the whole bundle) and well inside the 2048-byte
+	/// default receive buffer of Rug.Osc, which several VMC tools are built on.
+	/// The Mikan format is deliberately not chunked - see encodeFrameLocked.
+	static constexpr size_t k_maxDatagramBytes= 1400;
 
 	/// Bundles sent per second (updated once a second). Safe to poll from the
 	/// UI thread.
@@ -144,9 +191,22 @@ public:
 	static void resolveHeadOutput(const TrackingFrameResult::HeadPose& head,
 								  glm::vec3& outPosition, glm::quat& outOrientation, float& outConfidence);
 
+	/// What VMC mode streams for one hand, applied AFTER resolveOutputPose.
+	/// VMC has no confidence and no tracked flag, so the only way to say "this
+	/// is no longer measured" is to stop moving: past the dropout hold the last
+	/// streamed bones freeze rather than going silent, because a silent address
+	/// drops that arm back to the avatar's rest T-pose.
+	/// @returns true when outPose should be streamed as bones
+	static bool resolveVmcOutputPose(const HandPose& pose, bool bPoseSent, bool bFreezeOnLoss,
+									 HeldPoseState& ioLast, HandPose& outPose);
+
 private:
 	using ClockTimePoint= std::chrono::steady_clock::time_point;
 
+	void encodeFrameLocked(const TrackingFrameResult& frame, const ClockTimePoint& now,
+						   std::vector<std::vector<uint8_t>>& outPackets);
+	void appendMikanMessages(const TrackingFrameResult& frame, const ClockTimePoint& now);
+	void appendVmcMessages(const TrackingFrameResult& frame, const ClockTimePoint& now);
 	void appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton);
 	void appendInfoMessage(bool hasWorldSpace, const ClockTimePoint& now);
 	void updateSendStats(const ClockTimePoint& now);
@@ -159,12 +219,17 @@ private:
 	// Per-frame encode state (reused to stay allocation-light)
 	OscBundle m_bundle;
 
-	// Increments once per bundle actually put on the wire; the client's loss counter
+	// Increments once per frame actually put on the wire; the client's loss counter
 	int32_t m_sendSequence= 0;
-	std::vector<uint8_t> m_scratchBuffer;
+	std::vector<std::vector<uint8_t>> m_scratchPackets;
 
 	// Dropout hold state per side
 	HeldPoseState m_heldPose[2];
+	// VMC freeze-on-loss state per side, plus the retarget scratch (reused so
+	// the per-frame encode stays allocation-light like the Mikan path)
+	HeldPoseState m_lastVmcPose[2];
+	VmcRetarget::VmcPose m_vmcPose;
+	ClockTimePoint m_startTime;
 
 	// Rate decimation (frame timestamps) and info-message throttling (wall clock)
 	double m_lastSendTimestampMs= -1.0;

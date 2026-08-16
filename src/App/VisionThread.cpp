@@ -604,17 +604,31 @@ void VisionThread::refreshConfigOnThread()
 	}
 	if (m_oscStreamer != nullptr)
 	{
+		const BodyDimensions bodyDimensions= makeBodyDimensions(*m_config);
+
 		OscStreamerConfig oscConfig;
 		oscConfig.enabled= m_config->osc.enabled;
+		oscConfig.outputMode= m_config->osc.outputMode;
 		oscConfig.targetIp= m_config->osc.targetIp;
-		oscConfig.targetPort= (uint16_t)m_config->osc.targetPort;
+		// Each format keeps its own port, so switching modes cannot aim a
+		// stream at a listener that speaks the other one
+		oscConfig.targetPort= (uint16_t)(m_config->osc.outputMode == eOscOutputMode::Vmc
+											 ? m_config->osc.vmcPort
+											 : m_config->osc.targetPort);
 		oscConfig.maxRateHz= (float)m_config->osc.maxRateHz;
 		oscConfig.minConfidence= m_config->osc.minConfidence;
 		oscConfig.holdOnDropoutMs= m_config->osc.holdOnDropoutMs;
 		// The streamer derives the elbow from the forearm direction, so it
-		// needs the same length the rest of the app uses
-		oscConfig.forearmLengthMeters= m_config->body.forearmLengthMeters;
+		// needs the same length the rest of the app uses. The other two go the
+		// same way: VMC bone offsets must agree with the lengths the body-pose
+		// solver placed those joints with, or the streamed skeleton contradicts
+		// the pose it is carrying.
+		oscConfig.forearmLengthMeters= bodyDimensions.forearmLengthMeters;
+		oscConfig.upperArmLengthMeters= bodyDimensions.upperArmLengthMeters;
+		oscConfig.shoulderWidthMeters= bodyDimensions.shoulderWidthMeters;
 		oscConfig.logPalmFrames= m_config->osc.logPalmFrames;
+		oscConfig.vmcHeadOffsetMeters= m_config->osc.vmcHeadOffsetMeters;
+		oscConfig.vmcFreezeOnLoss= m_config->osc.vmcFreezeOnLoss;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }

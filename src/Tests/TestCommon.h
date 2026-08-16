@@ -56,5 +56,6 @@
 #include "TrackingRecorder.h"
 #include "TrackingRecording.h"
 #include "TrackingReplay.h"
+#include "VmcRetarget.h"
 
 #include "TestRegistry.h"

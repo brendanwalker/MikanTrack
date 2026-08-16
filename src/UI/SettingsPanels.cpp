@@ -1164,6 +1164,22 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 
 	bChanged|= ImGui::Checkbox("Enabled", &osc.enabled);
 
+	int outputMode= (int)osc.outputMode;
+	if (ImGui::Combo("Format", &outputMode, "Mikan\0VMC (VRM)\0"))
+	{
+		osc.outputMode= (eOscOutputMode)outputMode;
+		bChanged= true;
+	}
+	ImGui::SetItemTooltip(
+		"Mikan: the native /mikan/* schema - world-space poses, finger\n"
+		"angles and per-joint confidences.\n"
+		"VMC: the VMC protocol (protocol.vmc.info) - head, clavicle, arm,\n"
+		"hand and finger bones as parent-relative Unity transforms, for\n"
+		"receivers such as VMC4UE.\n"
+		"One at a time: they describe the same pose in incompatible terms.");
+
+	const bool bVmc= osc.outputMode == eOscOutputMode::Vmc;
+
 	char ipBuffer[64];
 	snprintf(ipBuffer, sizeof(ipBuffer), "%s", osc.targetIp.c_str());
 	if (ImGui::InputText("Target IP", ipBuffer, sizeof(ipBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
@@ -1172,12 +1188,17 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		bChanged= true;
 	}
 
-	int port= osc.targetPort;
-	if (ImGui::InputInt("Port", &port, 0) && port > 0 && port <= 65535)
+	// Each format keeps its own port so switching modes cannot silently aim
+	// the stream at a listener that speaks the other one
+	int& activePort= bVmc ? osc.vmcPort : osc.targetPort;
+	int port= activePort;
+	if (ImGui::InputInt(bVmc ? "Port (VMC)" : "Port", &port, 0) && port > 0 && port <= 65535)
 	{
-		osc.targetPort= port;
+		activePort= port;
 		bChanged= true;
 	}
+	if (bVmc)
+		ImGui::SetItemTooltip("39539 is VMC's conventional Performer -> Marionette port.");
 
 	bChanged|= ImGui::SliderInt("Max rate", &osc.maxRateHz, 10, 120, "%d Hz");
 
@@ -1203,6 +1224,29 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		"tagged with the frame id, so it can be diffed against a client's\n"
 		"own receive log to prove what did or did not arrive.\n"
 		"One line per hand per frame - leave it off for normal use.");
+
+	if (bVmc)
+	{
+		ImGui::Separator();
+		ImGui::TextDisabled("VMC");
+
+		bChanged|= ImGui::SliderFloat("Head offset", &osc.vmcHeadOffsetMeters, 0.f, 0.25f, "%.3f m");
+		ImGui::SetItemTooltip(
+			"Neck -> head bone offset. A VMC receiver replaces the position\n"
+			"of every bone it is sent, and nothing here measures a neck, so\n"
+			"this is the knob: raise it if the head sinks into the shoulders,\n"
+			"lower it if it floats.");
+
+		bChanged|= ImGui::Checkbox("Freeze on loss", &osc.vmcFreezeOnLoss);
+		ImGui::SetItemTooltip(
+			"VMC carries no confidence, so a lost hand can only be expressed\n"
+			"as motion. On: that arm's last bones keep streaming and it holds\n"
+			"still. Off: the bones stop, and the receiver returns the arm to\n"
+			"the avatar's rest T-pose.");
+
+		ImGui::TextDisabled("Bones: head, clavicles, arms,\nhands, fingers (37)");
+		ImGui::TextDisabled("The avatar takes the measured\nbone lengths (Body panel)");
+	}
 
 	ImGui::Separator();
 	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
