@@ -234,6 +234,52 @@ static int runBodyPoseTest(const TestArgs&)
 			  "an unreachable wrist declines the shoulder rather than trusting it");
 	}
 
+	// (c4) Occluded elbow: the arm is carried on the same bone circle, picked
+	// by continuity instead of by the (missing) landmark ray. One hand
+	// crossing the other elbow is routine on this rig, and the alternative -
+	// holding the last elbow POSITION - stretches the forearm as soon as the
+	// wrist moves, which is the whole reason to re-solve.
+	{
+		const glm::vec3 shoulder(-0.25f, 0.10f, 1.05f);
+		const glm::vec3 wrist(0.10f, 0.05f, 1.00f);
+		const glm::vec3 elbowTrue= shoulder +
+			glm::normalize(glm::vec3(0.55f, -0.5f, 0.2f)) * dims.upperArmLengthMeters;
+		const float upperArm= glm::length(elbowTrue - shoulder);
+		const float forearm= glm::length(elbowTrue - wrist);
+
+		// Continuity target = where the elbow was: it must come back exactly
+		glm::vec3 held(0.f);
+		const bool bHeld= BodyPoseSolver::solveElbowNearestTo(
+			shoulder, wrist, upperArm, forearm, elbowTrue, held);
+		check(bHeld && glm::length(held - elbowTrue) < 1e-4f,
+			  "with the elbow unseen, continuity recovers the same point on the circle");
+
+		// Now the WRIST MOVES while the elbow is still unseen. Both bones must
+		// still hold exactly - a held position could not do this - and the
+		// elbow must slide, not jump.
+		// Moved ALONG the forearm, the direction a held elbow cannot absorb
+		const glm::vec3 movedWrist=
+			wrist + glm::normalize(wrist - elbowTrue) * 0.05f + glm::vec3(0.f, -0.02f, 0.f);
+		glm::vec3 slid(0.f);
+		const bool bSlid= BodyPoseSolver::solveElbowNearestTo(
+			shoulder, movedWrist, upperArm, forearm, held, slid);
+		const bool bBonesHold= bSlid &&
+			fabsf(glm::length(slid - shoulder) - upperArm) < 1e-4f &&
+			fabsf(glm::length(slid - movedWrist) - forearm) < 1e-4f;
+		check(bBonesHold, "both bone lengths hold exactly while the wrist moves unseen");
+		check(bSlid && glm::length(slid - held) < 0.05f,
+			  "the dead-reckoned elbow slides along the circle rather than jumping");
+
+		// The held-position alternative, measured rather than asserted: it
+		// leaves the forearm the wrong length, which is what breaks a rig
+		const float heldPositionForearm= glm::length(held - movedWrist);
+		MIKAN_LOG_INFO("test-bodypose")
+			<< "(c4) holding the elbow POSITION would make the forearm "
+			<< heldPositionForearm * 1000.f << " mm against a true " << forearm * 1000.f << " mm";
+		check(fabsf(heldPositionForearm - forearm) > 0.03f,
+			  "negative control: holding the position really does break the bone length");
+	}
+
 	// (c3) The regression this replaced: a shoulder at the WRIST'S RANGE.
 	// Solving the elbow from the ray and checking the upper arm afterwards is
 	// blind there - the two ray solutions straddle the wrist depth almost
