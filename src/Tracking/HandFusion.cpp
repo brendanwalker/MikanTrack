@@ -48,6 +48,16 @@ static constexpr double kTriAngleHoldMs= 300.0;
 // landmarks as the second triangulation view (the residual is the judge),
 // but below this even the image points are guesses
 static constexpr float kTriRescueMinPresence= 0.15f;
+// Side-assignment refusal: a cluster whose winning affinity total is negative
+// is being assigned by ELIMINATION against the evidence - measured across
+// three recordings, healthy assignments never scored below +2.05 (p01) while
+// every negative-affinity assignment was a mislabeled or phantom cluster that
+// stepped the fused hand 256-782 mm. Refusal only applies while the side was
+// RECENTLY tracked: after a real dropout the temporal prior is stale
+// testimony (the hand may genuinely be anywhere), so reacquisition keeps
+// today's behavior and a refusal deadlock is structurally impossible.
+static constexpr float kAssignmentRefuseThreshold= 0.f;
+static constexpr double kAssignmentRefuseWindowMs= 250.0;
 
 void HandFusion::configure(const HandFusionConfig& config)
 {
@@ -70,6 +80,7 @@ void HandFusion::configure(const HandFusionConfig& config)
 		m_lastFilteredQuat[sideIndex]= glm::quat(1, 0, 0, 0);
 		m_bSideWasTracked[sideIndex]= false;
 		m_bLastFusedPalmValid[sideIndex]= false;
+		m_lastTrackedMs[sideIndex]= -1e12;
 		m_articulationSource[sideIndex]= -1;
 		m_articulationChallenger[sideIndex]= -1;
 		m_articulationChallengerFrames[sideIndex]= 0;
@@ -948,41 +959,58 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		clusters.resize(2);
 
 	// Assign sides to clusters by joint affinity (votes + temporal continuity
-	// + optional spatial prior)
+	// + optional spatial prior). A winning assignment whose RAW affinity is
+	// still negative is elimination, not evidence - refused while the side
+	// was recently tracked (see kAssignmentRefuseThreshold).
 	m_dominantCamera[0]= -1;
 	m_dominantCamera[1]= -1;
+	auto tryAssign= [&](int clusterIndex, int sideIndex, float rawAffinityTotal) {
+		const bool bRecentlyTracked=
+			nowTimestampMs - m_lastTrackedMs[sideIndex] < kAssignmentRefuseWindowMs;
+		if (rawAffinityTotal < kAssignmentRefuseThreshold && bRecentlyTracked)
+		{
+			m_lastDiagnostics.clusters[clusterIndex].assignmentRefused= true;
+			return;
+		}
+		fuseCluster((eHandSide)sideIndex, clusters[clusterIndex], outFused.hands[sideIndex],
+					outFused.poses[sideIndex]);
+		m_lastDiagnostics.clusters[clusterIndex].assignedSide= sideIndex;
+	};
 	if (clusters.size() == 2)
 	{
-		const float assignLR= sideAffinity(clusters[0], eHandSide::Left).total() +
-			sideAffinity(clusters[1], eHandSide::Right).total();
-		const float assignRL= sideAffinity(clusters[0], eHandSide::Right).total() +
-			sideAffinity(clusters[1], eHandSide::Left).total();
+		const float affinity0Left= sideAffinity(clusters[0], eHandSide::Left).total();
+		const float affinity0Right= sideAffinity(clusters[0], eHandSide::Right).total();
+		const float affinity1Left= sideAffinity(clusters[1], eHandSide::Left).total();
+		const float affinity1Right= sideAffinity(clusters[1], eHandSide::Right).total();
 
-		const int firstSide= assignLR >= assignRL ? (int)eHandSide::Left : (int)eHandSide::Right;
-		const int secondSide= 1 - firstSide;
-		fuseCluster((eHandSide)firstSide, clusters[0], outFused.hands[firstSide], outFused.poses[firstSide]);
-		fuseCluster((eHandSide)secondSide, clusters[1], outFused.hands[secondSide], outFused.poses[secondSide]);
-		m_lastDiagnostics.clusters[0].assignedSide= firstSide;
-		m_lastDiagnostics.clusters[1].assignedSide= secondSide;
+		const int firstSide= affinity0Left + affinity1Right >= affinity0Right + affinity1Left
+			? (int)eHandSide::Left
+			: (int)eHandSide::Right;
+		tryAssign(0, firstSide,
+				  firstSide == (int)eHandSide::Left ? affinity0Left : affinity0Right);
+		tryAssign(1, 1 - firstSide,
+				  firstSide == (int)eHandSide::Left ? affinity1Right : affinity1Left);
 	}
 	else if (clusters.size() == 1)
 	{
-		float affinityLeft= sideAffinity(clusters[0], eHandSide::Left).total();
-		float affinityRight= sideAffinity(clusters[0], eHandSide::Right).total();
+		const float rawLeft= sideAffinity(clusters[0], eHandSide::Left).total();
+		const float rawRight= sideAffinity(clusters[0], eHandSide::Right).total();
 
 		// Hysteresis: right after a clap both sides' temporal priors sit at
 		// the same spot and votes can cancel, leaving the assignment to
 		// numeric noise - which flip-flops L/R every frame and destroys the
 		// temporal prior for the reacquisition. Stick with the incumbent
-		// side unless decisively contradicted.
+		// side unless decisively contradicted. (Refusal judges the RAW
+		// affinity: the stickiness is inertia, not evidence.)
+		float affinityLeft= rawLeft;
+		float affinityRight= rawRight;
 		if (m_lastSoloSide == (int)eHandSide::Left)
 			affinityLeft+= kSoloSideStickiness;
 		else if (m_lastSoloSide == (int)eHandSide::Right)
 			affinityRight+= kSoloSideStickiness;
 
-		const eHandSide side= affinityLeft >= affinityRight ? eHandSide::Left : eHandSide::Right;
-		fuseCluster(side, clusters[0], outFused.hands[(int)side], outFused.poses[(int)side]);
-		m_lastDiagnostics.clusters[0].assignedSide= (int)side;
+		const int sideIndex= affinityLeft >= affinityRight ? (int)eHandSide::Left : (int)eHandSide::Right;
+		tryAssign(0, sideIndex, sideIndex == (int)eHandSide::Left ? rawLeft : rawRight);
 	}
 
 	// Mirror triangulation outcomes into the diagnostics (fuseCluster runs
@@ -1023,6 +1051,7 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		{
 			m_lastFusedPalm[sideIndex]= outFused.poses[sideIndex].palmPositionWorld;
 			m_bLastFusedPalmValid[sideIndex]= true;
+			m_lastTrackedMs[sideIndex]= nowTimestampMs;
 		}
 		// (keep the last position when untracked - it decays naturally via distance)
 	}

@@ -118,7 +118,11 @@ struct FusionDiagnostics
 		float bestWeight= 0.f;
 		// Side-affinity components, indexed [side][0=vote,1=temporal,2=spatial]
 		float affinity[2][3]{};
-		int assignedSide= -1; // -1 = dropped (more clusters than hands)
+		int assignedSide= -1; // -1 = dropped (more clusters than hands) or refused
+		// The winning side's raw affinity was negative while that side was
+		// recently tracked: assignment by elimination, refused (the side
+		// went untracked this fuse rather than adopting the wrong cluster)
+		bool assignmentRefused= false;
 
 		// Stereo triangulation outcome for this cluster's fused pose
 		bool triangulated= false;      // pose came from landmark triangulation
@@ -378,9 +382,12 @@ private:
 	double m_lastTriTimestampMs[2]= {-1e12, -1e12};
 	double m_fuseTimestampMs= 0.0;
 
-	// Temporal side-assignment prior: last fused palm position per side
+	// Temporal side-assignment prior: last fused palm position per side, and
+	// when the side last produced a tracked pose (the assignment-refusal
+	// window: negative-affinity evidence only counts while this is recent)
 	glm::vec3 m_lastFusedPalm[2]= {glm::vec3(0.f), glm::vec3(0.f)};
 	bool m_bLastFusedPalmValid[2]= {false, false};
+	double m_lastTrackedMs[2]= {-1e12, -1e12};
 
 	// Single-cluster hysteresis: while only one hand is tracked, its side
 	// assignment sticks unless decisively contradicted (prevents the L/R

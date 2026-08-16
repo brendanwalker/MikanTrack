@@ -112,6 +112,7 @@ json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
 			{"palmWorld", vec3ToJson(cluster.palmWorld)},
 			{"bestWeight", cluster.bestWeight},
 			{"assignedSide", sideName(cluster.assignedSide)},
+			{"assignmentRefused", cluster.assignmentRefused},
 			{"triangulated", cluster.triangulated},
 			{"triVetoed", cluster.triVetoed},
 			{"triResidualRmsPx", cluster.triResidualRmsPx},

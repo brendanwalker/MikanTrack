@@ -1077,6 +1077,76 @@ static int runFusionTest(const TestArgs& args)
 		}
 	}
 
+	// (t) Side-assignment refusal: a cluster whose winning affinity is
+	// negative while that side was recently tracked is elimination, not
+	// evidence - the side must go untracked for the fuse instead of adopting
+	// the wrong cluster (measured live: 0.7 m teleports at good fit
+	// residuals). After a real dropout the temporal prior is stale testimony,
+	// so the SAME cluster must be accepted - refusal that could deadlock
+	// reacquisition would repeat the hard-confidence-gate mistake.
+	{
+		HandFusion refuseFusion;
+		refuseFusion.configure(fusionConfig);
+
+		const glm::vec3 leftPalm(0.10f, 0.20f, 0.10f);
+		const glm::vec3 rightPalm(0.10f, -0.20f, 0.10f);
+		// Phantom on the LEFT side of the board with a weak right-ish vote:
+		// vote weakly positive, temporal strongly against (far from the right
+		// hand), spatial against (left side) -> negative total for right
+		const glm::vec3 phantomPalm(0.10f, 0.45f, 0.10f);
+
+		auto fuseBothHands= [&](double timestampMs, TrackingFrameResult& outFused) {
+			TrackingFrameResult frameA= makeObservation(leftPalm, faceUpToCam1, 0.9f,
+														eHandSide::Left, 0.05f, 0.4f);
+			// Same camera frame carries the right hand too
+			TrackingFrameResult frameRight= makeObservation(rightPalm, faceUpToCam1, 0.9f,
+															eHandSide::Right, 0.95f, 0.4f);
+			frameA.hands[(int)eHandSide::Right]= frameRight.hands[(int)eHandSide::Right];
+			frameA.poses[(int)eHandSide::Right]= frameRight.poses[(int)eHandSide::Right];
+			const auto camA= makeCameraResult(0, cam1Pos, timestampMs, frameA);
+			refuseFusion.fuse({&camA}, timestampMs, outFused);
+		};
+		auto fuseLeftPlusPhantom= [&](double timestampMs, TrackingFrameResult& outFused) {
+			TrackingFrameResult frameA= makeObservation(leftPalm, faceUpToCam1, 0.9f,
+														eHandSide::Left, 0.05f, 0.4f);
+			TrackingFrameResult framePhantom= makeObservation(phantomPalm, faceUpToCam1, 0.7f,
+															  eHandSide::Right, 0.65f, 0.4f);
+			frameA.hands[(int)eHandSide::Right]= framePhantom.hands[(int)eHandSide::Right];
+			frameA.poses[(int)eHandSide::Right]= framePhantom.poses[(int)eHandSide::Right];
+			const auto camA= makeCameraResult(0, cam1Pos, timestampMs, frameA);
+			refuseFusion.fuse({&camA}, timestampMs, outFused);
+		};
+
+		TrackingFrameResult fused;
+		for (int step= 0; step < 4; ++step)
+			fuseBothHands(now + step * 33.0, fused);
+		const bool bBothTracked= fused.poses[0].tracked && fused.poses[1].tracked;
+
+		// Mid-track: the phantom replaces the right hand for one fuse
+		fuseLeftPlusPhantom(now + 4 * 33.0, fused);
+		const bool bRefused= !fused.poses[(int)eHandSide::Right].tracked &&
+			fused.poses[(int)eHandSide::Left].tracked;
+		bool bDiagRefused= false;
+		for (const FusionDiagnostics::Cluster& cluster : refuseFusion.getLastDiagnostics().clusters)
+			bDiagRefused|= cluster.assignmentRefused;
+
+		// Past the refusal window with the right side still untracked, the
+		// same cluster is a legitimate reacquisition candidate and must land
+		fuseLeftPlusPhantom(now + 4 * 33.0 + 400.0, fused);
+		const bool bReacquired= fused.poses[(int)eHandSide::Right].tracked &&
+			glm::length(fused.poses[(int)eHandSide::Right].palmPositionWorld - phantomPalm) < 0.05f;
+
+		MIKAN_LOG_INFO("test-fusion") << "(t) assignment refusal: refused=" << bRefused
+			<< " (diag=" << bDiagRefused << "), post-window reacquired=" << bReacquired;
+		if (!bBothTracked || !bRefused || !bDiagRefused || !bReacquired)
+		{
+			MIKAN_LOG_ERROR("test-fusion")
+				<< "(t) FAILED: a negative-affinity assignment must be refused while the side is "
+				   "recently tracked, and accepted as reacquisition after the window";
+			result= 1;
+		}
+	}
+
 	if (result == 0)
 		MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 
