@@ -104,7 +104,7 @@ Two-Bone IK from the palm transform.
   records every input to the post-MediaPipe stages (per-camera landmarks,
   depth samples, timestamps - no video, ~1 MB/s) as JSONL under
   `%APPDATA%/MikanMediaPipe/recordings/`, then re-runs the whole
-  triangulation/fusion/smoothing pipeline offline, verified bit-exact by
+  triangulation/fusion/estimation pipeline offline, verified bit-exact by
   per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
   the 3D scene view, marks any divergent frames, and re-simulates the same
   incident with edited fusion parameters ("what-if") to judge a candidate

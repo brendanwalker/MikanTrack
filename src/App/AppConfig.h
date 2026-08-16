@@ -108,15 +108,6 @@ struct TrackingConfig
 	// RealSense cameras: use the hardware depth stream for the palm transform
 	// (metric measurement replaces the monocular PnP estimate)
 	bool useRealSenseDepth= true;
-	// Post-fusion one-euro smoothing, split by signal: palm transform latency
-	// is visible (the hand drags through space) while finger articulation
-	// latency isn't - so the palm gets a high cutoff (responsive) and the
-	// angles a low one (steady). One-euro: cutoff= minCutoff + beta * |dx|.
-	float palmMinCutoff= 3.0f;
-	float palmBeta= 0.1f;
-	float angleMinCutoff= 0.75f;
-	float angleBeta= 0.02f;
-	bool smoothingEnabled= true;
 	std::string onnxEp= "directml"; // "directml" | "cpu"
 };
 
@@ -291,10 +282,8 @@ struct FusionConfig
 	// high on ill-conditioned views), folded into the fused confidence
 	float residualReferencePx= 8.f;
 
-	// Angle-space multi-view state estimator (experimental): one temporally
-	// continuous state per hand fit to all fresh cameras' 2D landmarks,
-	// replacing the per-frame tri/mono selection when enabled
-	bool estimatorEnabled= false;
+	// Angle-space multi-view state estimator: one temporally continuous state
+	// per hand fit to all fresh cameras' 2D landmarks (the output pose path).
 	// Temporal-prior process sigmas (how far each block may move per second)
 	float estimatorPalmPosSigmaMPerS= 0.3f;
 	float estimatorPalmRotSigmaRadPerS= 2.f;

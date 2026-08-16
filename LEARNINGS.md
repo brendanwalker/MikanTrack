@@ -21,7 +21,7 @@ MikanMediaPipe went from empty repo to a working multi-camera hand tracker betwe
 | (main) | Aug 11 | Depth A/B tool, marker-scale discovery, bone calibration | Kept |
 | seed_fix | Aug 12 | Cross-camera seeding instrumentation + fixes | Kept, seeding now unconditional |
 | body_pose | Aug 12-14 | Opt-in per-camera body pose (elbows, shoulders, head) | Kept; landmark model swapped BlazePose -> RTMPose |
-| biomech | Aug 15-16 | Angle-space multi-view state estimator + biomechanical priors | Estimator live-verified and kept (opt-in); priors offline-verified |
+| biomech | Aug 15-16 | Angle-space multi-view state estimator + biomechanical priors | Live-verified, made permanent; superseded holds/hysteresis/one-euro deleted |
 
 ## 1. ONNX Runtime + DirectML instead of the MediaPipe framework
 
@@ -183,6 +183,8 @@ The deeper issue was upstream: side assignment handing a cluster to a side by EL
 Biomechanical priors then landed as residuals on the state, cheapest layer first. Anatomical joint limits (one-sided soft penalties, zero cost in range) collapsed the worst implausible excursions from 34-94 degrees beyond range to 13-27 at zero FK-residual cost. A DIP-PIP coupling fallback holds a garbaged fingertip to anatomical coherence (46 to 20 degrees of deviation in the synthetic test). A per-user angle prior (mean + shrunk precision over the 20 raw angles, fit by `--fit-angle-prior` from the user's own stereo frames) cut single-DoF angle jumps a further 20% on the busiest recording by making coordinated pose changes cheap and uncorrelated snaps expensive; sweeping its weight 0.3 to 1.0 changed little, so it ships weak. A musculoskeletal layer (muscle dynamics) was surveyed and deliberately skipped: it buys torque plausibility, which a kinematic tracking prior at 30 Hz never consumes.
 
 Learned: when every mitigation is a hold or a hysteresis on a discrete switch, the switch itself is the bug - estimate one continuous state and the seams disappear along with their patches. And a prior's test scenario must match its failure mode: the fitted angle prior looked useless against a persistent stereo-consistent snap (correctly - that could be a real unusual pose) and earned its keep exactly on view-inconsistent corruption. A synthetic training set with independent per-finger motion taught the prior that lone-finger curls are normal, and it then correctly refused to fix them; the test had to encode real hands' shared-synergy structure before it could measure anything.
+
+After live verification the estimator became the permanent output path, and the settled-experiment cleanup rule deleted its losing arms wholesale: the experimental toggle, the tri angle and palm-depth holds, the articulation-source hysteresis, and the post-fusion one-euro cascade for hands (dead by construction once estimator poses bypassed it) - along with their config keys, UI, and tests, whose guarantees moved to the estimator's own test suite. The classic extraction survives only as the estimator's seed, its fallback, and the output for uncalibrated cameras.
 
 ## Cross-cutting lessons
 

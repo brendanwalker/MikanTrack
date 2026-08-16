@@ -315,11 +315,6 @@ HandFusionConfig makeHandFusionConfig(const AppConfig& config)
 	fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
 	fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
 	fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
-	fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;
-	fusionConfig.palmMinCutoff= config.tracking.palmMinCutoff;
-	fusionConfig.palmBeta= config.tracking.palmBeta;
-	fusionConfig.angleMinCutoff= config.tracking.angleMinCutoff;
-	fusionConfig.angleBeta= config.tracking.angleBeta;
 	fusionConfig.triangulationEnabled= config.fusion.triangulationEnabled;
 	fusionConfig.triangulationMaxResidualPx= config.fusion.triangulationMaxResidualPx;
 	fusionConfig.residualReferencePx= config.fusion.residualReferencePx;
@@ -329,7 +324,6 @@ HandFusionConfig makeHandFusionConfig(const AppConfig& config)
 		fusionConfig.fusedRestAngles[sideIndex]= config.fusedRestAngles.angles[sideIndex];
 	}
 
-	fusionConfig.estimatorEnabled= config.fusion.estimatorEnabled;
 	fusionConfig.estimator.palmPosSigmaMPerS= config.fusion.estimatorPalmPosSigmaMPerS;
 	fusionConfig.estimator.palmRotSigmaRadPerS= config.fusion.estimatorPalmRotSigmaRadPerS;
 	fusionConfig.estimator.angleSigmaRadPerS= config.fusion.estimatorAngleSigmaRadPerS;
@@ -495,7 +489,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
 	config.fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
 	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
-	config.fusion.estimatorEnabled= fu.value("estimatorEnabled", false);
 	config.fusion.estimatorPalmPosSigmaMPerS= fu.value("estimatorPalmPosSigmaMPerS", 0.3f);
 	config.fusion.estimatorPalmRotSigmaRadPerS= fu.value("estimatorPalmRotSigmaRadPerS", 2.f);
 	config.fusion.estimatorAngleSigmaRadPerS= fu.value("estimatorAngleSigmaRadPerS", 2.5f);
@@ -568,11 +561,6 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.tracking.detectorIntervalFrames= tr.value("detectorIntervalFrames", 30);
 	config.tracking.palmScoreThresholdRelaxed= tr.value("palmScoreThresholdRelaxed", 0.25f);
 	config.tracking.useRealSenseDepth= tr.value("useRealSenseDepth", true);
-	config.tracking.palmMinCutoff= tr.value("palmMinCutoff", 3.0f);
-	config.tracking.palmBeta= tr.value("palmBeta", 0.1f);
-	config.tracking.angleMinCutoff= tr.value("angleMinCutoff", 0.75f);
-	config.tracking.angleBeta= tr.value("angleBeta", 0.02f);
-	config.tracking.smoothingEnabled= tr.value("smoothingEnabled", true);
 	config.tracking.onnxEp= tr.value("onnxEp", "directml");
 
 	const json& os= j.value("osc", json::object());
@@ -608,7 +596,6 @@ std::string AppConfig::toJsonString() const
 		{"triangulationEnabled", fusion.triangulationEnabled},
 		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
 		{"residualReferencePx", fusion.residualReferencePx},
-		{"estimatorEnabled", fusion.estimatorEnabled},
 		{"estimatorPalmPosSigmaMPerS", fusion.estimatorPalmPosSigmaMPerS},
 		{"estimatorPalmRotSigmaRadPerS", fusion.estimatorPalmRotSigmaRadPerS},
 		{"estimatorAngleSigmaRadPerS", fusion.estimatorAngleSigmaRadPerS},
@@ -686,11 +673,6 @@ std::string AppConfig::toJsonString() const
 		{"detectorIntervalFrames", tracking.detectorIntervalFrames},
 		{"palmScoreThresholdRelaxed", tracking.palmScoreThresholdRelaxed},
 		{"useRealSenseDepth", tracking.useRealSenseDepth},
-		{"palmMinCutoff", tracking.palmMinCutoff},
-		{"palmBeta", tracking.palmBeta},
-		{"angleMinCutoff", tracking.angleMinCutoff},
-		{"angleBeta", tracking.angleBeta},
-		{"smoothingEnabled", tracking.smoothingEnabled},
 		{"onnxEp", tracking.onnxEp},
 	};
 

@@ -374,10 +374,6 @@ void TimelinePanel::drawWhatIfSection()
 	HandFusionConfig& fusion= m_whatIfParams.fusionConfig;
 	ImGui::Checkbox("Triangulation", &fusion.triangulationEnabled);
 	ImGui::SameLine();
-	ImGui::Checkbox("Estimator", &fusion.estimatorEnabled);
-	ImGui::SameLine();
-	ImGui::Checkbox("Smoothing", &fusion.smoothingEnabled);
-	ImGui::SameLine();
 	ImGui::Checkbox("Use depth", &m_whatIfParams.bUseRecordedDepth);
 	ImGui::SameLine();
 	ImGui::Checkbox("Rest angles", &m_whatIfParams.bApplyRestAngles);
@@ -397,10 +393,6 @@ void TimelinePanel::drawWhatIfSection()
 	float stalenessMs= (float)fusion.stalenessWindowMs;
 	if (ImGui::SliderFloat("Staleness window", &stalenessMs, 20.f, 200.f, "%.0f ms"))
 		fusion.stalenessWindowMs= stalenessMs;
-	ImGui::SliderFloat("Palm min cutoff", &fusion.palmMinCutoff, 0.1f, 10.f, "%.2f Hz");
-	ImGui::SliderFloat("Palm beta", &fusion.palmBeta, 0.f, 0.5f, "%.3f");
-	ImGui::SliderFloat("Angle min cutoff", &fusion.angleMinCutoff, 0.1f, 5.f, "%.2f Hz");
-	ImGui::SliderFloat("Angle beta", &fusion.angleBeta, 0.f, 0.5f, "%.3f");
 	ImGui::SliderFloat("Hand scale x", &m_whatIfParams.refLengthScale, 0.8f, 1.2f, "%.3f");
 
 	if (ImGui::Button("Re-simulate", ImVec2(-1, 0)))

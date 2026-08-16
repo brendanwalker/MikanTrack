@@ -36,14 +36,6 @@ static constexpr float kVoteVetoDecisiveness= 0.8f; // both this decisive + oppo
 static constexpr float kVoteVetoMinDistM= 0.06f;    // ...unless practically the same point
 // Single-cluster side stickiness (affinity units, on top of votes/temporal)
 static constexpr float kSoloSideStickiness= 0.75f;
-// Articulation-source hysteresis (non-triangulated multi-camera path): a
-// challenger camera must beat the incumbent's weight by this margin for this
-// many consecutive fuses before the orientation/angle source switches
-static constexpr float kArticulationSwitchMargin= 1.2f;
-static constexpr int kArticulationSwitchFrames= 5;
-// Triangulated angle + palm-depth hold across brief mono fallbacks (see
-// m_lastTriAngles / m_lastTriPalmWorld)
-static constexpr double kTriAngleHoldMs= 300.0;
 // Rescue-pool floor: a low-presence hand may still contribute usable 2D
 // landmarks as the second triangulation view (the residual is the judge),
 // but below this even the image points are guesses
@@ -65,28 +57,10 @@ void HandFusion::configure(const HandFusionConfig& config)
 
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		m_positionFilters[sideIndex].configure(config.palmMinCutoff, config.palmBeta, 1.f);
-		m_positionFilters[sideIndex].reset();
-		for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
-		{
-			filter.configure(config.palmMinCutoff, config.palmBeta, 1.f);
-			filter.reset();
-		}
-		for (OneEuroFilter& filter : m_angleFilters[sideIndex])
-		{
-			filter.configure(config.angleMinCutoff, config.angleBeta, 1.f);
-			filter.reset();
-		}
-		m_lastFilteredQuat[sideIndex]= glm::quat(1, 0, 0, 0);
 		m_bSideWasTracked[sideIndex]= false;
 		m_bLastFusedPalmValid[sideIndex]= false;
 		m_lastTrackedMs[sideIndex]= -1e12;
-		m_articulationSource[sideIndex]= -1;
-		m_articulationChallenger[sideIndex]= -1;
-		m_articulationChallengerFrames[sideIndex]= 0;
-		m_lastTriTimestampMs[sideIndex]= -1e12;
 	}
-	m_lastTimestampMs= -1.0;
 	m_lastSoloSide= -1;
 	m_jitterTrackers.clear();
 	m_stereoScaleCorrection= 1.f;
@@ -102,21 +76,17 @@ void HandFusion::resetTransientState()
 	// configure() resets the valid/initialized flags but leaves these VALUES
 	// behind. Replay runs on freshly constructed (zeroed) instances, so live
 	// must zero them too - a flag-guarded stale value that never influences
-	// output is still fine, but a stale palmar normal or held tri angle set
-	// would diverge the first frames after a hand reacquisition.
+	// output is still fine, but a stale palmar normal would diverge the first
+	// frames after a hand reacquisition.
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		m_triPalmarMemory[sideIndex].reset();
 		m_rawTriAngles[sideIndex]= {};
 		m_bRawTriAnglesValid[sideIndex]= false;
-		m_lastTriAngles[sideIndex]= {};
-		m_lastTriSkeleton[sideIndex]= HandSkeleton();
-		m_lastTriPalmWorld[sideIndex]= glm::vec3(0.f);
 		m_lastFusedPalm[sideIndex]= glm::vec3(0.f);
 		m_dominantCamera[sideIndex]= -1;
 		m_estimatorSkeleton[sideIndex]= HandSkeleton();
 		m_bEstimatorSkeletonValid[sideIndex]= false;
-		m_bEstimatorProducedPose[sideIndex]= false;
 		m_estimatorJitterM[sideIndex]= 0.f;
 	}
 	m_estimator.resetAll();
@@ -809,13 +779,6 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 		}
 	}
 
-	// Arm the angle + palm-depth holds for brief tri->mono fallbacks
-	// (streamed convention: post rest-offset)
-	m_lastTriAngles[(int)side]= outPose.fingers;
-	m_lastTriSkeleton[(int)side]= outPose.skeleton;
-	m_lastTriPalmWorld[(int)side]= outPose.palmPositionWorld;
-	m_lastTriTimestampMs[(int)side]= m_fuseTimestampMs;
-
 	cluster.triangulated= true;
 	return true;
 }
@@ -829,8 +792,6 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	m_bStereoScaleFresh= false;
 	m_bRawTriAnglesValid[0]= false;
 	m_bRawTriAnglesValid[1]= false;
-	m_bEstimatorProducedPose[0]= false;
-	m_bEstimatorProducedPose[1]= false;
 
 	// Carry frame bookkeeping from the freshest contributing camera
 	const CameraFrameResult* freshest= nullptr;
@@ -1056,18 +1017,16 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		// (keep the last position when untracked - it decays naturally via distance)
 	}
 
-	applySmoothing(outFused);
+	updateTrackingHousekeeping(outFused);
 }
 
 void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose)
 {
-	// The classic extraction always runs: with the estimator off it IS the
-	// output; with it on it advances the shared bookkeeping and provides the
-	// seed/fallback pose the estimator refines
+	// The classic extraction always runs first: it advances the shared
+	// bookkeeping and provides the seed/fallback pose the estimator refines
+	// (and stays the output when the estimator has no intrinsics to fit with)
 	fuseClusterClassic(side, cluster, outHand, outPose);
-
-	if (m_config.estimatorEnabled)
-		applyEstimator(side, cluster, outHand, outPose);
+	applyEstimator(side, cluster, outHand, outPose);
 }
 
 void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose)
@@ -1109,18 +1068,18 @@ void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, Tracke
 	// between them. Keep the best single observation instead.
 	if (cluster.triVetoed)
 	{
-		applyTriAngleHold(side, outPose);
-		applyTriPositionHold(side, best, outPose);
 		outPose.tracked= true;
 		outPose.hasWorldPose= true;
 		return;
 	}
 
-	// Fallback multi-camera path (triangulation off or unavailable)
+	// Fallback multi-camera path (triangulation off or unavailable): blend
+	// the palm positions (they compose; disagreement is cm-scale) and take
+	// orientation/angles from the best-weighted camera. This output is a
+	// seed/fallback for the estimator, so per-frame source stability no
+	// longer needs its own hysteresis.
 	if (candidates.size() >= 2)
 	{
-		// Palm POSITION blends in both modes: positions compose, and the
-		// cross-camera disagreement there is cm-scale, not tens of degrees
 		float weightSum= 0.f;
 		glm::vec3 blendedPosition(0.f);
 		float maxPresence= 0.f;
@@ -1136,72 +1095,10 @@ void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, Tracke
 			outPose.presence= maxPresence;
 		}
 
-		// Select one camera as the orientation/angle source, with
-		// hysteresis: the incumbent keeps the job until a challenger beats
-		// its weight by a decisive margin for several consecutive fuses.
-		// (Without it, weight noise would flip the source frame to frame -
-		// reintroducing the switching wander that selection exists to kill.)
-		const int sideIndex= (int)side;
-		const HandCandidate* incumbent= nullptr;
-		for (const HandCandidate& candidate : candidates)
-		{
-			if (candidate.camera->cameraIndex == m_articulationSource[sideIndex])
-				incumbent= &candidate;
-		}
-
-		const HandCandidate* source= &best;
-		if (incumbent == nullptr)
-		{
-			// No incumbent in this cluster: adopt the best immediately
-			m_articulationChallengerFrames[sideIndex]= 0;
-			m_articulationChallenger[sideIndex]= -1;
-		}
-		else if (best.camera->cameraIndex != incumbent->camera->cameraIndex &&
-				 best.weight > incumbent->weight * kArticulationSwitchMargin)
-		{
-			if (m_articulationChallenger[sideIndex] == best.camera->cameraIndex)
-				++m_articulationChallengerFrames[sideIndex];
-			else
-			{
-				m_articulationChallenger[sideIndex]= best.camera->cameraIndex;
-				m_articulationChallengerFrames[sideIndex]= 1;
-			}
-
-			if (m_articulationChallengerFrames[sideIndex] < kArticulationSwitchFrames)
-				source= incumbent;
-		}
-		else
-		{
-			m_articulationChallengerFrames[sideIndex]= 0;
-			m_articulationChallenger[sideIndex]= -1;
-			source= incumbent;
-		}
-		m_articulationSource[sideIndex]= source->camera->cameraIndex;
-		m_dominantCamera[sideIndex]= source->camera->cameraIndex;
-
-		outPose.palmOrientationWorld= source->pose->palmOrientationWorld;
-		outPose.fingers= source->pose->fingers;
-		outPose.skeleton= source->pose->skeleton;
-		outHand= *source->hand;
-		outHand.side= side;
-
 		// A two-camera observation of one physical hand also triangulates the
 		// true hand scale
 		updateStereoScale(cluster);
 	}
-	else
-	{
-		m_articulationSource[(int)side]= best.camera->cameraIndex;
-		m_articulationChallengerFrames[(int)side]= 0;
-		m_articulationChallenger[(int)side]= -1;
-	}
-
-	// Any non-triangulated outcome: bridge brief tri dropouts with the last
-	// triangulated angles and palm depth instead of snapping to the mono
-	// estimate. (For the blended multi-camera position, best's view ray is an
-	// approximation - it dominated the blend weight.)
-	applyTriAngleHold(side, outPose);
-	applyTriPositionHold(side, best, outPose);
 
 	outPose.tracked= true;
 	outPose.hasWorldPose= true;
@@ -1407,116 +1304,20 @@ void HandFusion::applyEstimator(eHandSide side, HandCluster& cluster, TrackedHan
 	// Overlays and downstream consumers see the fitted geometry
 	HandStateEstimator::predictWorldLandmarks(fitted, m_estimatorSkeleton[sideIndex], outHand.worldPoints);
 	outHand.hasWorldSpace= true;
-
-	m_bEstimatorProducedPose[sideIndex]= true;
 }
 
-void HandFusion::applyTriAngleHold(eHandSide side, HandPose& outPose) const
+void HandFusion::updateTrackingHousekeeping(const TrackingFrameResult& fused)
 {
-	const double sinceTriMs= m_fuseTimestampMs - m_lastTriTimestampMs[(int)side];
-	if (sinceTriMs < 0.0 || sinceTriMs > kTriAngleHoldMs)
-		return;
-
-	outPose.fingers= m_lastTriAngles[(int)side];
-	outPose.skeleton= m_lastTriSkeleton[(int)side];
-}
-
-void HandFusion::applyTriPositionHold(eHandSide side, const HandCandidate& source, HandPose& outPose) const
-{
-	const double sinceTriMs= m_fuseTimestampMs - m_lastTriTimestampMs[(int)side];
-	if (sinceTriMs < 0.0 || sinceTriMs > kTriAngleHoldMs)
-		return;
-	if (!outPose.hasWorldPose)
-		return;
-
-	// Mono depth error lives along the observing camera's view ray while the
-	// lateral measurement stays good, so remove exactly the along-ray
-	// innovation against the last triangulated palm. A sustained mono
-	// stretch adopts the mono depth when the hold window expires, mirroring
-	// the angle hold above.
-	const glm::vec3 cameraPosWorld= cameraPositionWorld(source.camera->markerFromCamera);
-	const glm::vec3 toPalm= outPose.palmPositionWorld - cameraPosWorld;
-	const float rayLength= glm::length(toPalm);
-	if (rayLength < 1e-4f)
-		return;
-	const glm::vec3 ray= toPalm / rayLength;
-	const float alongRayInnovation=
-		glm::dot(outPose.palmPositionWorld - m_lastTriPalmWorld[(int)side], ray);
-	outPose.palmPositionWorld-= ray * alongRayInnovation;
-}
-
-void HandFusion::applySmoothing(TrackingFrameResult& ioFused)
-{
-	if (!m_config.smoothingEnabled)
-		return;
-
-	float dtSeconds= 1.f / 60.f;
-	if (m_lastTimestampMs >= 0.0 && ioFused.timestampMs > m_lastTimestampMs)
-		dtSeconds= std::clamp((float)((ioFused.timestampMs - m_lastTimestampMs) / 1000.0), 1.f / 240.f, 0.25f);
-	m_lastTimestampMs= ioFused.timestampMs;
-
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		HandPose& pose= ioFused.poses[sideIndex];
+		const HandPose& pose= fused.poses[sideIndex];
+		const bool bTracked= pose.tracked && pose.hasWorldPose;
 
-		if (pose.tracked && pose.hasWorldPose)
-		{
-			// fresh acquisition: drop stale filter state
-			if (!m_bSideWasTracked[sideIndex])
-			{
-				// ...including the remembered palmar side, which describes
-				// where the hand WAS
-				m_triPalmarMemory[sideIndex].reset();
-				m_positionFilters[sideIndex].reset();
-				for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
-					filter.reset();
-				for (OneEuroFilter& filter : m_angleFilters[sideIndex])
-					filter.reset();
-				m_lastFilteredQuat[sideIndex]= pose.palmOrientationWorld;
-			}
+		// Fresh acquisition: the remembered palmar side describes where the
+		// hand WAS, and a reacquired hand may be anywhere
+		if (bTracked && !m_bSideWasTracked[sideIndex])
+			m_triPalmarMemory[sideIndex].reset();
 
-			// An estimator-produced pose is already temporally regularized by
-			// its own prior - cascading the one-euro on top would only add
-			// lag. Keep the filters reset so a fallback frame starts clean
-			// instead of filtering against a stale history.
-			if (m_bEstimatorProducedPose[sideIndex])
-			{
-				m_positionFilters[sideIndex].reset();
-				for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
-					filter.reset();
-				for (OneEuroFilter& filter : m_angleFilters[sideIndex])
-					filter.reset();
-				m_lastFilteredQuat[sideIndex]= pose.palmOrientationWorld;
-				m_bSideWasTracked[sideIndex]= true;
-				continue;
-			}
-
-			pose.palmPositionWorld= m_positionFilters[sideIndex].filter(pose.palmPositionWorld, dtSeconds);
-
-			// Quaternion: hemisphere-align against the last filtered value,
-			// filter components, renormalize
-			glm::quat quat= pose.palmOrientationWorld;
-			if (glm::dot(quat, m_lastFilteredQuat[sideIndex]) < 0.f)
-				quat= -quat;
-			glm::quat filtered(
-				m_quaternionFilters[sideIndex][0].filter(quat.w, dtSeconds),
-				m_quaternionFilters[sideIndex][1].filter(quat.x, dtSeconds),
-				m_quaternionFilters[sideIndex][2].filter(quat.y, dtSeconds),
-				m_quaternionFilters[sideIndex][3].filter(quat.z, dtSeconds));
-			filtered= glm::normalize(filtered);
-			pose.palmOrientationWorld= filtered;
-			m_lastFilteredQuat[sideIndex]= filtered;
-
-			for (int finger= 0; finger < FINGER_COUNT; ++finger)
-			{
-				FingerAngles& angles= pose.fingers[finger];
-				angles.lateral= m_angleFilters[sideIndex][finger * 4 + 0].filter(angles.lateral, dtSeconds);
-				angles.proximal= m_angleFilters[sideIndex][finger * 4 + 1].filter(angles.proximal, dtSeconds);
-				angles.intermediate= m_angleFilters[sideIndex][finger * 4 + 2].filter(angles.intermediate, dtSeconds);
-				angles.distal= m_angleFilters[sideIndex][finger * 4 + 3].filter(angles.distal, dtSeconds);
-			}
-		}
-
-		m_bSideWasTracked[sideIndex]= pose.tracked && pose.hasWorldPose;
+		m_bSideWasTracked[sideIndex]= bTracked;
 	}
 }

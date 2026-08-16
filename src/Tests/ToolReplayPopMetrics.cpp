@@ -2,17 +2,16 @@
 
 #include "HandStateEstimator.h"
 
-// Pop metrics: replays recordings twice - as recorded (baseline) and with the
-// hand state estimator forced on - and reports the discontinuity statistics of
-// the fused output side by side. This is the objective gate for the estimator:
-// pops (palm steps, orientation snaps, palmar flips, angle jumps) must go
-// down while the FK reprojection residual - the anti-cheat metric, since a
-// frozen hand has zero pops - must not regress.
+// Pop metrics: replays recordings twice - as recorded, and as a what-if pass
+// with an optional injected angle prior - and reports the discontinuity
+// statistics of the fused output side by side: palm steps, orientation snaps,
+// palmar flips, angle jumps, plus the FK reprojection residual (the
+// anti-cheat metric, since a frozen hand has zero pops).
 //
 //   --replay-popmetrics <recording.jsonl>... [prior-config.json]
 //
 // The optional .json argument is a config carrying a fitted angle prior
-// (--fit-angle-prior output); it is injected into the estimator pass, so a
+// (--fit-angle-prior output); it is injected into the what-if pass, so a
 // prior can be A/B'd against recordings whose headers predate it.
 
 namespace
@@ -365,7 +364,7 @@ static int runReplayPopMetricsTool(const TestArgs& args)
 		MIKAN_LOG_INFO("replay-popmetrics")
 			<< "Injecting angle prior from " << priorConfigPath << " (left="
 			<< priorConfig.anglePrior.present[0] << " right=" << priorConfig.anglePrior.present[1]
-			<< ") into the estimator pass";
+			<< ") into the what-if pass";
 	}
 
 	int result= 0;
@@ -384,7 +383,6 @@ static int runReplayPopMetricsTool(const TestArgs& args)
 		replay.runAll();
 
 		TrackingReplay::WhatIfParams params= replay.makeDefaultWhatIfParams();
-		params.fusionConfig.estimatorEnabled= true;
 		if (bHavePriorConfig)
 		{
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -462,8 +460,8 @@ static int runReplayPopMetricsTool(const TestArgs& args)
 			<< " frames, " << config.cameraCount() << " cameras):";
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{
-			logSideMetrics("baseline ", sideIndex, baseline[sideIndex]);
-			logSideMetrics("estimator", sideIndex, estimator[sideIndex]);
+			logSideMetrics("recorded", sideIndex, baseline[sideIndex]);
+			logSideMetrics("what-if ", sideIndex, estimator[sideIndex]);
 		}
 	}
 

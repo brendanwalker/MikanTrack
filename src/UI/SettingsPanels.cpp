@@ -292,15 +292,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		"depth instead of the monocular PnP estimate. Fingertip depth holes\n"
 		"fall back to parent-joint depth. No effect on plain webcams.");
 
-	ImGui::SeparatorText("Smoothing");
-	bChanged|= ImGui::Checkbox("Enabled", &tracking.smoothingEnabled);
-	ImGui::TextDisabled("Palm transform (latency is visible - keep responsive)");
-	bChanged|= ImGui::SliderFloat("Palm min cutoff", &tracking.palmMinCutoff, 0.1f, 10.f, "%.2f Hz");
-	bChanged|= ImGui::SliderFloat("Palm beta", &tracking.palmBeta, 0.f, 0.5f, "%.3f");
-	ImGui::TextDisabled("Finger angles (latency is invisible - keep steady)");
-	bChanged|= ImGui::SliderFloat("Angle min cutoff", &tracking.angleMinCutoff, 0.1f, 5.f, "%.2f Hz");
-	bChanged|= ImGui::SliderFloat("Angle beta", &tracking.angleBeta, 0.f, 0.5f, "%.3f");
-
 	if (config->cameraCount() > 1)
 	{
 		ImGui::SeparatorText("Fusion");
@@ -331,16 +322,6 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"triangulate to garbage that projects nowhere near what either\n"
 			"camera saw, so this doubles as a correspondence check.");
 		ImGui::EndDisabled();
-
-		bChanged|= ImGui::Checkbox("Hand estimator (experimental)", &fusion.estimatorEnabled);
-		ImGui::SetItemTooltip(
-			"Angle-space state estimator: one temporally continuous hand\n"
-			"state (palm + 20 finger angles) fit to ALL fresh cameras' 2D\n"
-			"landmarks each frame. No per-frame path switching (tri vs\n"
-			"mono, stereo pair choice), so the discrete pops those switches\n"
-			"cause disappear; a lost camera just removes measurements and\n"
-			"the temporal prior holds what the rest cannot see. Replaces\n"
-			"the one-euro smoothing for hand poses while on.");
 
 		ImGui::SeparatorText("Observation Confidence");
 		bChanged|= ImGui::SliderFloat("Jitter reference", &fusion.jitterReferenceMm, 3.f, 60.f, "%.0f mm");
