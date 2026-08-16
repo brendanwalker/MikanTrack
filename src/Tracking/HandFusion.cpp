@@ -80,6 +80,8 @@ void HandFusion::configure(const HandFusionConfig& config)
 	m_jitterTrackers.clear();
 	m_stereoScaleCorrection= 1.f;
 	m_bStereoScaleFresh= false;
+
+	m_estimator.configure(config.estimator);
 }
 
 void HandFusion::resetTransientState()
@@ -101,7 +103,12 @@ void HandFusion::resetTransientState()
 		m_lastTriPalmWorld[sideIndex]= glm::vec3(0.f);
 		m_lastFusedPalm[sideIndex]= glm::vec3(0.f);
 		m_dominantCamera[sideIndex]= -1;
+		m_estimatorSkeleton[sideIndex]= HandSkeleton();
+		m_bEstimatorSkeletonValid[sideIndex]= false;
+		m_bEstimatorProducedPose[sideIndex]= false;
+		m_estimatorJitterM[sideIndex]= 0.f;
 	}
+	m_estimator.resetAll();
 	m_fuseTimestampMs= 0.0;
 	m_lastDiagnostics= FusionDiagnostics();
 }
@@ -811,6 +818,8 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 	m_bStereoScaleFresh= false;
 	m_bRawTriAnglesValid[0]= false;
 	m_bRawTriAnglesValid[1]= false;
+	m_bEstimatorProducedPose[0]= false;
+	m_bEstimatorProducedPose[1]= false;
 
 	// Carry frame bookkeeping from the freshest contributing camera
 	const CameraFrameResult* freshest= nullptr;
@@ -988,6 +997,13 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 		diagCluster.triCameraA= clusters[i].triCameraA;
 		diagCluster.triCameraB= clusters[i].triCameraB;
 		diagCluster.triParallaxDeg= clusters[i].triParallaxDeg;
+		diagCluster.estimatorUsed= clusters[i].estimatorUsed;
+		diagCluster.estimatorCameraCount= clusters[i].estimatorCameraCount;
+		diagCluster.estimatorIterations= clusters[i].estimatorIterations;
+		diagCluster.estimatorResidualBeforePx= clusters[i].estimatorResidualBeforePx;
+		diagCluster.estimatorResidualAfterPx= clusters[i].estimatorResidualAfterPx;
+		diagCluster.estimatorReseeded= clusters[i].estimatorReseeded;
+		diagCluster.estimatorHeldBadFit= clusters[i].estimatorHeldBadFit;
 	}
 
 	// Track the solo-side incumbent for the hysteresis above
@@ -1015,6 +1031,17 @@ void HandFusion::fuse(const std::vector<const CameraFrameResult*>& candidates, d
 }
 
 void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose)
+{
+	// The classic extraction always runs: with the estimator off it IS the
+	// output; with it on it advances the shared bookkeeping and provides the
+	// seed/fallback pose the estimator refines
+	fuseClusterClassic(side, cluster, outHand, outPose);
+
+	if (m_config.estimatorEnabled)
+		applyEstimator(side, cluster, outHand, outPose);
+}
+
+void HandFusion::fuseClusterClassic(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose)
 {
 	std::vector<HandCandidate>& candidates= cluster.candidates;
 
@@ -1151,6 +1178,210 @@ void HandFusion::fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& 
 	outPose.hasWorldPose= true;
 }
 
+void HandFusion::updateEstimatorSkeleton(eHandSide side, const HandSkeleton& observed)
+{
+	const int sideIndex= (int)side;
+	HandSkeleton& skeleton= m_estimatorSkeleton[sideIndex];
+	if (!m_bEstimatorSkeletonValid[sideIndex])
+	{
+		skeleton= observed;
+		m_bEstimatorSkeletonValid[sideIndex]= true;
+		return;
+	}
+
+	// Slow blend: a calibrated skeleton is constant so this converges to it
+	// immediately; an uncalibrated one is re-measured per frame and must not
+	// jitter the fit geometry (a moving skeleton reads as moving angles)
+	constexpr float kSkeletonEmaAlpha= 0.05f;
+	for (int finger= 0; finger < FINGER_COUNT; ++finger)
+	{
+		skeleton.baseInPalm[finger]=
+			glm::mix(skeleton.baseInPalm[finger], observed.baseInPalm[finger], kSkeletonEmaAlpha);
+		for (int phalanx= 0; phalanx < 3; ++phalanx)
+			skeleton.phalanxLengths[finger][phalanx]+=
+				kSkeletonEmaAlpha *
+				(observed.phalanxLengths[finger][phalanx] - skeleton.phalanxLengths[finger][phalanx]);
+	}
+	// Neutral directions are ALWAYS the flat-hand default derived from the
+	// bases (the wire convention), so rebuild rather than blend them
+	skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
+}
+
+bool HandFusion::makeEstimatorSeed(eHandSide side, const HandCluster& cluster, const HandPose& classicPose,
+								   HandStateEstimator::Pose& outSeed)
+{
+	if (!classicPose.hasWorldPose)
+		return false;
+
+	const int sideIndex= (int)side;
+	outSeed.palmPositionWorld= classicPose.palmPositionWorld;
+	outSeed.palmOrientationWorld= classicPose.palmOrientationWorld;
+
+	// The state lives in RAW angles (FK-consistent); the classic pose's
+	// fingers carry the rest offset. Best raw source first: this fuse's
+	// triangulated angles, else angles re-derived from the best observation's
+	// world landmarks, else un-offsetting the streamed angles.
+	if (m_bRawTriAnglesValid[sideIndex])
+	{
+		outSeed.rawAngles= m_rawTriAngles[sideIndex];
+		return true;
+	}
+
+	const HandCandidate* best= nullptr;
+	for (const HandCandidate& candidate : cluster.candidates)
+	{
+		if (best == nullptr || candidate.weight > best->weight)
+			best= &candidate;
+	}
+	if (best != nullptr && best->hand->hasWorldSpace)
+	{
+		HandPoseModel::computeFingerAngles(best->hand->worldPoints, side,
+										   m_estimatorSkeleton[sideIndex].neutralDirInPalm,
+										   outSeed.rawAngles, &m_triPalmarMemory[sideIndex]);
+		return true;
+	}
+
+	outSeed.rawAngles= classicPose.fingers;
+	if (m_config.bHasFusedRestAngles[sideIndex])
+	{
+		const std::array<FingerAngles, FINGER_COUNT>& rest= m_config.fusedRestAngles[sideIndex];
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			outSeed.rawAngles[finger].lateral+= rest[finger].lateral;
+			outSeed.rawAngles[finger].proximal+= rest[finger].proximal;
+			outSeed.rawAngles[finger].intermediate+= rest[finger].intermediate;
+			outSeed.rawAngles[finger].distal+= rest[finger].distal;
+		}
+	}
+	return true;
+}
+
+void HandFusion::applyEstimator(eHandSide side, HandCluster& cluster, TrackedHand& outHand,
+								HandPose& outPose)
+{
+	const int sideIndex= (int)side;
+
+	const HandCandidate* best= nullptr;
+	for (const HandCandidate& candidate : cluster.candidates)
+	{
+		if (best == nullptr || candidate.weight > best->weight)
+			best= &candidate;
+	}
+	if (best == nullptr)
+		return;
+
+	// The per-camera poses already carry the calibrated skeleton when one
+	// exists, so the best pose's skeleton is calibrated-when-present
+	updateEstimatorSkeleton(side, best->pose->skeleton);
+
+	// Measurement rows: every tracked observation with intrinsics. A residual-
+	// vetoed cluster is probably two different physical hands, so only the
+	// best observation enters (the same call the classic path makes).
+	std::vector<HandStateEstimator::Observation> observations;
+	observations.reserve(cluster.candidates.size());
+	double freshestTimestampMs= -1e12;
+	float maxPresence= 0.f;
+	for (const HandCandidate& candidate : cluster.candidates)
+	{
+		if (cluster.triVetoed && &candidate != best)
+			continue;
+		if (!candidate.camera->hasIntrinsics || !candidate.hand->tracked)
+			continue;
+
+		HandStateEstimator::Observation observation;
+		observation.cameraIndex= candidate.camera->cameraIndex;
+		observation.timestampMs= candidate.camera->timestampMs;
+		observation.presence= candidate.pose->presence;
+		observation.markerFromCamera= candidate.camera->markerFromCamera;
+		observation.fx= candidate.camera->fx;
+		observation.fy= candidate.camera->fy;
+		observation.cx= candidate.camera->cx;
+		observation.cy= candidate.camera->cy;
+		observation.imagePoints= &candidate.hand->imagePoints;
+		observations.push_back(observation);
+
+		freshestTimestampMs= std::max(freshestTimestampMs, candidate.camera->timestampMs);
+		maxPresence= std::max(maxPresence, candidate.pose->presence);
+	}
+	if (observations.empty())
+		return;
+
+	// Seed only matters when the state is cold (cold start or after a
+	// divergence drop); building it costs an angle extraction, so skip it
+	// while the state is alive
+	HandStateEstimator::Pose seed;
+	bool bHaveSeed= false;
+	if (!m_estimator.hasState(side))
+		bHaveSeed= makeEstimatorSeed(side, cluster, outPose, seed);
+
+	HandStateEstimator::Pose fitted;
+	const HandStateEstimator::UpdateResult update= m_estimator.update(
+		side, observations, m_fuseTimestampMs, bHaveSeed ? &seed : nullptr,
+		m_estimatorSkeleton[sideIndex], fitted);
+
+	cluster.estimatorUsed= update.bUpdated;
+	cluster.estimatorCameraCount= update.cameraCount;
+	cluster.estimatorIterations= update.iterations;
+	cluster.estimatorResidualBeforePx= update.residualBeforePx;
+	cluster.estimatorResidualAfterPx= update.residualAfterPx;
+	cluster.estimatorReseeded= update.bReseeded;
+	cluster.estimatorHeldBadFit= update.bHeldBadFit;
+
+	// Divergence (or no state and no seed): the classic pose stands this
+	// fuse and the next one reseeds
+	if (!update.bUpdated)
+		return;
+
+	outPose.palmPositionWorld= fitted.palmPositionWorld;
+	outPose.palmOrientationWorld= fitted.palmOrientationWorld;
+	outPose.hasWorldPose= true;
+	outPose.tracked= true;
+	outPose.skeleton= m_estimatorSkeleton[sideIndex];
+	outPose.stereoTriangulated= update.cameraCount >= 2;
+	outPose.presence= maxPresence;
+
+	// Rest capture reads raw multi-view angles exactly as it does from the
+	// triangulated path
+	if (update.cameraCount >= 2)
+	{
+		m_rawTriAngles[sideIndex]= fitted.rawAngles;
+		m_bRawTriAnglesValid[sideIndex]= true;
+	}
+
+	// Streamed convention: rest offset applied at output, state stays raw
+	std::array<FingerAngles, FINGER_COUNT> streamedAngles= fitted.rawAngles;
+	if (m_config.bHasFusedRestAngles[sideIndex])
+	{
+		const std::array<FingerAngles, FINGER_COUNT>& rest= m_config.fusedRestAngles[sideIndex];
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			streamedAngles[finger].lateral-= rest[finger].lateral;
+			streamedAngles[finger].proximal-= rest[finger].proximal;
+			streamedAngles[finger].intermediate-= rest[finger].intermediate;
+			streamedAngles[finger].distal-= rest[finger].distal;
+		}
+	}
+	outPose.fingers= streamedAngles;
+
+	// Confidence = presence x measured output stability x fit residual factor
+	// (same shape as the triangulated path's; the estimator gets its own
+	// jitter tracker key so the classic path's tracker history stays intact)
+	if (update.cameraCount > 0)
+		m_estimatorJitterM[sideIndex]=
+			updateJitter(-2, sideIndex, fitted.palmPositionWorld, freshestTimestampMs);
+	const float stability= stabilityFactor(m_estimatorJitterM[sideIndex], m_config.jitterReferenceM);
+	outPose.confidence= std::clamp(
+		maxPresence * stability *
+			residualFactor(update.residualAfterPx, m_config.residualReferencePx),
+		0.f, 1.f);
+
+	// Overlays and downstream consumers see the fitted geometry
+	HandStateEstimator::predictWorldLandmarks(fitted, m_estimatorSkeleton[sideIndex], outHand.worldPoints);
+	outHand.hasWorldSpace= true;
+
+	m_bEstimatorProducedPose[sideIndex]= true;
+}
+
 void HandFusion::applyTriAngleHold(eHandSide side, HandPose& outPose) const
 {
 	const double sinceTriMs= m_fuseTimestampMs - m_lastTriTimestampMs[(int)side];
@@ -1213,6 +1444,22 @@ void HandFusion::applySmoothing(TrackingFrameResult& ioFused)
 				for (OneEuroFilter& filter : m_angleFilters[sideIndex])
 					filter.reset();
 				m_lastFilteredQuat[sideIndex]= pose.palmOrientationWorld;
+			}
+
+			// An estimator-produced pose is already temporally regularized by
+			// its own prior - cascading the one-euro on top would only add
+			// lag. Keep the filters reset so a fallback frame starts clean
+			// instead of filtering against a stale history.
+			if (m_bEstimatorProducedPose[sideIndex])
+			{
+				m_positionFilters[sideIndex].reset();
+				for (OneEuroFilter& filter : m_quaternionFilters[sideIndex])
+					filter.reset();
+				for (OneEuroFilter& filter : m_angleFilters[sideIndex])
+					filter.reset();
+				m_lastFilteredQuat[sideIndex]= pose.palmOrientationWorld;
+				m_bSideWasTracked[sideIndex]= true;
+				continue;
 			}
 
 			pose.palmPositionWorld= m_positionFilters[sideIndex].filter(pose.palmPositionWorld, dtSeconds);

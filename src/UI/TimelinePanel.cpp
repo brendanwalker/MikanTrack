@@ -374,6 +374,8 @@ void TimelinePanel::drawWhatIfSection()
 	HandFusionConfig& fusion= m_whatIfParams.fusionConfig;
 	ImGui::Checkbox("Triangulation", &fusion.triangulationEnabled);
 	ImGui::SameLine();
+	ImGui::Checkbox("Estimator", &fusion.estimatorEnabled);
+	ImGui::SameLine();
 	ImGui::Checkbox("Smoothing", &fusion.smoothingEnabled);
 	ImGui::SameLine();
 	ImGui::Checkbox("Use depth", &m_whatIfParams.bUseRecordedDepth);

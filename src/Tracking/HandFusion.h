@@ -7,6 +7,7 @@
 #include "glm/ext/matrix_double4x4.hpp"
 
 #include "HandPoseModel.h"
+#include "HandStateEstimator.h"
 #include "OneEuroFilter.h"
 #include "TrackingTypes.h"
 
@@ -83,6 +84,14 @@ struct HandFusionConfig
 	// which triangulation does not have).
 	std::array<std::array<FingerAngles, FINGER_COUNT>, 2> fusedRestAngles{};
 	bool bHasFusedRestAngles[2]= {false, false};
+
+	// Angle-space multi-view state estimator: when enabled, a temporally
+	// continuous per-hand state is fit to all fresh cameras' 2D landmarks and
+	// overrides the per-frame tri/mono pose paths (which keep running as the
+	// seed and fallback). The estimator's temporal prior replaces the one-euro
+	// smoothing for the hand poses it produces.
+	bool estimatorEnabled= false;
+	HandStateEstimatorConfig estimator;
 };
 
 // Introspection into the last fuse() call's clustering + side assignment,
@@ -119,6 +128,15 @@ struct FusionDiagnostics
 		int triCameraA= -1;            // which two cameras were paired
 		int triCameraB= -1;
 		float triParallaxDeg= 0.f;     // angle their rays subtend at the hand
+
+		// State-estimator outcome (estimatorEnabled only)
+		bool estimatorUsed= false;         // estimator pose overrode the classic one
+		int estimatorCameraCount= 0;       // cameras whose rows entered the fit
+		int estimatorIterations= 0;
+		float estimatorResidualBeforePx= 0.f; // mean px residual at prediction
+		float estimatorResidualAfterPx= 0.f;  // ...and at the solution
+		bool estimatorReseeded= false;     // state (re)seeded this fuse
+		bool estimatorHeldBadFit= false;   // fit over the guard: previous state streamed
 	};
 
 	int totalObservations= 0;
@@ -242,6 +260,15 @@ private:
 		int triCameraA= -1; // the pair that was triangulated, and the parallax
 		int triCameraB= -1; // it subtended - a pair chosen for its per-camera
 		float triParallaxDeg= 0.f; // scores alone reconstructs badly up close
+
+		// Estimator outcome (mirrored into FusionDiagnostics after fusing)
+		bool estimatorUsed= false;
+		int estimatorCameraCount= 0;
+		int estimatorIterations= 0;
+		float estimatorResidualBeforePx= 0.f;
+		float estimatorResidualAfterPx= 0.f;
+		bool estimatorReseeded= false;
+		bool estimatorHeldBadFit= false;
 	};
 
 	// Cost of merging an observation into a cluster (lateral-aware position
@@ -289,6 +316,22 @@ private:
 	// provides the observing camera for the ray.
 	void applyTriPositionHold(eHandSide side, const HandCandidate& source, HandPose& outPose) const;
 	void fuseCluster(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// The per-frame extraction paths (tri / vetoed / blend / mono) - the whole
+	// pre-estimator fuseCluster body. With the estimator on it still runs
+	// every fuse: it advances the shared bookkeeping (jitter trackers, holds,
+	// stereo scale, palmar memories) and its output is the estimator's seed
+	// and fallback.
+	void fuseClusterClassic(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// Fits the state estimator to the cluster's observations and overrides the
+	// classic pose on success (records the outcome on the cluster either way)
+	void applyEstimator(eHandSide side, HandCluster& cluster, TrackedHand& outHand, HandPose& outPose);
+	// Cold-start seed for the estimator, from the classic output plus the best
+	// available RAW angles (streamed angles carry the rest offset)
+	bool makeEstimatorSeed(eHandSide side, const HandCluster& cluster, const HandPose& classicPose,
+						   HandStateEstimator::Pose& outSeed);
+	// FK skeleton the estimator fits with: adopted then slowly blended, so an
+	// uncalibrated (per-frame) skeleton cannot jitter the fit geometry
+	void updateEstimatorSkeleton(eHandSide side, const HandSkeleton& observed);
 	void applySmoothing(TrackingFrameResult& ioFused);
 
 	HandFusionConfig m_config;
@@ -366,6 +409,16 @@ private:
 
 	float m_stereoScaleCorrection= 1.f;
 	bool m_bStereoScaleFresh= false;
+
+	// Angle-space multi-view state estimator (estimatorEnabled only) + the
+	// stable FK skeleton it fits with and the per-side outcome of this fuse
+	// (which sides applySmoothing must leave alone - the estimator's temporal
+	// prior is the smoother, cascading the one-euro would add lag)
+	HandStateEstimator m_estimator;
+	HandSkeleton m_estimatorSkeleton[2];
+	bool m_bEstimatorSkeletonValid[2]= {false, false};
+	bool m_bEstimatorProducedPose[2]= {false, false};
+	float m_estimatorJitterM[2]= {0.f, 0.f};
 
 	FusionDiagnostics m_lastDiagnostics;
 };

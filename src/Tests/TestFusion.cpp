@@ -922,6 +922,161 @@ static int runFusionTest(const TestArgs& args)
 		}
 	}
 
+	// (s) State estimator end to end through HandFusion: two projective
+	// cameras track a static hand whose MONOCULAR poses carry a 3cm along-ray
+	// depth error, then one camera goes stale for good. The classic path pops
+	// once its tri position hold expires and the mono depth gets adopted; the
+	// estimator just loses measurement rows, so the output must not step.
+	// The estimator-off run is the negative control proving the scenario
+	// really provokes that pop.
+	{
+		HandSkeleton skeleton;
+		const float baseY[FINGER_COUNT]= {0.045f, 0.03f, 0.f, -0.01f, -0.03f};
+		const float baseX[FINGER_COUNT]= {-0.01f, 0.035f, 0.04f, 0.035f, 0.03f};
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			skeleton.baseInPalm[finger]= glm::vec3(baseX[finger], baseY[finger], 0.f);
+			skeleton.phalanxLengths[finger]= {0.045f, 0.027f, 0.022f};
+		}
+		skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
+
+		std::array<FingerAngles, FINGER_COUNT> anglesTruth{};
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			anglesTruth[finger].proximal= 0.3f;
+			anglesTruth[finger].intermediate= 0.3f;
+			anglesTruth[finger].distal= 0.15f;
+		}
+
+		std::array<glm::vec3, HAND_LANDMARK_COUNT> worldHand;
+		{
+			glm::mat4 palmTransform(1.f);
+			palmTransform[3]= glm::vec4(palmTruth, 1.f);
+			std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
+			HandPoseModel::buildFingerJoints(palmTransform, skeleton, anglesTruth, joints);
+			worldHand[(int)eHandLandmark::WRIST]=
+				palmTruth + glm::vec3(-skeleton.baseInPalm[(int)eFinger::Middle].x, 0.f, 0.f);
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+				for (int joint= 0; joint < 4; ++joint)
+					worldHand[FINGER_JOINTS[finger][joint]]= joints[finger][joint];
+		}
+
+		auto makeLookAtCamera= [](const glm::vec3& cameraPos, const glm::vec3& target) {
+			const glm::vec3 z= glm::normalize(target - cameraPos);
+			const glm::vec3 x= glm::normalize(glm::cross(glm::vec3(0.f, 1.f, 0.f), z));
+			const glm::vec3 y= glm::cross(z, x);
+			glm::dmat4 markerFromCamera(1.0);
+			markerFromCamera[0]= glm::dvec4(x, 0.0);
+			markerFromCamera[1]= glm::dvec4(y, 0.0);
+			markerFromCamera[2]= glm::dvec4(z, 0.0);
+			markerFromCamera[3]= glm::dvec4(cameraPos, 1.0);
+			return markerFromCamera;
+		};
+
+		const float fx= 600.f, fy= 600.f, cx= 640.f, cy= 360.f;
+		const glm::vec3 camAPos= palmTruth + glm::vec3(0.f, 0.f, 0.8f);
+		const glm::vec3 camBPos= palmTruth + glm::vec3(0.f, -0.55f, 0.4f);
+
+		auto makeEstimatorResult= [&](int cameraIndex, const glm::vec3& cameraPos, double timestampMs) {
+			const glm::dmat4 markerFromCamera= makeLookAtCamera(cameraPos, palmTruth);
+			const glm::dmat4 cameraFromWorld= glm::inverse(markerFromCamera);
+
+			TrackingFrameResult frame;
+			TrackedHand& hand= frame.hands[(int)eHandSide::Right];
+			hand.tracked= true;
+			hand.side= eHandSide::Right;
+			hand.presence= 0.9f;
+			hand.handednessScore= 0.9f;
+			hand.rightProb= 0.9f;
+			for (int i= 0; i < HAND_LANDMARK_COUNT; ++i)
+			{
+				const glm::dvec4 camPoint= cameraFromWorld * glm::dvec4(glm::dvec3(worldHand[i]), 1.0);
+				hand.imagePoints[i]= glm::vec3((float)(fx * camPoint.x / camPoint.z + cx),
+											   (float)(fy * camPoint.y / camPoint.z + cy), 0.f);
+			}
+			hand.worldPoints= worldHand;
+			hand.hasWorldSpace= true;
+
+			HandPose& pose= frame.poses[(int)eHandSide::Right];
+			pose.tracked= true;
+			pose.side= eHandSide::Right;
+			pose.presence= 0.9f;
+			pose.hasWorldPose= true;
+			// Monocular depth error: 3cm along the observing camera's view ray
+			pose.palmPositionWorld= palmTruth + glm::normalize(palmTruth - cameraPos) * 0.03f;
+			pose.palmOrientationWorld= glm::quat(1.f, 0.f, 0.f, 0.f);
+			pose.fingers= anglesTruth;
+			pose.skeleton= skeleton;
+
+			CameraFrameResult camera;
+			camera.cameraIndex= cameraIndex;
+			camera.valid= true;
+			camera.timestampMs= timestampMs;
+			camera.hasExtrinsics= true;
+			camera.markerFromCamera= markerFromCamera;
+			camera.hasIntrinsics= true;
+			camera.fx= fx;
+			camera.fy= fy;
+			camera.cx= cx;
+			camera.cy= cy;
+			camera.result= frame;
+			return camera;
+		};
+
+		// One full run: 10 two-camera fuses, then camera B's mirror goes stale
+		// (frozen timestamp, exactly like a live lastResult mirror) for 15
+		// more. Returns the worst frame-to-frame palm step once tracking is
+		// warm, measured across the whole sequence including the transition.
+		auto runSequence= [&](bool bEstimator) {
+			HandFusionConfig sequenceConfig= fusionConfig;
+			sequenceConfig.estimatorEnabled= bEstimator;
+			HandFusion sequenceFusion;
+			sequenceFusion.configure(sequenceConfig);
+
+			float worstStepM= 0.f;
+			glm::vec3 previousPalm(0.f);
+			bool bHavePrevious= false;
+			const double staleTimestamp= now + 9 * 33.0;
+			for (int step= 0; step < 25; ++step)
+			{
+				const double stepTime= now + step * 33.0;
+				const auto camA= makeEstimatorResult(0, camAPos, stepTime);
+				const auto camB=
+					makeEstimatorResult(1, camBPos, std::min(stepTime, staleTimestamp));
+				TrackingFrameResult fused;
+				sequenceFusion.fuse({&camA, &camB}, stepTime, fused);
+
+				const HandPose& pose= fused.poses[(int)eHandSide::Right];
+				if (!pose.tracked)
+					continue;
+				if (bHavePrevious && step >= 3)
+					worstStepM= std::max(worstStepM, glm::length(pose.palmPositionWorld - previousPalm));
+				previousPalm= pose.palmPositionWorld;
+				bHavePrevious= true;
+			}
+			return worstStepM;
+		};
+
+		const float estimatorStepMm= runSequence(true) * 1000.f;
+		const float classicStepMm= runSequence(false) * 1000.f;
+
+		MIKAN_LOG_INFO("test-fusion") << "(s) estimator vs classic on camera loss: worst step "
+			<< estimatorStepMm << " mm vs " << classicStepMm << " mm";
+		if (estimatorStepMm > 5.f)
+		{
+			MIKAN_LOG_ERROR("test-fusion")
+				<< "(s) FAILED: the estimator must ride out a camera loss without stepping";
+			result= 1;
+		}
+		if (classicStepMm < 15.f)
+		{
+			MIKAN_LOG_ERROR("test-fusion")
+				<< "(s) FAILED: negative control - the classic path was expected to pop here, "
+				   "so this scenario no longer proves anything about the estimator";
+			result= 1;
+		}
+	}
+
 	if (result == 0)
 		MIKAN_LOG_INFO("test-fusion") << "All fusion checks passed";
 

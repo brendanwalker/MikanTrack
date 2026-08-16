@@ -103,27 +103,8 @@ void TrackingReplay::setCaptureDiagnostics(bool bCapture, int firstFrame, int la
 
 HandFusionConfig TrackingReplay::buildFusionConfig() const
 {
-	// Mirrors VisionThread::refreshConfigOnThread's mapping exactly
-	const AppConfig& config= m_recordedConfig;
-	HandFusionConfig fusionConfig;
-	fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
-	fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
-	fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
-	fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
-	fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;
-	fusionConfig.palmMinCutoff= config.tracking.palmMinCutoff;
-	fusionConfig.palmBeta= config.tracking.palmBeta;
-	fusionConfig.angleMinCutoff= config.tracking.angleMinCutoff;
-	fusionConfig.angleBeta= config.tracking.angleBeta;
-	fusionConfig.triangulationEnabled= config.fusion.triangulationEnabled;
-	fusionConfig.triangulationMaxResidualPx= config.fusion.triangulationMaxResidualPx;
-	fusionConfig.residualReferencePx= config.fusion.residualReferencePx;
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		fusionConfig.bHasFusedRestAngles[sideIndex]= config.fusedRestAngles.present[sideIndex];
-		fusionConfig.fusedRestAngles[sideIndex]= config.fusedRestAngles.angles[sideIndex];
-	}
-	return fusionConfig;
+	// The same mapping the vision thread applies (shared by construction)
+	return makeHandFusionConfig(m_recordedConfig);
 }
 
 TrackingReplay::WhatIfParams TrackingReplay::makeDefaultWhatIfParams() const
@@ -377,6 +358,18 @@ void TrackingReplay::runPass(const WhatIfParams* whatIfParams)
 			replayFrame.whatIfPerCamera.resize(cameraCount);
 			for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
 				replayFrame.whatIfPerCamera[cameraIndex]= m_mirrors[cameraIndex].result;
+
+			if (m_bCaptureDiagnostics && recorded.bFused &&
+				(int)frameIndex >= m_diagnosticsFirstFrame &&
+				(m_diagnosticsLastFrame < 0 || (int)frameIndex <= m_diagnosticsLastFrame))
+			{
+				replayFrame.whatIfDiagnostics= m_fusion.getLastDiagnostics();
+				replayFrame.bHasWhatIfDiagnostics= true;
+			}
+			else
+			{
+				replayFrame.bHasWhatIfDiagnostics= false;
+			}
 			continue;
 		}
 

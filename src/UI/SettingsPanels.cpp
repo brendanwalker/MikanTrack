@@ -332,6 +332,16 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"camera saw, so this doubles as a correspondence check.");
 		ImGui::EndDisabled();
 
+		bChanged|= ImGui::Checkbox("Hand estimator (experimental)", &fusion.estimatorEnabled);
+		ImGui::SetItemTooltip(
+			"Angle-space state estimator: one temporally continuous hand\n"
+			"state (palm + 20 finger angles) fit to ALL fresh cameras' 2D\n"
+			"landmarks each frame. No per-frame path switching (tri vs\n"
+			"mono, stereo pair choice), so the discrete pops those switches\n"
+			"cause disappear; a lost camera just removes measurements and\n"
+			"the temporal prior holds what the rest cannot see. Replaces\n"
+			"the one-euro smoothing for hand poses while on.");
+
 		ImGui::SeparatorText("Observation Confidence");
 		bChanged|= ImGui::SliderFloat("Jitter reference", &fusion.jitterReferenceMm, 3.f, 60.f, "%.0f mm");
 		ImGui::SetItemTooltip(

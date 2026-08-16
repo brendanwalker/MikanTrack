@@ -119,6 +119,13 @@ json fusionDiagnosticsToJson(const FusionDiagnostics& diagnostics)
 			{"triCameraA", cluster.triCameraA},
 			{"triCameraB", cluster.triCameraB},
 			{"triParallaxDeg", cluster.triParallaxDeg},
+			{"estimatorUsed", cluster.estimatorUsed},
+			{"estimatorCameraCount", cluster.estimatorCameraCount},
+			{"estimatorIterations", cluster.estimatorIterations},
+			{"estimatorResidualBeforePx", cluster.estimatorResidualBeforePx},
+			{"estimatorResidualAfterPx", cluster.estimatorResidualAfterPx},
+			{"estimatorReseeded", cluster.estimatorReseeded},
+			{"estimatorHeldBadFit", cluster.estimatorHeldBadFit},
 			{"affinity", affinity},
 			{"observations", observations},
 		});

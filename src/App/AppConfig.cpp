@@ -11,6 +11,7 @@
 #include "nlohmann/json.hpp"
 
 #include "BodyPoseSolver.h" // BodyDimensions
+#include "HandFusion.h" // HandFusionConfig
 #include "HandPoseModel.h"
 #include "Logger.h"
 
@@ -258,6 +259,43 @@ BodyDimensions makeBodyDimensions(const AppConfig& config)
 	return dimensions;
 }
 
+HandFusionConfig makeHandFusionConfig(const AppConfig& config)
+{
+	HandFusionConfig fusionConfig;
+	fusionConfig.stalenessWindowMs= config.fusion.stalenessWindowMs;
+	fusionConfig.wristMatchMaxDistM= config.fusion.wristMatchMaxDistM;
+	fusionConfig.minCameraConfidence= config.fusion.minCameraConfidence;
+	fusionConfig.jitterReferenceM= config.fusion.jitterReferenceMm * 0.001f;
+	fusionConfig.smoothingEnabled= config.tracking.smoothingEnabled;
+	fusionConfig.palmMinCutoff= config.tracking.palmMinCutoff;
+	fusionConfig.palmBeta= config.tracking.palmBeta;
+	fusionConfig.angleMinCutoff= config.tracking.angleMinCutoff;
+	fusionConfig.angleBeta= config.tracking.angleBeta;
+	fusionConfig.triangulationEnabled= config.fusion.triangulationEnabled;
+	fusionConfig.triangulationMaxResidualPx= config.fusion.triangulationMaxResidualPx;
+	fusionConfig.residualReferencePx= config.fusion.residualReferencePx;
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		fusionConfig.bHasFusedRestAngles[sideIndex]= config.fusedRestAngles.present[sideIndex];
+		fusionConfig.fusedRestAngles[sideIndex]= config.fusedRestAngles.angles[sideIndex];
+	}
+
+	fusionConfig.estimatorEnabled= config.fusion.estimatorEnabled;
+	fusionConfig.estimator.palmPosSigmaMPerS= config.fusion.estimatorPalmPosSigmaMPerS;
+	fusionConfig.estimator.palmRotSigmaRadPerS= config.fusion.estimatorPalmRotSigmaRadPerS;
+	fusionConfig.estimator.angleSigmaRadPerS= config.fusion.estimatorAngleSigmaRadPerS;
+	fusionConfig.estimator.pixelSigmaPx= config.fusion.estimatorPixelSigmaPx;
+	fusionConfig.estimator.huberDeltaPx= config.fusion.estimatorHuberDeltaPx;
+	fusionConfig.estimator.maxIterations= config.fusion.estimatorMaxIterations;
+	fusionConfig.estimator.maxResidualPx= config.fusion.estimatorMaxResidualPx;
+	// The estimator's measurement window and reacquisition gap follow the
+	// fusion staleness window (same rationale as the candidate gate and the
+	// jitter trackers) rather than being their own knobs
+	fusionConfig.estimator.measurementWindowMs= config.fusion.stalenessWindowMs;
+	fusionConfig.estimator.resetGapMs= 4.0 * config.fusion.stalenessWindowMs;
+	return fusionConfig;
+}
+
 // -- AppConfig ----
 std::string AppConfig::getConfigFilePath()
 {
@@ -394,6 +432,14 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.fusion.triangulationEnabled= fu.value("triangulationEnabled", true);
 	config.fusion.triangulationMaxResidualPx= fu.value("triangulationMaxResidualPx", 25.f);
 	config.fusion.residualReferencePx= fu.value("residualReferencePx", 8.f);
+	config.fusion.estimatorEnabled= fu.value("estimatorEnabled", false);
+	config.fusion.estimatorPalmPosSigmaMPerS= fu.value("estimatorPalmPosSigmaMPerS", 0.3f);
+	config.fusion.estimatorPalmRotSigmaRadPerS= fu.value("estimatorPalmRotSigmaRadPerS", 2.f);
+	config.fusion.estimatorAngleSigmaRadPerS= fu.value("estimatorAngleSigmaRadPerS", 2.5f);
+	config.fusion.estimatorPixelSigmaPx= fu.value("estimatorPixelSigmaPx", 2.f);
+	config.fusion.estimatorHuberDeltaPx= fu.value("estimatorHuberDeltaPx", 10.f);
+	config.fusion.estimatorMaxIterations= fu.value("estimatorMaxIterations", 4);
+	config.fusion.estimatorMaxResidualPx= fu.value("estimatorMaxResidualPx", 25.f);
 
 	restAnglesFromJson(j.value("fusedRestAngles", json::object()), config.fusedRestAngles);
 	handSkeletonFromJson(j.value("handSkeleton", json::object()), config.handSkeleton);
@@ -494,6 +540,14 @@ std::string AppConfig::toJsonString() const
 		{"triangulationEnabled", fusion.triangulationEnabled},
 		{"triangulationMaxResidualPx", fusion.triangulationMaxResidualPx},
 		{"residualReferencePx", fusion.residualReferencePx},
+		{"estimatorEnabled", fusion.estimatorEnabled},
+		{"estimatorPalmPosSigmaMPerS", fusion.estimatorPalmPosSigmaMPerS},
+		{"estimatorPalmRotSigmaRadPerS", fusion.estimatorPalmRotSigmaRadPerS},
+		{"estimatorAngleSigmaRadPerS", fusion.estimatorAngleSigmaRadPerS},
+		{"estimatorPixelSigmaPx", fusion.estimatorPixelSigmaPx},
+		{"estimatorHuberDeltaPx", fusion.estimatorHuberDeltaPx},
+		{"estimatorMaxIterations", fusion.estimatorMaxIterations},
+		{"estimatorMaxResidualPx", fusion.estimatorMaxResidualPx},
 	};
 
 	j["fusedRestAngles"]= restAnglesToJson(fusedRestAngles);

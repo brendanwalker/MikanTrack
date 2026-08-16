@@ -278,12 +278,34 @@ struct FusionConfig
 	// trustworthy - a TRUE pose-quality signal (unlike presence, which stays
 	// high on ill-conditioned views), folded into the fused confidence
 	float residualReferencePx= 8.f;
+
+	// Angle-space multi-view state estimator (experimental): one temporally
+	// continuous state per hand fit to all fresh cameras' 2D landmarks,
+	// replacing the per-frame tri/mono selection when enabled
+	bool estimatorEnabled= false;
+	// Temporal-prior process sigmas (how far each block may move per second)
+	float estimatorPalmPosSigmaMPerS= 0.3f;
+	float estimatorPalmRotSigmaRadPerS= 2.f;
+	float estimatorAngleSigmaRadPerS= 2.5f;
+	// Measurement weighting
+	float estimatorPixelSigmaPx= 2.f;
+	float estimatorHuberDeltaPx= 10.f;
+	int estimatorMaxIterations= 4;
+	// Post-fit mean residual above this holds the previous state; a streak
+	// of them drops the state for a reseed (divergence guard)
+	float estimatorMaxResidualPx= 25.f;
 };
 
 // Declared here (rather than each caller assembling its own) so the live
 // solve and a replayed one cannot drift apart
 struct BodyDimensions;
 BodyDimensions makeBodyDimensions(const class AppConfig& config);
+
+// Same drift-proofing for the fusion config: the vision thread, the replay
+// engine and the replay self-test all build it from an AppConfig through this
+// one mapping
+struct HandFusionConfig;
+HandFusionConfig makeHandFusionConfig(const class AppConfig& config);
 
 class AppConfig
 {
