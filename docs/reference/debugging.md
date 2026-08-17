@@ -10,7 +10,7 @@ The logger lives in `src/Utility/Logger.h` / `src/Utility/Logger.cpp`. Levels ar
 
 Every log line always reaches stdout (stderr at error and above) and the log file, if one was configured, through `log_default_callback`. A caller-supplied `log_callback` is invoked in addition to that, never instead of it: `LoggerStreamImpl::write_line` calls `log_default_callback` first and then calls the configured callback only when it differs from the default. A custom sink (the in-app log panel) can add a destination; it cannot silently swallow the file or stdout output for the code paths that forgot to also write there.
 
-`MikanMediaPipe.exe` is a `WIN32`-subsystem executable (`add_executable(MikanMediaPipe WIN32 ...)` in the top-level `CMakeLists.txt`), so it has no attached console and printing to stdout goes nowhere. `App::startup` (`src/App/App.cpp`) calls `log_init` with `enable_console= false` and `log_filename= "MikanMediaPipe.log"`, so the only way to read a normal run's log is the file, written next to the process's working directory. It also sets `log_callback= &LogPanel::logCallback` (`src/UI/LogPanel.*`), so the same lines populate the in-app Log panel.
+`MikanTrack.exe` is a `WIN32`-subsystem executable (`add_executable(MikanTrack WIN32 ...)` in the top-level `CMakeLists.txt`), so it has no attached console and printing to stdout goes nowhere. `App::startup` (`src/App/App.cpp`) calls `log_init` with `enable_console= false` and `log_filename= "MikanTrack.log"`, so the only way to read a normal run's log is the file, written next to the process's working directory. It also sets `log_callback= &LogPanel::logCallback` (`src/UI/LogPanel.*`), so the same lines populate the in-app Log panel.
 
 The command-line self-tests and tools (below) each get their own logger via `TestRegistry::tryRun`: minimum level info, console enabled, and a log filename built from the flag by stripping leading dashes and appending `.log`. `--replay-verify` writes `replay-verify.log`, `--test-fusion` writes `test-fusion.log`, and so on for every registered command.
 
@@ -41,7 +41,7 @@ Adding a test means adding one file under `src/Tests` plus a CMake re-run: the t
 
 Trigger: `F9` anywhere in the app (`MainWindow::update`, `src/UI/MainWindow.cpp`), or the "Dump tracking state (F9)" button in the Tracking panel's Diagnostics section (`SettingsPanels.cpp`). Both call `visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath())`.
 
-Output directory: `AppConfig::makeDumpDirectoryPath()` (`src/App/AppConfig.cpp`) returns `%APPDATA%/MikanMediaPipe/dumps/<yyyy-mm-dd_hh-mm-ss>/`. `DiagnosticDump::write` (`src/App/DiagnosticDump.cpp`) fills that directory with `dump.json` plus per-camera PNGs:
+Output directory: `AppConfig::makeDumpDirectoryPath()` (`src/App/AppConfig.cpp`) returns `%APPDATA%/MikanTrack/dumps/<yyyy-mm-dd_hh-mm-ss>/`. `DiagnosticDump::write` (`src/App/DiagnosticDump.cpp`) fills that directory with `dump.json` plus per-camera PNGs:
 
 - `config`: the live `AppConfig` snapshot, which may differ from the saved `config.json`.
 - `cameras[]`: per camera, `trackingEnabled`, `activeEp`, `deviceFps`, `droppedFrames`, cumulative `seedStats` (cross-camera search-hint accounting), `hasExtrinsics`, a full landmark `snapshot` of that camera's last result, and `images` (`camN_raw.png` plus `camN_annotated.png`, the latter drawn by `annotateFrame` with landmarks, bones, ROI boxes, and per-hand labels overlaid).
@@ -68,7 +68,7 @@ How to read a dump:
 
 Trigger: `F10` anywhere, or the Timeline panel's "Start/Stop Recording (F10)" button (`src/UI/TimelinePanel.cpp`), calling `VisionThread::requestRecordingStart(AppConfig::makeRecordingFilePath())` / `requestRecordingStop()`.
 
-Format: JSONL at `%APPDATA%/MikanMediaPipe/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl` (`AppConfig::makeRecordingFilePath`): one header line, one line per frame, one footer line (`src/App/TrackingRecording.h`). A missing or torn footer is tolerated as a crash-truncated recording; `TrackingReplay::load` stops cleanly at the first unparseable line.
+Format: JSONL at `%APPDATA%/MikanTrack/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl` (`AppConfig::makeRecordingFilePath`): one header line, one line per frame, one footer line (`src/App/TrackingRecording.h`). A missing or torn footer is tolerated as a crash-truncated recording; `TrackingReplay::load` stops cleanly at the first unparseable line.
 
 What gets recorded (`RecordedFrame`): the per-hand fields `LandmarkTo3D::process` consumes (`imagePoints`, `modelPoints`, presence/handedness scores, `imageQuality`) for every camera that popped a fresh frame that iteration, post hand-model, pre-3D-projection and pre-fusion. It also carries the effective `refLengthMeters` (the auto-scale EMA recorded as a plain input rather than re-derived), the opt-in body-pose observation when that stage ran, and the fused output taken immediately after `fuse()` plus an FNV-1a-64 `checksum`. Both the snapshot and checksum are computed PRE-IMU and PRE-body-pose-solver (`TrackingRecording::computeFusedChecksum`), matching the point at which the live vision thread taps them.
 

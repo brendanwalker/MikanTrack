@@ -1,12 +1,12 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(MikanMediaPipe VERSION 0.1.0 LANGUAGES CXX)
+project(MikanTrack VERSION 0.1.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 if(NOT MSVC)
-    message(FATAL_ERROR "MikanMediaPipe is Windows/MSVC only")
+    message(FATAL_ERROR "MikanTrack is Windows/MSVC only")
 endif()
 
 add_compile_options(/MP /W3)
@@ -74,7 +74,7 @@ file(GLOB RENDER_SRC       ${ROOT_DIR}/src/Render/*.h       ${ROOT_DIR}/src/Rend
 file(GLOB UI_SRC           ${ROOT_DIR}/src/UI/*.h           ${ROOT_DIR}/src/UI/*.cpp)
 file(GLOB TESTS_SRC        ${ROOT_DIR}/src/Tests/*.h        ${ROOT_DIR}/src/Tests/*.cpp)
 
-add_executable(MikanMediaPipe WIN32
+add_executable(MikanTrack WIN32
     ${ROOT_DIR}/src/main.cpp
     ${APP_SRC}
     ${UTILITY_SRC}
@@ -101,7 +101,7 @@ source_group(TREE ${ROOT_DIR}/src PREFIX "src" FILES
     ${OSC_SRC} ${RENDER_SRC} ${UI_SRC} ${TESTS_SRC} ${ROOT_DIR}/src/main.cpp)
 source_group("thirdparty\\imgui" FILES ${IMGUI_SOURCES})
 
-target_include_directories(MikanMediaPipe PRIVATE
+target_include_directories(MikanTrack PRIVATE
     ${ROOT_DIR}/src
     ${ROOT_DIR}/src/App
     ${ROOT_DIR}/src/Utility
@@ -129,7 +129,7 @@ target_include_directories(MikanMediaPipe PRIVATE
     ${IMGUI_DIR}/backends
 )
 
-target_link_libraries(MikanMediaPipe PRIVATE
+target_link_libraries(MikanTrack PRIVATE
     ${SDL2_LIBRARIES}
     ${GLEW_LIBRARIES}
     ${OpenCV_LIBS}
@@ -144,20 +144,20 @@ target_link_libraries(MikanMediaPipe PRIVATE
 )
 
 # ImGui GL loader: use GLEW (already linked) instead of the built-in loader
-target_compile_definitions(MikanMediaPipe PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW GLEW_NO_GLU)
+target_compile_definitions(MikanTrack PRIVATE IMGUI_IMPL_OPENGL_LOADER_GLEW GLEW_NO_GLU)
 
-set_property(TARGET MikanMediaPipe PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:MikanMediaPipe>")
-set_property(DIRECTORY ${CMAKE_CURRENT_LIST_DIR} PROPERTY VS_STARTUP_PROJECT MikanMediaPipe)
+set_property(TARGET MikanTrack PROPERTY VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:MikanTrack>")
+set_property(DIRECTORY ${CMAKE_CURRENT_LIST_DIR} PROPERTY VS_STARTUP_PROJECT MikanTrack)
 
 # ---------------------------------------------------------------- post-build copies
-add_custom_command(TARGET MikanMediaPipe POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_DLL} $<TARGET_FILE_DIR:MikanMediaPipe>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GLEW_DLL} $<TARGET_FILE_DIR:MikanMediaPipe>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ONNXRUNTIME_DLL} $<TARGET_FILE_DIR:MikanMediaPipe>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DIRECTML_DLL} $<TARGET_FILE_DIR:MikanMediaPipe>
+add_custom_command(TARGET MikanTrack POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${SDL2_DLL} $<TARGET_FILE_DIR:MikanTrack>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${GLEW_DLL} $<TARGET_FILE_DIR:MikanTrack>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ONNXRUNTIME_DLL} $<TARGET_FILE_DIR:MikanTrack>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${DIRECTML_DLL} $<TARGET_FILE_DIR:MikanTrack>
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         ${OpenCV_DIR}/x64/vc16/bin/opencv_world4100$<$<CONFIG:Debug>:d>.dll
-        $<TARGET_FILE_DIR:MikanMediaPipe>
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${ROOT_DIR}/models $<TARGET_FILE_DIR:MikanMediaPipe>/models
-    COMMAND ${CMAKE_COMMAND} -E copy_directory ${ROOT_DIR}/resources $<TARGET_FILE_DIR:MikanMediaPipe>/resources
+        $<TARGET_FILE_DIR:MikanTrack>
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${ROOT_DIR}/models $<TARGET_FILE_DIR:MikanTrack>/models
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${ROOT_DIR}/resources $<TARGET_FILE_DIR:MikanTrack>/resources
 )

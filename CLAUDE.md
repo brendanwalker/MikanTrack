@@ -1,6 +1,12 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository. MikanMediaPipe is a standalone Windows tool for GPU hand and upper-body tracking from one or more webcams, streaming a parametric hand model over OSC to client applications (game engines, VMC receivers). Two name traps up front: it does not use the MediaPipe framework (it runs MediaPipe-derived and RTMPose models through ONNX Runtime with the DirectML execution provider), and it does not talk to MikanXR at runtime (some source was copied from that project, see NOTICE.md; the only runtime output is OSC over UDP).
+Guidance for Claude Code when working in this repository. MikanTrack is a standalone Windows tool for GPU hand and upper-body tracking from one or more webcams, streaming a parametric hand model over OSC to client applications (game engines, VMC receivers). Tracking runs MediaPipe-derived and RTMPose models through ONNX Runtime with the DirectML execution provider; the MediaPipe framework itself is not used, and the graph logic is reimplemented in C++.
+
+Three things about the name, since all three have caused confusion:
+
+- The `Mikan` prefix marks family membership alongside MikanXR and MikanARStreamer. MikanTrack does not link to or talk to MikanXR at runtime. Some source was copied from it, inventoried in NOTICE.md, and the only runtime output is OSC over UDP.
+- The Unreal Engine plugin that consumes this app's OSC stream is also called MikanTrack and lives in a different repository. When a doc or a task mentions the plugin, it means that consumer, not this app.
+- The OSC namespace stays `/mikan/*`. It is the wire contract with shipping consumers and is deliberately not renamed with the app.
 
 ## Project docs
 
@@ -30,7 +36,7 @@ Read these for context, and keep them current as part of doing work:
 
 ### Verification
 
-- Verification is objective: run the SelfTest commands rather than assuming behavior. `MikanMediaPipe.exe --list-tests` enumerates them; each logs to `<flag>.log` next to the exe and exits nonzero on failure.
+- Verification is objective: run the SelfTest commands rather than assuming behavior. `MikanTrack.exe --list-tests` enumerates them; each logs to `<flag>.log` next to the exe and exits nonzero on failure.
 - Read the log, not just the exit status. Shell pipelines can mask a tool's exit code, and a replay tool that failed to load its input looks identical to a clean pass from the exit code alone.
 - A change to fusion or any replayed stage is checked against recordings with `--replay-verify`. Checksum divergence on recordings made before the change is the diff of the change, not corruption; say so explicitly when reporting results.
 
@@ -63,7 +69,7 @@ Read these for context, and keep them current as part of doing work:
 ## Tracking and docs
 
 - When an open question in plan.md gets resolved, remove it from plan.md. When a plan.md item is completed, remove it rather than leaving it checked. A deferred item enters plan.md in its owning group at the moment of deferral, as part of that task's doc pass.
-- Concrete facts about MikanMediaPipe belong in README.md and docs/reference/, where they are durable, portable, and reviewable, not in any per-user memory system.
+- Concrete facts about MikanTrack belong in README.md and docs/reference/, where they are durable, portable, and reviewable, not in any per-user memory system.
 - Keep README.md aimed at humans. Keep this file aimed at Claude.
 
 ## Writing conventions (docs, comments, commit-adjacent text)

@@ -43,7 +43,7 @@ struct OscStreamerConfig
 	// Log each palm transform as it is encoded, so a client's receive log can
 	// be diffed against it frame for frame. One line per hand per frame.
 	bool logPalmFrames= false;
-	std::string appVersion= "MikanMediaPipe";
+	std::string appVersion= "MikanTrack";
 
 	// -- VMC mode only ------------------------------------------------------
 	// Bone offsets the streamed skeleton carries. A VMC receiver replaces both

@@ -10,5 +10,5 @@ IF %ERRORLEVEL% NEQ 0 (
   exit /b 1
 )
 popd
-echo "Generated build/MikanMediaPipe.sln"
+echo "Generated build/MikanTrack.sln"
 exit /b 0

@@ -2,7 +2,7 @@
 
 Claude Code writes one JSONL transcript per session under the project folder in
 ~/.claude/projects/. Every assistant message records exact API token usage per
-model. This script aggregates the sessions that belong to MikanMediaPipe work,
+model. This script aggregates the sessions that belong to MikanTrack work,
 rewrites the generated block in TOKEN_STATS.md, and refreshes the badge line in
 README.md.
 
@@ -38,7 +38,7 @@ SESSIONS = {
     "af7ea373-96e6-4a6b-ac6d-5b23d382bfa1": "Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16)",
 }
 
-# Same project folder, not MikanMediaPipe work (MikanXR, UE plugin, ARKit, misc).
+# Same project folder, not MikanTrack work (MikanXR, UE plugin, ARKit, misc).
 IGNORED = {
     "0a2b4224-a7b1-41fb-8879-f965933a1cc6",
     "27edf9b1-7c34-4dd4-9179-e604afb801c9",

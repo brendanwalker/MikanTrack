@@ -61,12 +61,12 @@ bool App::startup()
 	// Logging first
 	LoggerSettings loggerSettings= {};
 	loggerSettings.min_log_level= LogSeverityLevel::debug;
-	loggerSettings.log_filename= "MikanMediaPipe.log";
+	loggerSettings.log_filename= "MikanTrack.log";
 	loggerSettings.enable_console= false;
 	loggerSettings.log_callback= &LogPanel::logCallback;
 	log_init(loggerSettings);
 
-	MIKAN_LOG_INFO("App::startup") << "MikanMediaPipe starting up";
+	MIKAN_LOG_INFO("App::startup") << "MikanTrack starting up";
 
 	m_config= std::make_unique<AppConfig>();
 	m_config->load();
@@ -86,7 +86,7 @@ bool App::startup()
 	SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
 
 	m_sdlWindow= SDL_CreateWindow(
-		"MikanMediaPipe",
+		"MikanTrack",
 		SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
 		1600, 900,
 		SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);

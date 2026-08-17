@@ -356,7 +356,7 @@ std::string AppConfig::getConfigFilePath()
 	std::filesystem::path configDir;
 	if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)))
 	{
-		configDir= std::filesystem::path(appDataPath) / "MikanMediaPipe";
+		configDir= std::filesystem::path(appDataPath) / "MikanTrack";
 		CoTaskMemFree(appDataPath);
 	}
 	else

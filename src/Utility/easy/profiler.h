@@ -1,6 +1,6 @@
 #pragma once
 
-// Stub for easy_profiler, which MikanMediaPipe does not use.
+// Stub for easy_profiler, which MikanTrack does not use.
 // Lets code copied from MikanXR keep its EASY_* instrumentation lines unmodified.
 #define EASY_FUNCTION(...)
 #define EASY_BLOCK(...)

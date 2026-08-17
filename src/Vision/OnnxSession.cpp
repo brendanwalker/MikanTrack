@@ -12,7 +12,7 @@ Ort::Env& OnnxSession::getSharedEnv()
 	// One process-wide environment shared by every session.
 	// Constructed on first use (on the inference thread) and intentionally
 	// leaked at process exit (function-local static).
-	static Ort::Env s_env(ORT_LOGGING_LEVEL_WARNING, "MikanMediaPipe");
+	static Ort::Env s_env(ORT_LOGGING_LEVEL_WARNING, "MikanTrack");
 	return s_env;
 }
 

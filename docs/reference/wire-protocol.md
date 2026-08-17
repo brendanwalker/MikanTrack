@@ -45,4 +45,4 @@ Delivery rules the schema is built on:
 
 ## Consumers and change discipline
 
-Known consumers: the `MikanTrack` Unreal Engine plugin (consumes every `/mikan/*` address; UE-side conversion is the axis swap documented in [README.md](../../README.md)), and VMC receivers (developed against VMC4UE). Changing an address, a type tag, or a field meaning is a breaking protocol change: update the `OscStreamer.h` bundle-layout comment, the README tables, the self tests that decode the encoded bytes (`--selftest` OSC sections, `--test-vmc`), and coordinate the consumer update.
+Known consumers: the MikanTrack Unreal Engine plugin, a separate project that shares this app's name and consumes every `/mikan/*` address (UE-side conversion is the axis swap documented in [README.md](../../README.md)), and VMC receivers (developed against VMC4UE). Changing an address, a type tag, or a field meaning is a breaking protocol change: update the `OscStreamer.h` bundle-layout comment, the README tables, the self tests that decode the encoded bytes (`--selftest` OSC sections, `--test-vmc`), and coordinate the consumer update.

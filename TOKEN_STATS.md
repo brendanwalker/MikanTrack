@@ -5,11 +5,11 @@
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
-This project was developed almost entirely in Claude Code sessions (Claude Fable 5 and Claude Opus 5). This document tracks the exact API token usage of every MikanMediaPipe development session, and derives an order-of-magnitude estimate of the electricity and water that inference consumed. See `LEARNINGS.md` for what all those tokens actually bought.
+This project was developed almost entirely in Claude Code sessions (Claude Fable 5 and Claude Opus 5). This document tracks the exact API token usage of every MikanTrack development session, and derives an order-of-magnitude estimate of the electricity and water that inference consumed. See `LEARNINGS.md` for what all those tokens actually bought.
 
 ## How the numbers are collected
 
-Claude Code stores a JSONL transcript per session (including subagent transcripts) under `~/.claude/projects/`, and every assistant message in it records the exact billed token counts per model. `tools/token_stats.py` scans those transcripts, deduplicates streamed message records, sums the sessions listed as MikanMediaPipe work, and rewrites the generated block below plus the badges here and in `README.md`. To update after new sessions: add the new session id to the script's `SESSIONS` table and run
+Claude Code stores a JSONL transcript per session (including subagent transcripts) under `~/.claude/projects/`, and every assistant message in it records the exact billed token counts per model. `tools/token_stats.py` scans those transcripts, deduplicates streamed message records, sums the sessions listed as MikanTrack work, and rewrites the generated block below plus the badges here and in `README.md`. To update after new sessions: add the new session id to the script's `SESSIONS` table and run
 
 ```bash
 python tools/token_stats.py

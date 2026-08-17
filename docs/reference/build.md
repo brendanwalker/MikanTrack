@@ -1,6 +1,6 @@
 # Build System
 
-How MikanMediaPipe is configured and built: toolchain, dependency setup, the CMake target, and the ONNX model set it depends on. A copy-paste command cheat sheet is in [commands.md](./commands.md); how to run and interpret the two kinds of test output is in [debugging.md](./debugging.md).
+How MikanTrack is configured and built: toolchain, dependency setup, the CMake target, and the ONNX model set it depends on. A copy-paste command cheat sheet is in [commands.md](./commands.md); how to run and interpret the two kinds of test output is in [debugging.md](./debugging.md).
 
 ---
 
@@ -8,9 +8,9 @@ How MikanMediaPipe is configured and built: toolchain, dependency setup, the CMa
 
 - Windows 10/11 only, MSVC via Visual Studio 2022, x64 only.
 - CMake minimum 3.15 (`cmake_minimum_required` in the root `CMakeLists.txt`).
-- The root `CMakeLists.txt` guards on `MSVC`: `if(NOT MSVC) message(FATAL_ERROR "MikanMediaPipe is Windows/MSVC only") endif()`. There is no non-Windows configuration path.
+- The root `CMakeLists.txt` guards on `MSVC`: `if(NOT MSVC) message(FATAL_ERROR "MikanTrack is Windows/MSVC only") endif()`. There is no non-Windows configuration path.
 - C++20 (`CMAKE_CXX_STANDARD 20`), `/MP /W3`, with `NOMINMAX`, `_CRT_SECURE_NO_WARNINGS`, `WIN32_LEAN_AND_MEAN`, and `GLM_ENABLE_EXPERIMENTAL` defined globally.
-- The whole project is one file: a single `CMakeLists.txt` at the repo root configuring a single target, `MikanMediaPipe`. There is no `cmake/` subtree of included modules and no multi-target library split.
+- The whole project is one file: a single `CMakeLists.txt` at the repo root configuring a single target, `MikanTrack`. There is no `cmake/` subtree of included modules and no multi-target library split.
 
 ---
 
@@ -19,8 +19,8 @@ How MikanMediaPipe is configured and built: toolchain, dependency setup, the CMa
 Three steps, in order:
 
 1. `InitialSetup_x64.bat`: fetches submodules, dependencies, and models. Only needs rerunning when dependency versions change.
-2. `GenerateProjectFiles_X64_VS2022.bat`: configures `build/` and produces `build/MikanMediaPipe.sln`.
-3. `cmake --build build --config Release`, or open `build\MikanMediaPipe.sln` in Visual Studio 2022 and build there.
+2. `GenerateProjectFiles_X64_VS2022.bat`: configures `build/` and produces `build/MikanTrack.sln`.
+3. `cmake --build build --config Release`, or open `build\MikanTrack.sln` in Visual Studio 2022 and build there.
 
 ---
 
@@ -71,9 +71,9 @@ Each model's exact tensor input/output contract (shapes, layout, normalization, 
 
 ## Configuring and the target
 
-`GenerateProjectFiles_X64_VS2022.bat` runs `cmake .. -G "Visual Studio 17 2022" -A x64` from a `build/` directory it creates, producing `build/MikanMediaPipe.sln`. There are no project-specific `-D` cache variables to pass; every dependency path is a fixed relative path under `deps/` or `thirdparty/` set directly in `CMakeLists.txt`.
+`GenerateProjectFiles_X64_VS2022.bat` runs `cmake .. -G "Visual Studio 17 2022" -A x64` from a `build/` directory it creates, producing `build/MikanTrack.sln`. There are no project-specific `-D` cache variables to pass; every dependency path is a fixed relative path under `deps/` or `thirdparty/` set directly in `CMakeLists.txt`.
 
-The build defines one target: `add_executable(MikanMediaPipe WIN32 ...)`. `WIN32` means a GUI subsystem with no console window attached, so the logger writes to `.log` files next to the exe rather than stdout being visible interactively (console output still appears when the exe is launched from a terminal). ImGui's `.cpp` files are listed directly in the target's sources and compiled into the exe; there is no separate ImGui static library.
+The build defines one target: `add_executable(MikanTrack WIN32 ...)`. `WIN32` means a GUI subsystem with no console window attached, so the logger writes to `.log` files next to the exe rather than stdout being visible interactively (console output still appears when the exe is launched from a terminal). ImGui's `.cpp` files are listed directly in the target's sources and compiled into the exe; there is no separate ImGui static library.
 
 Source collection is per-directory `file(GLOB ...)` (one glob per `src/<Dir>`, e.g. `APP_SRC`, `VISION_SRC`, `TESTS_SRC`). Because glob results are captured at configure time, adding a new `.cpp` file to an existing `src/<Dir>` requires re-running CMake configure (`GenerateProjectFiles_X64_VS2022.bat` or the equivalent `cmake ..`) before it is picked up; Visual Studio's F5 build alone will not see it. Adding a whole new `src/<Dir>/` requires editing `CMakeLists.txt`: a new `file(GLOB ...)` line, adding that variable to the `add_executable` and `source_group` calls, and adding the directory to `target_include_directories`.
 
@@ -83,7 +83,7 @@ Every module directory under `src/` is on the include path (see the `target_incl
 
 ## Post-build steps
 
-A `POST_BUILD` custom command on the `MikanMediaPipe` target:
+A `POST_BUILD` custom command on the `MikanTrack` target:
 
 - Copies the SDL2, GLEW, ONNX Runtime, DirectML, and OpenCV (`opencv_world4100.dll`, or the `d` debug variant under a Debug config) runtime DLLs next to the exe.
 - `copy_directory`s `models/` and `resources/` into `<exe dir>/models` and `<exe dir>/resources`.

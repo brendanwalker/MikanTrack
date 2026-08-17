@@ -119,10 +119,10 @@ void MainWindow::drawDockspaceAndMenuBar()
 		ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus | ImGuiWindowFlags_NoBackground;
 
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-	ImGui::Begin("MikanMediaPipeDockHost", nullptr, hostFlags);
+	ImGui::Begin("MikanTrackDockHost", nullptr, hostFlags);
 	ImGui::PopStyleVar();
 
-	const ImGuiID dockspaceId= ImGui::GetID("MikanMediaPipeDockspace");
+	const ImGuiID dockspaceId= ImGui::GetID("MikanTrackDockspace");
 
 	// Default layout on first run
 	if (!m_bDockLayoutInitialized && ImGui::DockBuilderGetNode(dockspaceId) == nullptr)

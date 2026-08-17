@@ -1,13 +1,19 @@
-# MikanMediaPipe
+# MikanTrack
 
 <!-- AI_USAGE_BADGES:BEGIN -->
 ![AI tokens](https://img.shields.io/badge/AI_tokens-5.3M_out_%2F_1.8B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~93_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~279_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
-Standalone Windows app for GPU hand tracking from one or more webcams,
-streaming a parametric hand model (palm transform + finger bend angles) over
-OSC (built for consumption by Unreal Engine's OSC plugin).
+Standalone Windows app for GPU hand and upper-body tracking from one or more
+webcams, streaming a parametric hand model (palm transform + finger bend
+angles) over OSC (built for consumption by Unreal Engine's OSC plugin).
+
+The `Mikan` prefix places this alongside sibling tools such as
+[MikanXR](https://github.com/MikanXR/MikanXR), but MikanTrack is standalone
+and does not require or talk to any of them at runtime. The Unreal Engine
+plugin that consumes its OSC stream shares the MikanTrack name; the OSC
+namespace itself stays `/mikan/*`.
 
 Runs the Google MediaPipe hand models (palm detection + hand landmark) via
 **ONNX Runtime with the DirectML execution provider** — real GPU inference on
@@ -81,7 +87,7 @@ Two-Bone IK from the palm transform.
   scale is measured continuously by stereo triangulation while tracking runs,
   until calibrated hand skeletons supersede it.
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
-- Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanMediaPipe/config.json`
+- Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanTrack/config.json`
 - **Image quality diagnostics** (Tracking panel): per-camera statistics of
   each hand's region in the exact image the model consumed - luminance,
   highlight/shadow clipping, contrast, hand-vs-background separation,
@@ -95,7 +101,7 @@ Two-Bone IK from the palm transform.
   history (per-camera hand states with image-quality statistics, fusion
   clusters and the L/R side-assignment scores), the live config and each
   camera's current frame (raw + annotated PNG) to
-  `%APPDATA%/MikanMediaPipe/dumps/<timestamp>/` - hit it the moment
+  `%APPDATA%/MikanTrack/dumps/<timestamp>/` - hit it the moment
   tracking misbehaves and attach the folder to a bug report
 - **Frame-loop hitch watchdog**: every camera is served by one vision thread,
   so any phase that overruns the frame budget drops frames on all of them at
@@ -104,16 +110,16 @@ Two-Bone IK from the palm transform.
   diagnostics) and counted in the Tracking panel. Device discovery, which used
   to block that thread for ~200 ms at a time, runs on its own worker.
 - **Tracking recording + deterministic replay (F10 / Timeline panel)**:
-  records every input to the post-MediaPipe stages (per-camera landmarks and
+  records every input to the post-inference stages (per-camera landmarks and
   timestamps - no video, ~1 MB/s) as JSONL under
-  `%APPDATA%/MikanMediaPipe/recordings/`, then re-runs the whole
+  `%APPDATA%/MikanTrack/recordings/`, then re-runs the whole
   triangulation/fusion/estimation pipeline offline, verified bit-exact by
   per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
   the 3D scene view, marks any divergent frames, and re-simulates the same
   incident with edited fusion parameters ("what-if") to judge a candidate
   fix against the recorded original. Headless:
-  `MikanMediaPipe --replay-verify <file>` re-verifies a recording;
-  `MikanMediaPipe --replay-dump <file> <first> <last>` emits a frame range
+  `MikanTrack --replay-verify <file>` re-verifies a recording;
+  `MikanTrack --replay-dump <file> <first> <last>` emits a frame range
   with regenerated fusion diagnostics for offline analysis. Starting a
   recording resets transient tracking state (brief blip); editing tracking
   settings mid-recording finalizes the file. Checksums only verify against
@@ -123,7 +129,7 @@ Two-Bone IK from the palm transform.
   different pose model would have done better - that model's input is gone.
   Ticking "Also record raw camera frames" in the Timeline panel additionally
   writes the exact images the models consumed as JPEGs beside the recording,
-  which makes `MikanMediaPipe --replay-bodypose <file> [camera]`
+  which makes `MikanTrack --replay-bodypose <file> [camera]`
   a real measurement (per-joint scores, 2D jitter, box source, inference
   cost) rather than a live impression. **This is video of your room**, which
   is why it defaults off and is a local choice; it costs roughly 3-6 MB per
@@ -151,14 +157,14 @@ Windows 10/11, Visual Studio 2022, CMake >= 3.15.
 
 ```bat
 git clone <this repo>
-cd MikanMediaPipe
+cd MikanTrack
 InitialSetup_x64.bat            :: downloads deps/ (SDL2, OpenCV, GLEW, ONNX Runtime, DirectML) + models/
 GenerateProjectFiles_X64_VS2022.bat
 cmake --build build --config Release
-build\Release\MikanMediaPipe.exe
+build\Release\MikanTrack.exe
 ```
 
-`MikanMediaPipe.exe --list-tests` lists every self-test and headless
+`MikanTrack.exe --list-tests` lists every self-test and headless
 diagnostic tool, grouped by whether it needs hardware or an input file. Each
 one lives in its own file under `src/Tests` and registers itself, so adding a
 test means adding a file. Run one by passing its flag (for example

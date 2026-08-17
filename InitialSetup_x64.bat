@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-:: MikanMediaPipe dependency fetcher
+:: MikanTrack dependency fetcher
 :: Modeled on MikanXR's InitialSetup_x64.bat (D:\Github\git-BrendanWalker\MikanXR)
 :: Downloads prebuilt dependencies into deps/ and ML models into models/
 

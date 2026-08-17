@@ -107,7 +107,7 @@ The wrist-to-middle-MCP reference length that scales the monocular PnP object mo
 
 ## Where everything persists
 
-All calibration results live in `%APPDATA%/MikanMediaPipe/config.json` (`AppConfig::getConfigFilePath`, serialization in `src/App/AppConfig.cpp`). The intrinsics, extrinsics, and hand wizards save immediately on accept; the body and mounting wizards mark the config dirty for the auto-save (3 second cooldown).
+All calibration results live in `%APPDATA%/MikanTrack/config.json` (`AppConfig::getConfigFilePath`, serialization in `src/App/AppConfig.cpp`). The intrinsics, extrinsics, and hand wizards save immediately on accept; the body and mounting wizards mark the config dirty for the auto-save (3 second cooldown).
 
 - Intrinsics: per camera under `cameras[i].intrinsics` (`present`, `reprojectionError`, `width`, `height`, `hfov`, `vfov`, `distortedCameraMatrix`, `undistortedCameraMatrix`, `distortion`), plus the board geometry under `charucoBoard` (`cols`, `rows`, `squareMm`, `markerMm`)
 - Extrinsics: per camera under `cameras[i].extrinsics` (`present`, `markerFromCamera`, `patternReprojectionErrorPx`, `patternCornerCount`, `markerId`, `markerLengthMm`), plus the cross-camera worst-pair metrics under top-level `extrinsicsQuality` (`worstPairReprojectionRmsPx`, `worstPairSpacingErrorMm`, `worstPairSpacingScale`, `worstPairPlanarityRmsMm`, and the pair's identity)

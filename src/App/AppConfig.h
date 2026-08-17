@@ -12,7 +12,7 @@
 #include "TrackingTypes.h"
 
 // Persisted application settings, stored as JSON at
-// %APPDATA%/MikanMediaPipe/config.json
+// %APPDATA%/MikanTrack/config.json
 
 struct VideoConfig
 {

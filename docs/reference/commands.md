@@ -1,6 +1,6 @@
 # Command Cheat Sheet
 
-Handy commands for working in the MikanMediaPipe repo, all run from the repo root unless noted. Background on the build system, dependency versions, and the model set is in [build.md](./build.md); how to read test/log output and the replay tooling workflows are in [debugging.md](./debugging.md).
+Handy commands for working in the MikanTrack repo, all run from the repo root unless noted. Background on the build system, dependency versions, and the model set is in [build.md](./build.md); how to read test/log output and the replay tooling workflows are in [debugging.md](./debugging.md).
 
 ---
 
@@ -20,26 +20,26 @@ Populates git submodules, wipes and re-downloads `deps/` (roughly 1.3 GB), and d
 GenerateProjectFiles_X64_VS2022.bat
 ```
 
-Configures `build/` with the `Visual Studio 17 2022` generator and produces `build/MikanMediaPipe.sln`. Rerun after `InitialSetup_x64.bat`, and rerun any time a `.cpp` file is added to an existing `src/<Dir>` (the source list is a configure-time glob).
+Configures `build/` with the `Visual Studio 17 2022` generator and produces `build/MikanTrack.sln`. Rerun after `InitialSetup_x64.bat`, and rerun any time a `.cpp` file is added to an existing `src/<Dir>` (the source list is a configure-time glob).
 
 ---
 
 ## Build
 
 ```
-cmake --build build --target MikanMediaPipe --config Release --parallel
+cmake --build build --target MikanTrack --config Release --parallel
 ```
 
-Or open `build\MikanMediaPipe.sln` in Visual Studio 2022 and build there. There is only the one target, `MikanMediaPipe`.
+Or open `build\MikanTrack.sln` in Visual Studio 2022 and build there. There is only the one target, `MikanTrack`.
 
 ---
 
 ## Run the app and its self-tests
 
-The app exe doubles as the test runner: every self-test, hardware check, and headless tool is a flag handled before `App::exec` ever starts, and `MikanMediaPipe.exe` must be run with its own directory as the working directory (see [build.md](./build.md)).
+The app exe doubles as the test runner: every self-test, hardware check, and headless tool is a flag handled before `App::exec` ever starts, and `MikanTrack.exe` must be run with its own directory as the working directory (see [build.md](./build.md)).
 
 ```
-MikanMediaPipe.exe --list-tests
+MikanTrack.exe --list-tests
 ```
 
 Prints every registered command grouped by category (self-tests, hardware required, tools). Each command logs to `<flag-without-dashes>.log` next to the exe in addition to console output (`--test-fusion` writes `test-fusion.log`), and returns exit code 0 on pass.
