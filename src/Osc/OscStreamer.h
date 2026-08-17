@@ -88,12 +88,15 @@ struct OscStreamerConfig
 ///     if tracked (confidence below minConfidence reports tracked=0 and
 ///     withholds everything below):
 ///       /mikan/hand/{s}/palm ,fffffff position xyz + orientation xyzw
-///       /mikan/hand/{s}/wrist ,iffffffff valid(0|1) +
-///         forearm orientation xyzw (world) + wrist joint rotation xyzw
-///         (the palm expressed in the forearm frame, i.e. the LOCAL
-///         rotation for a hand bone parented to a forearm bone).
-///         Sourced from a wrist-strapped IMU; valid=0 (and identity
-///         quaternions) when no IMU is calibrated for that hand.
+///       /mikan/hand/{s}/forearm ,ifffffff valid(0|1) + position xyz +
+///         orientation xyzw (world). The forearm frame's origin is the WRIST
+///         JOINT - half a palm back from the palm center, which is the one
+///         joint the palm transform alone cannot give a consumer - and its
+///         +X points along the forearm toward the hand, so the elbow is one
+///         forearm length back along -X. A consumer retargeting the arm onto
+///         its own proportions therefore has both ends of the bone without
+///         reconstructing either. valid=0 (origin and identity) when no
+///         forearm is measured for that hand.
 ///       /mikan/hand/{s}/fingers ,f x20 per finger (thumb..pinky):
 ///         lateral, proximalBend, intermediateBend, distalBend (DEGREES -
 ///         the wire is degrees, everything inside this app is radians)
@@ -186,6 +189,13 @@ public:
 	/// invalidity, the address never goes silent.
 	static void resolveShoulderOutput(const HandPose& pose, bool bPoseSent,
 									  glm::vec3& outPosition, float& outConfidence);
+
+	/// Decides what /forearm carries for one hand: the forearm frame's origin
+	/// (the WRIST JOINT, not the palm center) and its world orientation.
+	/// @returns true when the pose is measured; on false the outputs are the
+	/// origin and identity, and the message's valid flag reports it.
+	static bool resolveForearmOutput(const HandPose& pose, bool bPoseSent,
+									 glm::vec3& outPosition, glm::quat& outOrientation);
 
 	/// Same contract for /mikan/body/head; live-only (no dropout hold).
 	static void resolveHeadOutput(const TrackingFrameResult::HeadPose& head,

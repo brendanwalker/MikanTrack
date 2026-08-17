@@ -751,6 +751,34 @@ static int runVmcTest(const TestArgs&)
 			bAnyMikan|= message.address.rfind("/mikan/", 0) == 0;
 		}
 		check(!bAnyVmc && bAnyMikan, "Mikan mode streams no VMC addresses");
+
+		// The forearm message is the one address whose consumer rebuilds an arm
+		// from it, so its exact layout is the contract: a receiver reads the
+		// arguments positionally and a silently reordered or resized message
+		// produces a plausible, wrong arm rather than a parse failure.
+		{
+			const HandPose& leftPose= frame.poses[0];
+			bool bForearmOnWire= false;
+			for (const DecodedMessage& message : mikanMessages)
+			{
+				if (message.address != "/mikan/hand/left/forearm")
+					continue;
+
+				bForearmOnWire=
+					message.tags == "ifffffff" && message.ints.size() == 1 && message.ints[0] == 1 &&
+					message.floats.size() == 7 &&
+					// The WRIST JOINT, not the palm center - anchoring the frame
+					// half a palm forward shifts the whole arm and still looks
+					// like tracking
+					nearlyEqual(glm::vec3(message.floats[0], message.floats[1], message.floats[2]),
+								leftPose.getWristPositionWorld(), 1e-6f) &&
+					fabsf(message.floats[3] - leftPose.forearmOrientationWorld.x) < 1e-6f &&
+					fabsf(message.floats[4] - leftPose.forearmOrientationWorld.y) < 1e-6f &&
+					fabsf(message.floats[5] - leftPose.forearmOrientationWorld.z) < 1e-6f &&
+					fabsf(message.floats[6] - leftPose.forearmOrientationWorld.w) < 1e-6f;
+			}
+			check(bForearmOnWire, "/forearm is ,ifffffff: valid, wrist-joint xyz, forearm quat xyzw");
+		}
 	}
 
 	// (i) Bone names, which are the whole contract with the receiver: a typo

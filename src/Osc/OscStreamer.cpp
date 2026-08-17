@@ -8,7 +8,7 @@
 // Per-side OSC address tables, indexed by eHandSide (Left= 0, Right= 1)
 static const char* k_handTrackedAddress[2]= {"/mikan/hand/left/tracked", "/mikan/hand/right/tracked"};
 static const char* k_handPalmAddress[2]= {"/mikan/hand/left/palm", "/mikan/hand/right/palm"};
-static const char* k_handWristAddress[2]= {"/mikan/hand/left/wrist", "/mikan/hand/right/wrist"};
+static const char* k_handForearmAddress[2]= {"/mikan/hand/left/forearm", "/mikan/hand/right/forearm"};
 static const char* k_handElbowAddress[2]= {"/mikan/hand/left/elbow", "/mikan/hand/right/elbow"};
 static const char* k_handShoulderAddress[2]= {"/mikan/hand/left/shoulder", "/mikan/hand/right/shoulder"};
 static const char* k_handFingersAddress[2]= {"/mikan/hand/left/fingers", "/mikan/hand/right/fingers"};
@@ -447,6 +447,28 @@ void OscStreamer::resolveShoulderOutput(const HandPose& pose, bool bPoseSent,
 	outConfidence= glm::clamp(pose.shoulderConfidence, 0.f, 1.f);
 }
 
+bool OscStreamer::resolveForearmOutput(const HandPose& pose, bool bPoseSent,
+									   glm::vec3& outPosition, glm::quat& outOrientation)
+{
+	// Same entry requirement as the elbow, which is derived from this frame:
+	// a measured forearm AND a world-anchored palm. The forearm orientation is
+	// only ever produced in world space, and its origin is read off the palm.
+	const bool bUsable= bPoseSent && pose.hasForearmPose && pose.hasWorldPose;
+	if (!bUsable)
+	{
+		outPosition= glm::vec3(0.f);
+		outOrientation= glm::quat(1.f, 0.f, 0.f, 0.f);
+		return false;
+	}
+
+	// The WRIST JOINT, not the palm center. The frame is defined as the palm
+	// frame at a neutral wrist, so anchoring it anywhere else would make its
+	// +X stop meaning "one forearm length from the elbow".
+	outPosition= pose.getWristPositionWorld();
+	outOrientation= pose.forearmOrientationWorld;
+	return true;
+}
+
 void OscStreamer::resolveHeadOutput(const TrackingFrameResult::HeadPose& head,
 									glm::vec3& outPosition, glm::quat& outOrientation, float& outConfidence)
 {
@@ -543,31 +565,31 @@ void OscStreamer::appendHandMessages(const TrackingFrameResult& frame, int sideI
 		MIKAN_LOG_INFO("OscPalmSend") << palmLine;
 	}
 
-	// /mikan/hand/{s}/wrist ,iffffffff -- valid + forearm orientation (world,
-	// xyzw) + wrist joint rotation (xyzw). The wrist rotation is the palm
-	// expressed IN the forearm frame, which is exactly the local rotation a
-	// skeleton applies to a hand bone parented to a forearm bone; identity
-	// means the palm continues straight along the forearm.
+	// /mikan/hand/{s}/forearm ,ifffffff -- valid + position xyz + orientation
+	// xyzw, the forearm frame in world space. Its origin is the WRIST JOINT,
+	// the one joint of the chain a consumer cannot recover from the palm
+	// message alone: the palm transform is centered half a palm forward of it,
+	// and that half-palm only arrives with the 1 Hz skeleton. Its +X runs
+	// along the forearm toward the hand, so the elbow sits one forearm length
+	// back along -X - a consumer rescaling the arm onto its own proportions
+	// has both ends of the bone plus the roll between them.
 	//
-	// Sent unconditionally (with valid=0 and identity quaternions when no
-	// IMU is calibrated) so a client can bind the address once instead of
+	// Sent unconditionally (with valid=0, the origin and identity, when no
+	// forearm is measured) so a client can bind the address once instead of
 	// handling an address that appears and disappears.
 	{
-		const bool bHasWrist= pose.hasForearmPose && bWorld;
-		const glm::quat forearmOrientation=
-			bHasWrist ? pose.forearmOrientationWorld : glm::quat(1.f, 0.f, 0.f, 0.f);
-		const glm::quat wristRotation= bHasWrist ? pose.getWristRotation() : glm::quat(1.f, 0.f, 0.f, 0.f);
+		glm::vec3 forearmPosition(0.f);
+		glm::quat forearmOrientation(1.f, 0.f, 0.f, 0.f);
+		const bool bHasForearm=
+			resolveForearmOutput(pose, bSendPose, forearmPosition, forearmOrientation);
 
-		OscMessage& wristMessage= m_bundle.addMessage(k_handWristAddress[sideIndex]);
-		wristMessage.addInt32(bHasWrist ? 1 : 0);
-		wristMessage.addFloat(forearmOrientation.x)
+		OscMessage& forearmMessage= m_bundle.addMessage(k_handForearmAddress[sideIndex]);
+		forearmMessage.addInt32(bHasForearm ? 1 : 0);
+		addVec3(forearmMessage, forearmPosition);
+		forearmMessage.addFloat(forearmOrientation.x)
 			.addFloat(forearmOrientation.y)
 			.addFloat(forearmOrientation.z)
 			.addFloat(forearmOrientation.w);
-		wristMessage.addFloat(wristRotation.x)
-			.addFloat(wristRotation.y)
-			.addFloat(wristRotation.z)
-			.addFloat(wristRotation.w);
 	}
 
 	// /mikan/hand/{s}/fingers ,f x20 -- per finger (thumb..pinky):

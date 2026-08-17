@@ -321,8 +321,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			"Wrist-strapped inertial trackers supply FOREARM orientation at\n"
 			"~200 Hz, immune to occlusion. A wrist strap sits proximal to the\n"
 			"wrist joint, so it measures the forearm - not the palm - which is\n"
-			"what makes the wrist joint angle measurable (streamed on\n"
-			"/mikan/hand/{s}/wrist).");
+			"what makes the wrist joint angle measurable and places the\n"
+			"elbow. The forearm frame is streamed on /mikan/hand/{s}/forearm.");
 
 		ImGui::BeginDisabled(!imu.enabled);
 
@@ -877,12 +877,14 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		ImGui::Text("Palm: (%.3f, %.3f, %.3f) m %s", palmPos.x, palmPos.y, palmPos.z,
 					bWorld ? "" : "(camera space)");
 
-		// Wrist/forearm (what /mikan/hand/{s}/wrist carries). The wrist angle
-		// is shown in DEGREES because it is the number that tells you whether
-		// the mounting calibration is good: the wrist rotation is measured
-		// relative to the pose you captured, so a straight wrist should read
-		// near zero. A large angle with your wrist actually straight means
-		// recalibrate (or yaw has drifted).
+		// Wrist bend. NOT a wire value - /mikan/hand/{s}/forearm carries the
+		// forearm frame and leaves the joint angle to the consumer, which gets
+		// it from the palm the same way this does. Shown in DEGREES because it
+		// is the number that tells you whether the mounting calibration is
+		// good: the wrist rotation is measured relative to the pose you
+		// captured, so a straight wrist should read near zero. A large angle
+		// with your wrist actually straight means recalibrate (or yaw has
+		// drifted).
 		if (pose.hasForearmPose && bWorld)
 		{
 			const glm::quat wristRotation= pose.getWristRotation();

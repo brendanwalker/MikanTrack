@@ -185,7 +185,7 @@ confidence carries validity (0 = do not use), so they never go silent.
 | `/mikan/hand/{left,right}/elbow` | `4f` | elbow position xyz (m) + confidence; from the wrist IMU forearm when calibrated, else the vision body-pose solve |
 | `/mikan/hand/{left,right}/shoulder` | `4f` | shoulder position xyz (m) + confidence; vision body pose |
 | `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
-| `/mikan/hand/{left,right}/wrist` | `i8f` | valid (0/1), forearm orientation xyzw (world), wrist joint rotation xyzw (palm in the forearm frame) |
+| `/mikan/hand/{left,right}/forearm` | `i7f` | valid (0/1), forearm position xyz (m) + orientation xyzw (world). Origin is the WRIST JOINT (half a palm back from the palm center), +X along the forearm toward the hand, so the elbow is one forearm length back along -X |
 | `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (DEGREES, 0 = the rest pose) |
 | `/mikan/hand/{left,right}/skeleton` | `45f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m) + neutral (zero-angle) direction in palm frame xyz; sent at 1 Hz |
 | `/mikan/body/head` | `8f` | head position xyz (m) + orientation xyzw (+X facing, +Y person's left, +Z up) + confidence; vision body pose |
