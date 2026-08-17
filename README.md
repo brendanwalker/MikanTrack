@@ -66,17 +66,20 @@ Two-Bone IK from the palm transform.
   needs the arm straight and square to the camera - a pose that is hard to hold
   at a desk and reads 20% short when missed, which is enough to make the elbow
   bend the wrong way.
-- **Charuco intrinsics calibration** wizard (partial-board captures supported)
-- **Charuco extrinsics** wizard: the SAME printed charuco board defines the
-  tracking world - its center is the origin, and the FORWARD/RIGHT labels on
-  the sheet pin the axes (+X forward, +Y left, +Z up; the right hand is
-  always toward -Y, a fixed convention the L/R hand assignment relies on).
-  All cameras calibrate in one session against one placement, and the wizard
-  validates the result by triangulating the board's corners across each
-  camera pair and checking the reconstruction against the board's known
-  geometry (reprojection px, corner-spacing error in mm, scale, flatness) -
-  the numbers are saved with the config as a baseline. Hand scale is
-  measured continuously from stereo/depth while tracking runs.
+- **Charuco intrinsics calibration** wizard (full-board captures, with a
+  tilted-sample quota so the focal length is actually observable)
+- **Aruco extrinsics** wizard: one large printed aruco marker defines the
+  tracking world - its center is the origin and it pins the axes (+X forward,
+  +Y left, +Z up; the right hand is always toward -Y, a fixed convention the
+  L/R hand assignment relies on). A charuco board was tried here and rejected:
+  at desk working distances its small squares do not resolve enough corner
+  detail to detect, while one large aruco square does. All cameras calibrate
+  in one session against one placement, and the wizard validates the result by
+  triangulating the marker corners across each camera pair and checking the
+  reconstruction against the marker's known size (reprojection px, size error
+  in mm, scale) - the numbers are saved with the config as a baseline. Hand
+  scale is measured continuously by stereo triangulation while tracking runs,
+  until calibrated hand skeletons supersede it.
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
 - Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanMediaPipe/config.json`
 - **Image quality diagnostics** (Tracking panel): per-camera statistics of
@@ -101,8 +104,8 @@ Two-Bone IK from the palm transform.
   diagnostics) and counted in the Tracking panel. Device discovery, which used
   to block that thread for ~200 ms at a time, runs on its own worker.
 - **Tracking recording + deterministic replay (F10 / Timeline panel)**:
-  records every input to the post-MediaPipe stages (per-camera landmarks,
-  depth samples, timestamps - no video, ~1 MB/s) as JSONL under
+  records every input to the post-MediaPipe stages (per-camera landmarks and
+  timestamps - no video, ~1 MB/s) as JSONL under
   `%APPDATA%/MikanMediaPipe/recordings/`, then re-runs the whole
   triangulation/fusion/estimation pipeline offline, verified bit-exact by
   per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
@@ -126,6 +129,21 @@ Two-Bone IK from the palm transform.
   is why it defaults off and is a local choice; it costs roughly 3-6 MB per
   second per camera, and frames are dropped rather than stalling tracking if
   the encoder falls behind.
+
+## Documentation
+
+Developer reference lives in [docs/reference/](docs/reference/):
+
+- [architecture.md](docs/reference/architecture.md): module map, frame anatomy, threading, config
+- [build.md](docs/reference/build.md) and [commands.md](docs/reference/commands.md): build system and command cheat sheet
+- [conventions.md](docs/reference/conventions.md): coordinate spaces, frames, angle conventions
+- [hand-tracking.md](docs/reference/hand-tracking.md) and [body-pose.md](docs/reference/body-pose.md): the tracking pipelines
+- [calibration.md](docs/reference/calibration.md): the wizards and where results persist
+- [imu.md](docs/reference/imu.md): the wrist IMU system
+- [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
+- [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
+
+[docs/plan.md](docs/plan.md) is the living plan, [LEARNINGS.md](LEARNINGS.md) the experiment history, and [CLAUDE.md](CLAUDE.md) the guide for AI-assisted sessions.
 
 ## Building
 
@@ -152,13 +170,13 @@ failure.
 1. **Intrinsics** (Calibration menu → Intrinsics Wizard): export the charuco
    board PNG, print at 100% scale (verify a square with a ruler), capture it
    from 12 poses. Target reprojection error < 0.5 px.
-2. **Extrinsics** (requires intrinsics on every camera): lay the SAME charuco
-   board flat where the tracking origin should be, FORWARD label pointing away
-   from you (the board center becomes the world origin), and capture - every
-   camera samples the one placement together. Review shows per-camera
-   reprojection plus the cross-camera agreement metrics; accept saves all
-   cameras atomically. The board can be removed afterwards (but re-run the
-   wizard if a camera moves). `--replay-extrinsics <recording> <config.json>`
+2. **Extrinsics** (requires intrinsics on every camera): export and print the
+   origin aruco marker from the wizard, lay it flat where the tracking origin
+   should be, oriented as labelled (the marker center becomes the world
+   origin), and capture - every camera samples the one placement together.
+   Review shows per-camera reprojection plus the cross-camera agreement
+   metrics; accept saves all cameras atomically. Re-run the wizard if a camera
+   or the marker moves. `--replay-extrinsics <recording> <config.json>`
    A/Bs a new calibration against a recorded session offline.
 
 Without calibration the app still tracks and streams, but only image-space

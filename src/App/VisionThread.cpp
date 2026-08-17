@@ -1010,9 +1010,9 @@ void VisionThread::threadLoop()
 				glm::quat forearmToWorld(1.f, 0.f, 0.f, 0.f);
 				if (m_imuService.getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
 				{
-					// The EKF owns this orientation outright - deliberately NOT
-					// run through the post-fusion one-euro filter, which would
-					// cascade two filters onto one signal
+					// The EKF owns this orientation outright - deliberately no
+					// additional smoothing, which would cascade two filters
+					// onto one signal
 					outputResult.poses[sideIndex].hasForearmPose= true;
 					outputResult.poses[sideIndex].forearmOrientationWorld= forearmToWorld;
 
