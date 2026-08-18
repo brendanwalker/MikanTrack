@@ -62,7 +62,7 @@ Bones: the vision thread runs `HandBoneCalibrator` (`src/Tracking/HandBoneCalibr
 
 Rest: captured from the fused stereo path only, so both hands must be stereo-tracked. The captured angles store as `fusedRestAngles` (one set, not per camera: triangulated geometry has no per-camera model bias to fold in) and are subtracted once at fusion output (`HandFusion::applyFusedRestOffset`; the estimator's internal state stays raw). After this, zero angles mean the user's rest hand on the wire, while the skeleton's neutral directions still describe the idealized flat hand, so a client rendering all-zero angles shows the flat-hand convention, not the user's exact rest pose.
 
-Two offline tools cover the same ground from recordings, and neither mutates the live config: each writes the recording's embedded config plus its fitted result to an explicit output path, which is merged into `config.json` by hand.
+Two offline tools cover the same ground from recordings, and neither mutates the live config: each writes the recording's embedded config plus its fitted result to an explicit output path, which is merged into the project's `project.json` by hand.
 
 - `--calibrate-bones <recording.jsonl> [output-config.json]` (`src/Tests/ToolCalibrateBones.cpp`) replays a recording, runs the same `HandBoneCalibrator`, and prints the measured skeleton next to the landmark model's proportions.
 - `--fit-angle-prior <recording.jsonl>... [output-config.json]` (`src/Tests/ToolFitAnglePrior.cpp`) fits `AnglePriorConfig` via `AnglePriorCalibrator` (`src/Calibration/AnglePriorCalibrator.h`): a per-side Gaussian (mean plus shrinkage-regularized precision matrix) over the 20 raw finger angles, from confident stereo frames only. It needs `AnglePriorCalibrator::k_minSamples` (300) samples per side, and the hand state estimator consumes the result as a weak Mahalanobis pull toward the user's real pose distribution.
@@ -107,7 +107,7 @@ The wrist-to-middle-MCP reference length that scales the monocular PnP object mo
 
 ## Where everything persists
 
-All calibration results live in `%APPDATA%/MikanTrack/config.json` (`AppConfig::getConfigFilePath`, serialization in `src/App/AppConfig.cpp`). The intrinsics, extrinsics, and hand wizards save immediately on accept; the body and mounting wizards mark the config dirty for the auto-save (3 second cooldown).
+All calibration results live in the active project's `project.json` (`AppConfig`, serialization in `src/App/AppConfig.cpp`; projects live under `%USERPROFILE%/Documents/MikanTrack/`). The intrinsics, extrinsics, and hand wizards save immediately on accept; the body and mounting wizards mark the config dirty for the auto-save (3 second cooldown).
 
 - Intrinsics: per camera under `cameras[i].intrinsics` (`present`, `reprojectionError`, `width`, `height`, `hfov`, `vfov`, `distortedCameraMatrix`, `undistortedCameraMatrix`, `distortion`), plus the board geometry under `charucoBoard` (`cols`, `rows`, `squareMm`, `markerMm`)
 - Extrinsics: per camera under `cameras[i].extrinsics` (`present`, `markerFromCamera`, `patternReprojectionErrorPx`, `patternCornerCount`, `markerId`, `markerLengthMm`), plus the cross-camera worst-pair metrics under top-level `extrinsicsQuality` (`worstPairReprojectionRmsPx`, `worstPairSpacingErrorMm`, `worstPairSpacingScale`, `worstPairPlanarityRmsMm`, and the pair's identity)

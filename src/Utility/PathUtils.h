@@ -36,7 +36,7 @@ MIKAN_UTILITY_FUNC(std::filesystem::path) getProjectDirectory();
 /// Set the project directory (called by ProjectManager when loading/creating a project)
 MIKAN_UTILITY_FUNC(void) setProjectDirectory(const std::filesystem::path& projectDir);
 
-/// Get the root directory for all projects (%USERPROFILE%/Documents/MikanXR)
+/// Get the root directory for all projects (%USERPROFILE%/Documents/MikanTrack)
 MIKAN_UTILITY_FUNC(std::filesystem::path) getProjectsRootDirectory();
 
 /// Resolve a resource path: check project folder first, fall back to bundled resources/

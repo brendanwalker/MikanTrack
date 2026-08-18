@@ -9,7 +9,7 @@ How MikanTrack is configured and built: toolchain, dependency setup, the CMake t
 - Windows 10/11 only, MSVC via Visual Studio 2022, x64 only.
 - CMake minimum 3.15 (`cmake_minimum_required` in the root `CMakeLists.txt`).
 - The root `CMakeLists.txt` guards on `MSVC`: `if(NOT MSVC) message(FATAL_ERROR "MikanTrack is Windows/MSVC only") endif()`. There is no non-Windows configuration path.
-- C++20 (`CMAKE_CXX_STANDARD 20`), `/MP /W3`, with `NOMINMAX`, `_CRT_SECURE_NO_WARNINGS`, `WIN32_LEAN_AND_MEAN`, and `GLM_ENABLE_EXPERIMENTAL` defined globally.
+- C++20 (`CMAKE_CXX_STANDARD 20`), `/MP /W3`, with `NOMINMAX`, `_CRT_SECURE_NO_WARNINGS`, `WIN32_LEAN_AND_MEAN`, and `GLM_ENABLE_EXPERIMENTAL` defined globally. The project also enables the C language, solely for `thirdparty/tinyfiledialogs/tinyfiledialogs.c`.
 - The whole project is one file: a single `CMakeLists.txt` at the repo root configuring a single target, `MikanTrack`. There is no `cmake/` subtree of included modules and no multi-target library split.
 
 ---
@@ -51,6 +51,7 @@ Three steps, in order:
 - `thirdparty/glm`: header-only.
 - `thirdparty/nlohmann_json`: header-only, the include path is `thirdparty/nlohmann_json/single_include`.
 - `thirdparty/readerwriterqueue`: header-only.
+- `thirdparty/tinyfiledialogs`: native file dialogs, vendored directly (two files, not a submodule), compiled into the exe. Needs `comdlg32` and `ole32` in `target_link_libraries`.
 
 ---
 

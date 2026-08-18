@@ -13,6 +13,7 @@ linked, so this app builds standalone.
 | `src/Utility/Logger.*`, `WorkerThread.*`, `ThreadUtils.*` | `src/Libraries/MikanCoreApp/` |
 | `src/Utility/PathUtils.*`, `StringUtils.*`, `MemoryUtils.h` | `src/Libraries/MikanUtility/` |
 | `src/App/FrameTimer.*` | `src/Editor/AppCore/` (verbatim) |
+| `src/App/LocalizationManager.*` | API shape modeled on `src/Editor/Localization/LocalizationManager.*`; storage rewritten from CSV to JSON, UTF-16 path and CDN fetcher dropped, English-fallback behavior added |
 | `src/Math/MathGLM.*`, `MathMikan.*`, `MathUtility.*`, `Transform.h` | `src/Libraries/MikanMath/` |
 | `src/Math/MathTypeConversion.*` | `src/Editor/Math/` (editor-only conversions removed) |
 | `src/Math/MikanMathTypes.h`, `MikanVideoSourceTypes.h` | plain-struct retypes of `src/Libraries/MikanClientAPI/Public/` types (reflection/serialization removed) |
@@ -28,6 +29,8 @@ linked, so this app builds standalone.
 ## Third-party libraries
 
 - **Dear ImGui** (docking branch) — MIT — `thirdparty/imgui` (submodule)
+- **tinyfiledialogs** 3.8.8 — zlib — `thirdparty/tinyfiledialogs` (vendored, two files)
+- **Mochiy Pop One** (UI font) — SIL OFL 1.1 — `resources/fonts/` (license text alongside as `OFL.txt`)
 - **glm** — MIT/Happy Bunny — `thirdparty/glm` (submodule)
 - **nlohmann/json** — MIT — `thirdparty/nlohmann_json` (submodule)
 - **readerwriterqueue** — BSD-2 — `thirdparty/readerwriterqueue` (submodule)

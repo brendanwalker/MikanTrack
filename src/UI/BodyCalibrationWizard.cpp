@@ -4,6 +4,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "AppConfig.h"
 #include "TrackingTypes.h"
 
@@ -26,7 +28,7 @@ void drawStatusLine(bool bOk, const char* text)
 void drawComparison(const char* label, float measured, float current)
 {
 	const float changePercent= current > 1e-4f ? 100.f * (measured - current) / current : 0.f;
-	ImGui::Text("%-14s %5.1f cm   (was %5.1f cm, %+.0f%%)", label, measured * 100.f, current * 100.f,
+	ImGui::Text(locText("bodyWizard.comparisonFmt"), label, measured * 100.f, current * 100.f,
 				changePercent);
 }
 } // namespace
@@ -40,6 +42,7 @@ BodyCalibrationWizard::BodyCalibrationWizard(AppConfig* config, VisionThread* vi
 void BodyCalibrationWizard::enter()
 {
 	m_bActive= true;
+	m_wizardResult= eWizardResult::None;
 	m_state= eState::VerifyReady;
 	m_cameraIndex= findBodyPoseCamera();
 	m_calibrator.reset();
@@ -99,7 +102,7 @@ bool BodyCalibrationWizard::update(float deltaSeconds, const std::vector<VisionP
 
 	bool bKeepOpen= true;
 	ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
-	if (ImGui::Begin("Body Measurements", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (ImGui::Begin(locWindowTitle("windows.bodyWizard"), nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		switch (m_state)
 		{
@@ -127,35 +130,33 @@ bool BodyCalibrationWizard::update(float deltaSeconds, const std::vector<VisionP
 bool BodyCalibrationWizard::drawVerifyStage(const std::vector<VisionPreviewFrame>& previews,
 											const TrackingFrameResult& fusedResult)
 {
-	ImGui::TextWrapped(
-		"Measures the body lengths the elbow, shoulder and head estimates rest on. "
-		"These are not anatomical numbers: they are distances between the pose "
-		"model's own landmarks, which sit inside your real joints by an amount "
-		"that differs per person and per model, so they have to be measured "
-		"rather than assumed.");
+	ImGui::TextWrapped("%s", locText("bodyWizard.verifyIntro"));
 	ImGui::Separator();
 
 	const bool bHaveCamera= m_cameraIndex >= 0;
-	drawStatusLine(bHaveCamera, bHaveCamera ? "Body pose enabled on a camera" : "No camera has body pose enabled");
+	drawStatusLine(bHaveCamera, bHaveCamera ? locText("bodyWizard.cameraEnabledStatus")
+											: locText("bodyWizard.cameraNotEnabledStatus"));
 
 	CameraFrameResult camera;
 	const bool bHaveCalibration= makeCameraFrame(previews, camera);
-	drawStatusLine(bHaveCalibration, bHaveCalibration ? "Camera intrinsics + extrinsics calibrated"
-													  : "That camera needs intrinsics AND extrinsics first");
+	drawStatusLine(bHaveCalibration, bHaveCalibration ? locText("bodyWizard.calibrationPresentStatus")
+													  : locText("bodyWizard.calibrationMissingStatus"));
 
 	const bool bHaveBody= bHaveCalibration && camera.result.body.valid;
-	drawStatusLine(bHaveBody, bHaveBody ? "Body landmarks tracking" : "Body landmarks not tracking");
+	drawStatusLine(bHaveBody, bHaveBody ? locText("bodyWizard.bodyTrackingStatus")
+										: locText("bodyWizard.bodyNotTrackingStatus"));
 
 	const bool bBothHands= fusedResult.poses[0].tracked && fusedResult.poses[0].hasWorldPose &&
 		fusedResult.poses[1].tracked && fusedResult.poses[1].hasWorldPose;
-	drawStatusLine(bBothHands, bBothHands ? "Both hands tracked" : "Both hands must be tracked");
-	ImGui::TextDisabled("  The fused wrists are the ruler: they are the only metric,");
-	ImGui::TextDisabled("  world-anchored points, measured by the other cameras.");
+	drawStatusLine(bBothHands, bBothHands ? locText("bodyWizard.bothHandsTrackedStatus")
+										  : locText("bodyWizard.bothHandsMissingStatus"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.fusedWristsNoteLine1"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.fusedWristsNoteLine2"));
 
 	ImGui::Separator();
 	const bool bReady= bHaveCamera && bHaveCalibration && bHaveBody && bBothHands;
 	ImGui::BeginDisabled(!bReady);
-	if (ImGui::Button("Begin", ImVec2(180, 0)))
+	if (ImGui::Button(locLabel("bodyWizard.beginButton"), ImVec2(180, 0)))
 	{
 		m_calibrator.reset();
 		m_state= eState::FrontalPose;
@@ -164,25 +165,24 @@ bool BodyCalibrationWizard::drawVerifyStage(const std::vector<VisionPreviewFrame
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
 bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
 											 const TrackingFrameResult& fusedResult)
 {
-	ImGui::TextWrapped(
-		"Face the camera and simply RAISE ONE HAND up beside your shoulder, as "
-		"though waving. Keep it near your shoulder rather than reaching out.");
-	ImGui::TextWrapped(
-		"ONE HAND IS ENOUGH, and either will do - hold one up, let it count, and "
-		"you are done. The other can stay on the desk.");
-	ImGui::TextDisabled("A raised hand puts a measured wrist at about the distance your");
-	ImGui::TextDisabled("torso is from the camera, and that is all the shoulders and ears");
-	ImGui::TextDisabled("need in order to be measured. Nothing has to be straight: the");
-	ImGui::TextDisabled("upper arm is worked out from your shoulder width instead, because");
-	ImGui::TextDisabled("measuring it directly needed a pose that was too hard to hold.");
+	ImGui::TextWrapped("%s", locText("bodyWizard.frontalRaiseHandInstructions"));
+	ImGui::TextWrapped("%s", locText("bodyWizard.frontalOneHandEnoughInstructions"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.frontalExplainLine1"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.frontalExplainLine2"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.frontalExplainLine3"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.frontalExplainLine4"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.frontalExplainLine5"));
 	ImGui::Separator();
 
 	CameraFrameResult camera;
@@ -191,7 +191,7 @@ bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vect
 	if (m_countdownSeconds > 0.f)
 	{
 		m_countdownSeconds-= deltaSeconds;
-		ImGui::TextColored(k_colorWait, "Get into position... %.0f", std::ceil(m_countdownSeconds));
+		ImGui::TextColored(k_colorWait, locText("bodyWizard.frontalCountdownFmt"), std::ceil(m_countdownSeconds));
 		if (m_countdownSeconds <= 0.f)
 			m_bCollecting= true;
 	}
@@ -206,7 +206,7 @@ bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vect
 				m_lastSample= sample;
 		}
 
-		ImGui::TextColored(k_colorGood, "Hold it - %d samples", m_calibrator.getFrontalSampleCount());
+		ImGui::TextColored(k_colorGood, locText("bodyWizard.holdItSamplesFmt"), m_calibrator.getFrontalSampleCount());
 		// The pose check, shown live: a forearm angled toward the camera
 		// reads short, and this is the number that says so
 		// Per hand, because either can carry a frame on its own
@@ -217,16 +217,16 @@ bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vect
 			const float reach=
 				sideIndex == 0 ? m_lastSample.handOffsetLeft : m_lastSample.handOffsetRight;
 
-			const char* reason= "";
-			if (!bAccepted)
-			{
-				reason= reach <= 0.f ? " - not tracked" : " - too far from your shoulder, raise it";
-			}
-			ImGui::TextColored(bAccepted ? k_colorGood : k_colorWait, "%s hand: %s%s",
-							   sideIndex == 0 ? "Left " : "Right",
-							   bAccepted ? "counting" : "not counting", reason);
+			const char* statusKey;
+			if (bAccepted)
+				statusKey= sideIndex == 0 ? "bodyWizard.leftCounting" : "bodyWizard.rightCounting";
+			else if (reach <= 0.f)
+				statusKey= sideIndex == 0 ? "bodyWizard.leftNotTracked" : "bodyWizard.rightNotTracked";
+			else
+				statusKey= sideIndex == 0 ? "bodyWizard.leftTooFar" : "bodyWizard.rightTooFar";
+			ImGui::TextColored(bAccepted ? k_colorGood : k_colorWait, "%s", locText(statusKey));
 			if (reach > 0.f)
-				ImGui::TextDisabled("   %.0f%% of a shoulder width away (needs under %.0f%%)", reach * 100.f,
+				ImGui::TextDisabled(locText("bodyWizard.handOffsetFmt"), reach * 100.f,
 									BodyDimensionCalibrator::k_maxRaisedHandOffset * 100.f);
 		}
 
@@ -243,20 +243,21 @@ bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vect
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
 bool BodyCalibrationWizard::drawHeadTurnStage(float deltaSeconds,
 											  const std::vector<VisionPreviewFrame>& previews)
 {
-	ImGui::TextWrapped(
-		"Now keep your body still and slowly turn your head to look left, then "
-		"right, as though checking both ends of your desk.");
-	ImGui::TextDisabled("Facing the camera, your nose sits on top of the midpoint between");
-	ImGui::TextDisabled("your ears and says nothing about how far it juts forward. Turning");
-	ImGui::TextDisabled("swings that offset across the image, where it can be measured.");
+	ImGui::TextWrapped("%s", locText("bodyWizard.headTurnInstructions"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.headTurnExplainLine1"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.headTurnExplainLine2"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.headTurnExplainLine3"));
 	ImGui::Separator();
 
 	CameraFrameResult camera;
@@ -265,7 +266,7 @@ bool BodyCalibrationWizard::drawHeadTurnStage(float deltaSeconds,
 	if (m_countdownSeconds > 0.f)
 	{
 		m_countdownSeconds-= deltaSeconds;
-		ImGui::TextColored(k_colorWait, "Starting... %.0f", std::ceil(m_countdownSeconds));
+		ImGui::TextColored(k_colorWait, locText("bodyWizard.headTurnCountdownFmt"), std::ceil(m_countdownSeconds));
 		if (m_countdownSeconds <= 0.f)
 			m_bCollecting= true;
 	}
@@ -274,9 +275,10 @@ bool BodyCalibrationWizard::drawHeadTurnStage(float deltaSeconds,
 		float noseForward= 0.f;
 		const bool bAccepted= bHaveCamera && m_calibrator.addHeadTurnSample(camera, noseForward);
 
-		ImGui::TextColored(bAccepted ? k_colorGood : k_colorWait, "%d samples%s",
-						   m_calibrator.getHeadTurnSampleCount(),
-						   bAccepted ? "" : " - turn further, the head still reads face-on");
+		ImGui::TextColored(bAccepted ? k_colorGood : k_colorWait,
+						   bAccepted ? locText("bodyWizard.headTurnSamplesFmt")
+									 : locText("bodyWizard.headTurnSamplesNotAcceptedFmt"),
+						   m_calibrator.getHeadTurnSampleCount());
 
 		const int needed= BodyDimensionCalibrator::k_minSamples;
 		ImGui::ProgressBar(std::min(1.f, (float)m_calibrator.getHeadTurnSampleCount() / (float)needed),
@@ -293,15 +295,18 @@ bool BodyCalibrationWizard::drawHeadTurnStage(float deltaSeconds,
 	ImGui::Separator();
 	// The nose measurement is the least critical of the four: it only sets
 	// head yaw and pitch, so skipping it must not cost the other three
-	if (ImGui::Button("Skip this step", ImVec2(160, 0)))
+	if (ImGui::Button(locLabel("bodyWizard.skipThisStepButton"), ImVec2(160, 0)))
 	{
 		m_bCollecting= false;
 		m_result= m_calibrator.solve(makeBodyDimensions(*m_config));
 		m_state= eState::Review;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
@@ -311,42 +316,43 @@ bool BodyCalibrationWizard::drawReviewStage()
 
 	if (!m_result.bValid)
 	{
-		ImGui::TextColored(k_colorBad, "Not enough usable samples (%d).", m_result.sampleCount);
-		ImGui::TextWrapped(
-			"Every sample needs both hands tracked, the shoulders, elbows and ears "
-			"visible, and the arms held across the camera rather than toward it.");
-		if (ImGui::Button("Close", ImVec2(120, 0)))
+		ImGui::TextColored(k_colorBad, locText("bodyWizard.notEnoughSamplesFmt"), m_result.sampleCount);
+		ImGui::TextWrapped("%s", locText("bodyWizard.notEnoughSamplesExplain"));
+		if (ImGui::Button(locLabel("common.close"), ImVec2(120, 0)))
+		{
+			m_wizardResult= eWizardResult::Cancelled;
 			return false;
+		}
 		return true;
 	}
 
-	ImGui::Text("Measured from %d samples:", m_result.sampleCount);
+	ImGui::Text(locText("bodyWizard.measuredFromSamplesFmt"), m_result.sampleCount);
 	ImGui::Separator();
-	drawComparison("Shoulders", m_result.shoulderWidth, body.shoulderWidthMeters);
-	drawComparison("Head width", m_result.headWidth, body.headWidthMeters);
-	drawComparison("Upper arm", m_result.upperArmLength, body.upperArmLengthMeters);
+	drawComparison(locText("bodyWizard.shoulderWidthLabel"), m_result.shoulderWidth, body.shoulderWidthMeters);
+	drawComparison(locText("bodyWizard.headWidthLabel"), m_result.headWidth, body.headWidthMeters);
+	drawComparison(locText("bodyWizard.upperArmLabel"), m_result.upperArmLength, body.upperArmLengthMeters);
 	if (m_result.bHaveNoseForward)
-		drawComparison("Nose forward", m_result.noseForward, body.noseForwardMeters);
+		drawComparison(locText("bodyWizard.noseForwardLabel"), m_result.noseForward, body.noseForwardMeters);
 	else
-		ImGui::TextDisabled("%-14s not measured (step skipped)", "Nose forward");
+		ImGui::TextDisabled(locText("bodyWizard.notMeasuredFmt"), locText("bodyWizard.noseForwardLabel"));
 
 	ImGui::Separator();
-	ImGui::TextDisabled("The upper arm is not measured: it is taken as %.2f x the shoulder",
+	ImGui::TextDisabled(locText("bodyWizard.upperArmNoteLine1Fmt"),
 						m_config->body.upperArmPerShoulderWidth);
-	ImGui::TextDisabled("width, which only needs a width that is easy to measure. Measuring");
-	ImGui::TextDisabled("it directly needed the arm straight and square to the camera, and");
-	ImGui::TextDisabled("a missed pose read it 20%% short - enough to bend the elbow wrongly.");
+	ImGui::TextDisabled("%s", locText("bodyWizard.upperArmNoteLine2"));
+	ImGui::TextDisabled("%s", locText("bodyWizard.upperArmNoteLine3"));
+	ImGui::TextDisabled(locText("bodyWizard.upperArmNoteLine4Fmt"));
 
 	const float worstSpread=
 		std::max(m_result.shoulderWidthSpread, m_result.headWidthSpread);
 	if (worstSpread > 0.25f)
 	{
-		ImGui::TextColored(k_colorBad, "Sample spread %.0f%% - hold stiller for a cleaner result.",
+		ImGui::TextColored(k_colorBad, locText("bodyWizard.sampleSpreadFmt"),
 						   worstSpread * 100.f);
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Accept & Save", ImVec2(180, 0)))
+	if (ImGui::Button(locLabel("bodyWizard.acceptAndSaveButton"), ImVec2(180, 0)))
 	{
 		m_config->body.shoulderWidthMeters= m_result.shoulderWidth;
 		m_config->body.headWidthMeters= m_result.headWidth;
@@ -355,10 +361,11 @@ bool BodyCalibrationWizard::drawReviewStage()
 			m_config->body.noseForwardMeters= m_result.noseForward;
 		m_config->markDirty();
 		m_visionThread->requestConfigRefresh();
+		m_wizardResult= eWizardResult::Completed;
 		return false;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Recapture", ImVec2(140, 0)))
+	if (ImGui::Button(locLabel("bodyWizard.recaptureButton"), ImVec2(140, 0)))
 	{
 		m_calibrator.reset();
 		m_state= eState::FrontalPose;
@@ -366,7 +373,10 @@ bool BodyCalibrationWizard::drawReviewStage()
 		m_bCollecting= false;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Discard", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("bodyWizard.discardButton"), ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }

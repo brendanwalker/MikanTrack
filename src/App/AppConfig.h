@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cassert>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -11,8 +12,8 @@
 #include "OscOutputMode.h"
 #include "TrackingTypes.h"
 
-// Persisted application settings, stored as JSON at
-// %APPDATA%/MikanTrack/config.json
+// Persisted per-project tracking settings, stored as JSON at the loaded
+// project file path (legacy location: %APPDATA%/MikanTrack/config.json)
 
 struct VideoConfig
 {
@@ -344,10 +345,11 @@ public:
 	}
 	size_t cameraCount() const { return cameras.size(); }
 
-	// Loads from the default config path; returns false (and keeps defaults)
-	// if missing/corrupt. Migrates v1 single-camera configs into cameras[0].
-	// Guarantees cameras.size() >= 1 afterwards.
-	bool load();
+	// Loads from the given file path; returns false (and keeps defaults) if
+	// missing/corrupt. Migrates v1 single-camera configs into cameras[0].
+	// Guarantees cameras.size() >= 1 afterwards. Remembers the path so save()
+	// writes back to it.
+	bool load(const std::filesystem::path& path);
 	bool save() const;
 	// Parses the same schema load() reads from an in-memory JSON string.
 	// Tracking recordings embed a config snapshot in their header; replay
@@ -361,16 +363,24 @@ public:
 	// Saves at most once per cooldown period when dirty; call from the main loop
 	void updateAutoSave(float deltaSeconds);
 
-	static std::string getConfigFilePath();
+	void setProjectFilePath(const std::filesystem::path& path) { m_projectFilePath= path; }
+	const std::filesystem::path& getProjectFilePath() const { return m_projectFilePath; }
+	// Directory the dump/recording paths derive from: the project folder when
+	// a project file path is set, the legacy appdata folder otherwise
+	std::filesystem::path getProjectDirectory() const;
+
+	// Legacy global config location (%APPDATA%/MikanTrack/config.json)
+	static std::string getLegacyConfigFilePath();
 	// Fresh timestamped folder path for a diagnostic dump:
-	// <config dir>/dumps/<yyyy-mm-dd_hh-mm-ss> (not created here)
-	static std::string makeDumpDirectoryPath();
+	// <project dir>/dumps/<yyyy-mm-dd_hh-mm-ss> (not created here)
+	std::string makeDumpDirectoryPath() const;
 	// Fresh timestamped file path for a tracking recording:
-	// <config dir>/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl (directory created)
-	static std::string makeRecordingFilePath();
-	static std::string getRecordingsDirectoryPath();
+	// <project dir>/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl (directory created)
+	std::string makeRecordingFilePath() const;
+	std::string getRecordingsDirectoryPath() const;
 
 private:
+	std::filesystem::path m_projectFilePath;
 	bool m_bDirty= false;
 	float m_secondsSinceDirty= 0.f;
 };

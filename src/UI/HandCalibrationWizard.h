@@ -1,6 +1,7 @@
 #pragma once
 
 #include "VisionThread.h" // BoneCalibrationCapture / RestPoseCapture
+#include "WizardResult.h"
 
 class AppConfig;
 struct TrackingFrameResult;
@@ -39,6 +40,7 @@ public:
 	void enter();
 	void exit();
 	bool isActive() const { return m_bActive; }
+	eWizardResult getResult() const { return m_result; }
 
 	// Returns false once the wizard wants to close
 	bool update(float deltaSeconds, const TrackingFrameResult& fusedResult);
@@ -60,6 +62,7 @@ private:
 
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
+	eWizardResult m_result= eWizardResult::None;
 	eState m_state= eState::BonesIntro;
 	float m_countdown= 0.f;
 

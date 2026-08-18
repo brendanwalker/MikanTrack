@@ -1,5 +1,7 @@
 #include "TestCommon.h"
 
+#include "ProjectManager.h"
+
 // Writes (and opens) the printable origin aruco marker without launching the
 // app. This is the extrinsics target: it defines the tracking world's origin
 // AND its axes, so the sheet carries the FORWARD/LEFT/RIGHT labels that the
@@ -11,7 +13,7 @@
 static int runExportMarkerTool(const TestArgs& args)
 {
 	AppConfig config;
-	config.load();
+	ProjectManager::loadActiveProjectConfig(config);
 
 	int markerId= config.camera(0).extrinsics.markerId;
 	float markerLengthMM= (float)config.camera(0).extrinsics.markerLengthMM;

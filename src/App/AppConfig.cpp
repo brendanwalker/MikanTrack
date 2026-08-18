@@ -350,7 +350,7 @@ HandFusionConfig makeHandFusionConfig(const AppConfig& config)
 }
 
 // -- AppConfig ----
-std::string AppConfig::getConfigFilePath()
+std::string AppConfig::getLegacyConfigFilePath()
 {
 	PWSTR appDataPath= nullptr;
 	std::filesystem::path configDir;
@@ -370,9 +370,17 @@ std::string AppConfig::getConfigFilePath()
 	return (configDir / "config.json").string();
 }
 
-std::string AppConfig::makeDumpDirectoryPath()
+std::filesystem::path AppConfig::getProjectDirectory() const
 {
-	const std::filesystem::path configDir= std::filesystem::path(getConfigFilePath()).parent_path();
+	if (!m_projectFilePath.empty())
+		return m_projectFilePath.parent_path();
+
+	return std::filesystem::path(getLegacyConfigFilePath()).parent_path();
+}
+
+std::string AppConfig::makeDumpDirectoryPath() const
+{
+	const std::filesystem::path projectDir= getProjectDirectory();
 
 	const std::time_t now= std::time(nullptr);
 	std::tm local{};
@@ -380,16 +388,15 @@ std::string AppConfig::makeDumpDirectoryPath()
 	char stamp[32];
 	std::strftime(stamp, sizeof(stamp), "%Y-%m-%d_%H-%M-%S", &local);
 
-	return (configDir / "dumps" / stamp).string();
+	return (projectDir / "dumps" / stamp).string();
 }
 
-std::string AppConfig::getRecordingsDirectoryPath()
+std::string AppConfig::getRecordingsDirectoryPath() const
 {
-	const std::filesystem::path configDir= std::filesystem::path(getConfigFilePath()).parent_path();
-	return (configDir / "recordings").string();
+	return (getProjectDirectory() / "recordings").string();
 }
 
-std::string AppConfig::makeRecordingFilePath()
+std::string AppConfig::makeRecordingFilePath() const
 {
 	const std::filesystem::path recordingsDir(getRecordingsDirectoryPath());
 	std::error_code ec;
@@ -409,9 +416,12 @@ std::string AppConfig::makeRecordingFilePath()
 // error handling and camera-list guarantee.
 static void applyConfigJson(AppConfig& config, const json& j);
 
-bool AppConfig::load()
+bool AppConfig::load(const std::filesystem::path& path)
 {
-	const std::string path= getConfigFilePath();
+	// Remember the path even when the file is missing or corrupt, so save()
+	// and the dump/recording paths target it from here on
+	m_projectFilePath= path;
+
 	std::ifstream file(path);
 	if (!file.is_open())
 	{
@@ -685,11 +695,16 @@ std::string AppConfig::toJsonString() const
 
 bool AppConfig::save() const
 {
-	const std::string path= getConfigFilePath();
-	std::ofstream file(path);
+	if (m_projectFilePath.empty())
+	{
+		MIKAN_LOG_ERROR("AppConfig::save") << "No project file path set, nothing saved";
+		return false;
+	}
+
+	std::ofstream file(m_projectFilePath);
 	if (!file.is_open())
 	{
-		MIKAN_LOG_ERROR("AppConfig::save") << "Failed to open " << path << " for writing";
+		MIKAN_LOG_ERROR("AppConfig::save") << "Failed to open " << m_projectFilePath << " for writing";
 		return false;
 	}
 

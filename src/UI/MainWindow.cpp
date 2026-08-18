@@ -12,17 +12,26 @@
 #include "BodyCalibrationWizard.h"
 #include "HandCalibrationWizard.h"
 #include "MountingWizard.h"
+#include "GlobalSettings.h"
+#include "LocText.h"
 #include "LogPanel.h"
 #include "Logger.h"
+#include "MainMenuScreen.h"
+#include "PathUtils.h"
+#include "ProjectManager.h"
 #include "Scene3dPanel.h"
 #include "SettingsPanels.h"
+#include "SetupFlow.h"
 #include "TimelinePanel.h"
 #include "VideoModeUtils.h"
 #include "VideoCaptureSystem.h"
 #include "VideoPreviewPanel.h"
 
+#include "tinyfiledialogs.h"
+
 MainWindow::MainWindow(App* app)
 	: m_app(app)
+	, m_mainMenuScreen(std::make_unique<MainMenuScreen>())
 	, m_videoPreviewPanel(std::make_unique<VideoPreviewPanel>())
 	, m_scene3dPanel(std::make_unique<Scene3dPanel>())
 	, m_devicePanel(std::make_unique<DevicePanel>(app, app->getVideoCapture(), app->getConfig()))
@@ -36,6 +45,14 @@ MainWindow::MainWindow(App* app)
 		  std::make_unique<HandCalibrationWizard>(app->getConfig(), app->getVisionThread()))
 	, m_timelinePanel(std::make_unique<TimelinePanel>())
 {
+	SetupFlow::WizardSet wizards;
+	wizards.intrinsics= m_intrinsicsWizard.get();
+	wizards.extrinsics= m_extrinsicsWizard.get();
+	wizards.hand= m_handCalibrationWizard.get();
+	wizards.mounting= m_mountingWizard.get();
+	wizards.body= m_bodyCalibrationWizard.get();
+	m_setupFlow= std::make_unique<SetupFlow>(app, this, m_videoPreviewPanel.get(), wizards);
+
 	// Hotplug / disconnect notifications refresh the device panel
 	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
 	videoCapture->setDeviceListChangedCallback([this]() { m_devicePanel->refreshDeviceList(); });
@@ -101,9 +118,58 @@ void MainWindow::tryRestoreVideoDeviceFromConfig()
 	for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 		restoreCameraDevice(cameraIndex);
 
+	refreshDevicePanelState();
+}
+
+void MainWindow::refreshDevicePanelState()
+{
 	m_devicePanel->refreshDeviceList();
-	for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
+	for (int cameraIndex= 0; cameraIndex < (int)m_app->getConfig()->cameraCount(); ++cameraIndex)
 		m_devicePanel->refreshModeOptions(cameraIndex);
+}
+
+bool MainWindow::isAnyWizardActive() const
+{
+	return m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
+		   m_mountingWizard->isActive() || m_bodyCalibrationWizard->isActive() ||
+		   m_handCalibrationWizard->isActive();
+}
+
+void MainWindow::drawMainMenu()
+{
+	GlobalSettings* globalSettings= m_app->getGlobalSettings();
+	// Existence-checked so a project deleted on disk does not present a
+	// Resume that can only fail
+	const bool bHasLastProject= globalSettings->hasLastProjectPath() &&
+								std::filesystem::is_regular_file(globalSettings->lastProjectPath);
+	const std::string lastProjectName= bHasLastProject
+		? globalSettings->lastProjectPath.parent_path().filename().string()
+		: std::string();
+
+	const MainMenuScreen::Action action= m_mainMenuScreen->draw(bHasLastProject, lastProjectName);
+	if (action.type != MainMenuScreen::Action::Type::None)
+		m_mainMenuScreen->setStatusMessage(std::string());
+
+	switch (action.type)
+	{
+		case MainMenuScreen::Action::Type::Resume:
+			if (!m_app->activateProject(globalSettings->lastProjectPath))
+				m_mainMenuScreen->setStatusMessage(locText("errors.loadLastProjectFailed"));
+			break;
+		case MainMenuScreen::Action::Type::NewProject:
+			if (!m_app->activateNewProject(action.projectName))
+				m_mainMenuScreen->setStatusMessage(locText("errors.createProjectFailed"));
+			break;
+		case MainMenuScreen::Action::Type::LoadProject:
+			if (!m_app->activateProject(action.projectFile))
+				m_mainMenuScreen->setStatusMessage(locText("errors.loadProjectFailed"));
+			break;
+		case MainMenuScreen::Action::Type::Exit:
+			m_app->requestShutdown();
+			break;
+		default:
+			break;
+	}
 }
 
 void MainWindow::drawDockspaceAndMenuBar()
@@ -136,14 +202,15 @@ void MainWindow::drawDockspaceAndMenuBar()
 		const ImGuiID rightId= ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.25f, nullptr, &centerId);
 		const ImGuiID bottomId= ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.22f, nullptr, &centerId);
 
-		ImGui::DockBuilderDockWindow("Video Preview", centerId);
-		ImGui::DockBuilderDockWindow("3D Scene", centerId);
-		ImGui::DockBuilderDockWindow("Device", leftId);
-		ImGui::DockBuilderDockWindow("Tracking", leftId);
-		ImGui::DockBuilderDockWindow("Calibration", rightId);
-		ImGui::DockBuilderDockWindow("OSC Output", rightId);
-		ImGui::DockBuilderDockWindow("Log", bottomId);
-		ImGui::DockBuilderDockWindow("Timeline", bottomId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.videoPreview"), centerId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.scene3d"), centerId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.device"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.tracking"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.settings"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.calibration"), rightId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.oscOutput"), rightId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.log"), bottomId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.timeline"), bottomId);
 		ImGui::DockBuilderFinish(dockspaceId);
 	}
 	m_bDockLayoutInitialized= true;
@@ -152,29 +219,39 @@ void MainWindow::drawDockspaceAndMenuBar()
 
 	if (ImGui::BeginMenuBar())
 	{
-		if (ImGui::BeginMenu("File"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.fileMenu")))
 		{
-			if (ImGui::MenuItem("Save Config"))
+			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
+			if (ImGui::MenuItem(locLabel("mainWindow.saveProject")))
 				m_app->getConfig()->save();
+			if (ImGui::MenuItem(locLabel("mainWindow.loadProject"), nullptr, false, !bWizardActive))
+			{
+				const std::string defaultDir=
+					(ProjectManager::getProjectsRootDirectory() / "").string();
+				const char* filterPatterns[]= {"project.json"};
+				const char* selectedPath= tinyfd_openFileDialog(
+					locText("mainWindow.loadProjectDialogTitle"), defaultDir.c_str(), 1, filterPatterns,
+					locText("mainWindow.loadProjectDialogFilterDescription"), 0);
+				if (selectedPath != nullptr)
+					m_pendingLoadProjectFile= PathUtils::utf8ToPath(selectedPath);
+			}
+			if (ImGui::MenuItem(locLabel("mainWindow.closeProject"), nullptr, false, !bWizardActive))
+				m_bPendingCloseProject= true;
 			ImGui::Separator();
-			if (ImGui::MenuItem("Quit", "Alt+F4"))
+			if (ImGui::MenuItem(locLabel("mainWindow.quit"), "Alt+F4"))
 				m_app->requestShutdown();
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Calibration"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.calibrationMenu")))
 		{
-			const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
-							  m_mountingWizard->isActive() ||
-							  m_bodyCalibrationWizard->isActive() ||
-							  m_handCalibrationWizard->isActive();
+			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
 			AppConfig* config= m_app->getConfig();
 
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 			{
 				ImGui::PushID(cameraIndex);
-				char label[64];
-				snprintf(label, sizeof(label), "Camera %d Intrinsics...", cameraIndex + 1);
-				if (ImGui::MenuItem(label, nullptr, false, !bWizardActive))
+				const std::string label= locFormat("mainWindow.cameraIntrinsicsFmt", cameraIndex + 1);
+				if (ImGui::MenuItem(label.c_str(), nullptr, false, !bWizardActive))
 					m_intrinsicsWizard->enter(cameraIndex);
 				ImGui::PopID();
 			}
@@ -184,14 +261,15 @@ void MainWindow::drawDockspaceAndMenuBar()
 			bool bAllIntrinsics= true;
 			for (size_t i= 0; i < config->cameraCount(); ++i)
 				bAllIntrinsics&= config->camera(i).intrinsics.present;
-			if (ImGui::MenuItem("Extrinsics (all cameras)...", nullptr, false,
+			if (ImGui::MenuItem(locLabel("mainWindow.extrinsicsAllCameras"), nullptr, false,
 								!bWizardActive && bAllIntrinsics))
 				m_extrinsicsWizard->enter();
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("View"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.viewMenu")))
 		{
-			ImGui::MenuItem("Log Panel", nullptr, &m_bShowLogPanel);
+			ImGui::MenuItem(locLabel("mainWindow.logPanel"), nullptr, &m_bShowLogPanel);
+			ImGui::MenuItem(locLabel("mainWindow.viewSettingsPanel"), nullptr, &m_bShowSettingsPanel);
 			ImGui::EndMenu();
 		}
 		ImGui::EndMenuBar();
@@ -202,6 +280,40 @@ void MainWindow::drawDockspaceAndMenuBar()
 
 void MainWindow::update(float deltaSeconds)
 {
+	if (m_app->getAppState() == App::eAppState::MainMenu)
+	{
+		drawMainMenu();
+		return;
+	}
+
+	// Apply deferred project actions from last frame's menu clicks: switching
+	// or closing a project mid-frame would mutate the config under panels
+	// that already sized their per-camera state
+	if (m_bPendingCloseProject)
+	{
+		m_bPendingCloseProject= false;
+		m_app->returnToMainMenu();
+		drawMainMenu();
+		return;
+	}
+	if (m_bPendingDiscardProject)
+	{
+		m_bPendingDiscardProject= false;
+		m_app->discardNewProjectAndReturnToMenu();
+		drawMainMenu();
+		return;
+	}
+	if (!m_pendingLoadProjectFile.empty())
+	{
+		const std::filesystem::path projectFile= m_pendingLoadProjectFile;
+		m_pendingLoadProjectFile.clear();
+		m_app->activateProject(projectFile);
+	}
+
+	// A freshly created project starts the guided setup chain
+	if (m_app->consumeStartSetupFlowFlag())
+		m_setupFlow->begin();
+
 	AppConfig* config= m_app->getConfig();
 	VisionThread* visionThread= m_app->getVisionThread();
 	const int cameraCount= (int)config->cameraCount();
@@ -224,7 +336,7 @@ void MainWindow::update(float deltaSeconds)
 
 	// F9 anywhere: diagnostic dump (state history + camera frames + config)
 	if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
-		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());
+		visionThread->requestDiagnosticDump(config->makeDumpDirectoryPath());
 
 	// F10 anywhere: toggle the tracking recording (deterministic replay input
 	// capture; starting resets transient tracking state - brief blip)
@@ -233,21 +345,20 @@ void MainWindow::update(float deltaSeconds)
 		if (visionThread->isRecording())
 			visionThread->requestRecordingStop();
 		else
-			visionThread->requestRecordingStart(AppConfig::makeRecordingFilePath());
+			visionThread->requestRecordingStart(config->makeRecordingFilePath());
 	}
 
 	drawDockspaceAndMenuBar();
 
-	const bool bWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
-							  m_mountingWizard->isActive() ||
-							  m_bodyCalibrationWizard->isActive() ||
-							  m_handCalibrationWizard->isActive();
+	const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
 
 	// Panels
 	m_devicePanel->draw();
 	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
 									  m_trackingPanelState, m_latestPreviews, m_latestFused);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
+	if (m_bShowSettingsPanel)
+		SettingsPanels::drawAppSettingsPanel();
 	m_timelinePanel->draw(config, visionThread);
 
 	if (m_trackingPanelState.bLaunchMountingWizard)
@@ -276,6 +387,20 @@ void MainWindow::update(float deltaSeconds)
 		m_intrinsicsWizard->enter(calibrationAction.cameraIndex);
 	if (calibrationAction.bLaunchExtrinsicsWizard)
 		m_extrinsicsWizard->enter();
+
+	// Guided setup chain: draws its prompt modals on top of the panels, and
+	// launches/watches the wizards updated below
+	m_setupFlow->update();
+	if (m_setupFlow->consumeDiscardProjectRequest())
+		m_bPendingDiscardProject= true;
+
+	// Bring the Video Preview tab forward when a camera calibration wizard
+	// starts: the pattern feed is the wizard's whole UI, and the 3D Scene tab
+	// may be the selected one in the shared center dock
+	const bool bCameraWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();
+	if (bCameraWizardActive && !m_bCameraWizardWasActive)
+		ImGui::SetWindowFocus(locWindowTitle("windows.videoPreview"));
+	m_bCameraWizardWasActive= bCameraWizardActive;
 
 	// Pin the preview highlight to the wizard's camera while one is active
 	// (the extrinsics wizard uses ALL cameras, so no pinning there)

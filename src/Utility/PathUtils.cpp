@@ -84,7 +84,7 @@ std::filesystem::path getFontPath(const std::string& fontName)
 {
 	const std::string fileFilename= fontName + ".ttf";
 
-	return getResourceDirectory() / "font" / fileFilename;
+	return getResourceDirectory() / "fonts" / fileFilename;
 }
 
 std::filesystem::path makeAbsoluteResourceFilePath(const std::filesystem::path& relative_path)
@@ -151,7 +151,7 @@ std::filesystem::path getProjectsRootDirectory()
 		projectsRoot= "/";
 	}
 #endif
-	projectsRoot/= "MikanXR";
+	projectsRoot/= "MikanTrack";
 
 	// Create the directory if it doesn't exist
 	if (!std::filesystem::exists(projectsRoot))

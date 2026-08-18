@@ -6,6 +6,7 @@
 #include "glm/ext/quaternion_float.hpp"
 
 #include "ImuService.h" // MountingCaptureResult
+#include "WizardResult.h"
 
 class AppConfig;
 class VisionThread;
@@ -50,6 +51,7 @@ public:
 	void enter();
 	void exit();
 	bool isActive() const { return m_bActive; }
+	eWizardResult getResult() const { return m_result; }
 
 	// Returns false once the wizard wants to close
 	bool update(float deltaSeconds, const TrackingFrameResult& fusedResult);
@@ -71,6 +73,7 @@ private:
 	eState m_state= eState::VerifyDevices;
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
+	eWizardResult m_result= eWizardResult::None;
 
 	bool m_bParticipating[2]= {false, false};
 	// Latched once a side's motion clears every bar, so that easing off (as

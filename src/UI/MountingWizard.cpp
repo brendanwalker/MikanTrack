@@ -5,6 +5,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "AppConfig.h"
 #include "ImuService.h"
 #include "TrackingTypes.h"
@@ -19,7 +21,7 @@ constexpr float k_twistReadyReversal= 0.6f;
 
 const char* sideName(int sideIndex)
 {
-	return sideIndex == 0 ? "Left" : "Right";
+	return sideIndex == 0 ? locText("mountingWizard.sideLeft") : locText("mountingWizard.sideRight");
 }
 
 void drawStatusLine(bool bOk, const char* text)
@@ -45,6 +47,7 @@ void MountingWizard::enter()
 {
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::VerifyDevices;
 	m_bCaptureRequested= false;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -115,11 +118,13 @@ bool MountingWizard::drawMotionStage(const ImuSideStatus status[2], bool bReady[
 		ImGui::Text("%-6s", sideName(sideIndex));
 		ImGui::SameLine();
 		const float shownProgress= m_bWaitingForMotionReset ? 0.f : sideStatus.twistProgress;
-		ImGui::ProgressBar(shownProgress, ImVec2(-90, 0), bReady[sideIndex] ? "ready" : "keep going");
+		ImGui::ProgressBar(shownProgress, ImVec2(-90, 0),
+						   bReady[sideIndex] ? locText("mountingWizard.readyOverlay")
+											 : locText("mountingWizard.keepGoingOverlay"));
 		ImGui::SameLine();
 		if (bReady[sideIndex])
 		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "done");
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "%s", locText("mountingWizard.doneStatus"));
 		}
 		else
 		{
@@ -130,7 +135,7 @@ bool MountingWizard::drawMotionStage(const ImuSideStatus status[2], bool bReady[
 			{
 				if (sideStatus.twistReversal < k_twistReadyReversal)
 					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-									   "  %s: move back the other way too", sideName(sideIndex));
+									   locText("mountingWizard.moveBackOtherWayFmt"), sideName(sideIndex));
 				else if (dominance < k_twistReadyDominance)
 					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "  %s: %s", sideName(sideIndex),
 									   elbowHint);
@@ -140,8 +145,7 @@ bool MountingWizard::drawMotionStage(const ImuSideStatus status[2], bool bReady[
 		if (sideStatus.biasSaturated)
 		{
 			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-							   "  %s: this controller's orientation filter has diverged.\n"
-							   "  Set it down, redo the rest step, and try again.",
+							   locText("mountingWizard.filterDivergedFmt"),
 							   sideName(sideIndex));
 		}
 	}
@@ -159,7 +163,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 	};
 
 	ImGui::SetNextWindowSize(ImVec2(460, 0), ImGuiCond_Appearing);
-	if (!ImGui::Begin("Wrist IMU Mounting Calibration", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (!ImGui::Begin(locWindowTitle("windows.mountingWizard"), nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return true;
@@ -169,15 +173,9 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 	{
 		case eState::VerifyDevices:
 		{
-			ImGui::TextWrapped(
-				"This measures how each controller is strapped to your wrist, so the app "
-				"can turn a sensor orientation into a FOREARM orientation. Two motions "
-				"supply it: a twist of the forearms, then a curl at the elbows.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.verifyIntro"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"Strap each controller to the top of the wrist, pointing along the "
-				"forearm. The exact orientation does not matter - that is what this "
-				"calibration absorbs - but it must not shift afterwards.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.verifyStrapInstructions"));
 			ImGui::Spacing();
 
 			bool bAnyReady= false;
@@ -190,21 +188,22 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				ImGui::SeparatorText(sideName(sideIndex));
 				if (!sideStatus.deviceConnected)
 				{
-					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "  No controller assigned");
+					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s",
+									   locText("mountingWizard.noControllerAssigned"));
 					continue;
 				}
 				ImGui::Text("  %s", sideStatus.deviceName.c_str());
-				drawStatusLine(sideStatus.streaming, "streaming");
+				drawStatusLine(sideStatus.streaming, locText("mountingWizard.streaming"));
 				drawStatusLine(sideStatus.filterConverged,
-							   sideStatus.filterConverged ? "orientation settled"
-														  : "orientation settling - hold it still");
+							   sideStatus.filterConverged ? locText("mountingWizard.orientationSettled")
+														  : locText("mountingWizard.orientationSettling"));
 			}
 
 			ImGui::Spacing();
 			if (!bAnyReady)
 			{
 				ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-								   "Waiting for at least one controller to stream and settle");
+								   "%s", locText("mountingWizard.waitingForController"));
 			}
 
 			ImGui::BeginDisabled(!bAnyReady);
@@ -215,7 +214,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 					m_bParticipating[sideIndex]= status[sideIndex].streaming && status[sideIndex].filterConverged;
 			};
-			if (ImGui::Button("Start", ImVec2(180, 0)))
+			if (ImGui::Button(locLabel("common.start"), ImVec2(180, 0)))
 			{
 				lockParticipants();
 				m_visionThread->requestImuBiasCalibration();
@@ -223,23 +222,19 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			}
 			ImGui::EndDisabled();
 			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
 		case eState::CalibrateBias:
 		{
-			ImGui::TextWrapped(
-				"Step 1 of 3: REST. Take the controllers off and lay them flat on the "
-				"desk. Do not touch them until this finishes.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.biasStep1Intro"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"A gyro reads a small nonzero rate even when perfectly still, and that "
-				"offset integrates into drift. Sitting still is the one situation where "
-				"the true rate is known to be zero, so the reading IS the error - "
-				"including about the vertical axis, which nothing else in the system can "
-				"measure.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.biasStep1Explain"));
 			ImGui::Spacing();
 
 			bool bAllDone= true;
@@ -256,14 +251,16 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				ImGui::SameLine();
 				if (bDone)
 				{
-					ImGui::ProgressBar(1.f, ImVec2(-90, 0), "measured");
+					ImGui::ProgressBar(1.f, ImVec2(-90, 0), locText("mountingWizard.measuredOverlay"));
 					ImGui::SameLine();
-					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "done");
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "%s", locText("mountingWizard.doneStatus"));
 				}
 				else
 				{
 					ImGui::ProgressBar(progress, ImVec2(-90, 0),
-									   status[sideIndex].biasCalibrationDisturbed ? "restarted" : "measuring");
+									   status[sideIndex].biasCalibrationDisturbed
+										   ? locText("mountingWizard.restartedOverlay")
+										   : locText("mountingWizard.measuringOverlay"));
 					ImGui::SameLine();
 					ImGui::TextDisabled("%.0f%%", progress * 100.f);
 				}
@@ -271,82 +268,73 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 
 			if (bAllDone)
 			{
-				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Put the controllers back on your wrists.");
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "%s",
+								   locText("mountingWizard.putControllersBack"));
 				ImGui::Spacing();
-				if (ImGui::Button("Continue", ImVec2(180, 0)))
+				if (ImGui::Button(locLabel("common.continueLabel"), ImVec2(180, 0)))
 					beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);
 			}
 			else
 			{
-				ImGui::TextDisabled("Any movement restarts the measurement.");
+				ImGui::TextDisabled("%s", locText("mountingWizard.anyMovementRestarts"));
 				ImGui::Spacing();
-				if (ImGui::Button("Skip", ImVec2(180, 0)))
+				if (ImGui::Button(locLabel("common.skip"), ImVec2(180, 0)))
 				{
 					// The filter estimates the bias online anyway - just not
 					// about the vertical axis, which is the one that drifts
 					m_visionThread->cancelImuBiasCalibration();
 					beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);
 				}
-				ImGui::SetItemTooltip(
-					"The mounting calibration still works; yaw will just drift\n"
-					"faster and lean harder on the camera to correct it.");
+				ImGui::SetItemTooltip("%s", locText("mountingWizard.skipBiasTooltip"));
 			}
 			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
 		case eState::TwistForearms:
 		{
-			ImGui::TextWrapped(
-				"Step 2 of 3: TWIST. Hold your forearms roughly HORIZONTAL and rotate each "
-				"one as if slowly turning a doorknob - palm up, palm down, and back again, "
-				"several times. Keep your elbows still; it is the twist that is measured.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.twistStep2Intro"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"Turning one way only does not count, and neither does waving your arms "
-				"around - the bar needs back-and-forth rotation about the forearm itself.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.twistNote"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"This finds the forearm's long axis, which is what places the elbow.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.twistPurpose"));
 			ImGui::Spacing();
 
-			drawMotionStage(status, m_bTwistReady, "keep the elbow still - twist only");
+			drawMotionStage(status, m_bTwistReady, locText("mountingWizard.twistElbowHint"));
 
 			// Deliberately NOT auto-advanced: the next stage is a different
 			// motion with its own instructions, and dropping the user into it
 			// mid-twist means they perform the first half of it wrong
 			ImGui::Spacing();
 			ImGui::BeginDisabled(!m_bTwistReady[0] && !m_bTwistReady[1]);
-			if (ImGui::Button("Continue", ImVec2(180, 0)))
+			if (ImGui::Button(locLabel("common.continueLabel"), ImVec2(180, 0)))
 				beginMotionStage(eState::CurlElbows, eMountingMotion::Curl);
 			ImGui::EndDisabled();
 			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
 		case eState::CurlElbows:
 		{
-			ImGui::TextWrapped(
-				"Step 3 of 3: CURL. Keep your PALMS FACING DOWN and your upper arms still, "
-				"then raise and lower each hand at the elbow, several times - a slow bicep "
-				"curl. Do not twist your forearms during this.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.curlStep3Intro"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"The elbow hinge points across the forearm, so this second direction of "
-				"rotation is what fixes the roll that a twist alone cannot see. It also "
-				"measures the distance from your elbow to the controller.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.curlPurpose"));
 			ImGui::Spacing();
-			ImGui::TextWrapped(
-				"KEEP BOTH HANDS VISIBLE to the cameras. The cameras decide only which way "
-				"round your palm faces, so a rough view is enough.");
+			ImGui::TextWrapped("%s", locText("mountingWizard.curlVisibility"));
 			ImGui::Spacing();
 
 			const bool bAllReady=
-				drawMotionStage(status, m_bCurlReady, "keep the shoulder still - bend at the elbow only");
+				drawMotionStage(status, m_bCurlReady, locText("mountingWizard.curlElbowHint"));
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
@@ -356,7 +344,7 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				if (!pose.tracked || !pose.hasWorldPose)
 				{
 					ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-									   "  %s: hand not visible - the cameras must see it",
+									   locText("mountingWizard.handNotVisibleFmt"),
 									   sideName(sideIndex));
 				}
 			}
@@ -369,15 +357,18 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 
 			ImGui::Spacing();
 			ImGui::BeginDisabled(m_bCaptureRequested || (!m_bCurlReady[0] && !m_bCurlReady[1]));
-			if (ImGui::Button("Finish now", ImVec2(180, 0)))
+			if (ImGui::Button(locLabel("mountingWizard.finishNowButton"), ImVec2(180, 0)))
 			{
 				m_visionThread->requestImuMountingCapture();
 				m_bCaptureRequested= true;
 			}
 			ImGui::EndDisabled();
 			ImGui::SameLine();
-			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 
 			// The capture is serviced on the vision thread; collect the result
 			if (m_bCaptureRequested)
@@ -445,49 +436,45 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				if (m_bAccepted[sideIndex])
 				{
 					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f),
-									   "  Calibrated (arm axis %.2f, hinge %.0f deg off it)",
+									   locText("mountingWizard.calibratedFmt"),
 									   result.axisDominance, result.interAxisAngleDegrees);
 					if (result.bLengthMeasured)
 					{
 						ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f),
-										   "  Elbow to controller: %.0f cm (measured)",
+										   locText("mountingWizard.elbowToControllerFmt"),
 										   result.forearmLengthMeters * 100.f);
 					}
 				}
 				else if (!result.bCaptured)
 				{
 					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-									   "  Not captured - the controller stopped streaming");
+									   "%s", locText("mountingWizard.notCaptured"));
 				}
 				else
 				{
 					// Name the gate that actually failed: they need different
 					// corrections, and "rejected" alone told the user nothing
-					const char* reason= "the motions were not good enough";
+					const char* reasonKey= "mountingWizard.reasonGeneric";
 					if (!imuIsTwistUsable(result.axisDominance, result.twistProgress, result.twistReversal))
-						reason= "the TWIST did not pin the forearm axis - rotate\n  further, and back the other way too";
+						reasonKey= "mountingWizard.reasonTwistWeak";
 					else if (result.curlProgress < 1.f || result.curlReversal < 0.5f)
-						reason= "the CURL was too small - raise and lower your hand\n  further, several times";
+						reasonKey= "mountingWizard.reasonCurlSmall";
 					else if (result.interAxisAngleDegrees < 60.f)
-						reason= "the curl turned about the same axis as the twist -\n  keep the shoulder still and bend only at the elbow";
+						reasonKey= "mountingWizard.reasonSameAxis";
 					else if (result.curlStrokes < 3 || result.hingeSpreadDegrees > 15.f)
-						reason= "the curl strokes disagreed - keep the palms facing\n  down and do not twist while curling";
+						reasonKey= "mountingWizard.reasonStrokesDisagreed";
 					else if (result.lengthFitCorrelation < 0.5f)
-						reason= "the curl did not show which way the hand points -\n  bend at the elbow rather than moving the whole arm";
+						reasonKey= "mountingWizard.reasonHandDirectionUnclear";
 					else if (result.palmarSource == ePalmarSource::None)
-						reason= "the cameras never saw the hand, so which way the\n  palm faces is unknown";
+						reasonKey= "mountingWizard.reasonPalmUnknown";
 
-					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-									   "  Rejected - %s.\n  Nothing was saved for this side.", reason);
+					ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", locText(reasonKey));
 				}
 			}
 
 			ImGui::Spacing();
-			ImGui::SeparatorText("Check it");
-			ImGui::TextWrapped(
-				"Keep your hands straight in line with your forearms. The wrist bend below "
-				"should read near zero, and should stay near zero as you twist your "
-				"forearms. If it climbs while you twist, the mounting is still wrong.");
+			ImGui::SeparatorText(locText("mountingWizard.checkItHeader"));
+			ImGui::TextWrapped("%s", locText("mountingWizard.reviewCheckIntro"));
 			ImGui::Spacing();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -497,20 +484,23 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 				const HandPose& pose= fusedResult.poses[sideIndex];
 				if (!pose.tracked || !pose.hasWorldPose || !pose.hasForearmPose)
 				{
-					ImGui::TextDisabled("  %s: no reading (hand not tracked)", sideName(sideIndex));
+					ImGui::TextDisabled(locText("mountingWizard.noReadingFmt"), sideName(sideIndex));
 					continue;
 				}
 				const float bendDegrees= quaternionAngleDegrees(pose.getWristRotation());
 				const ImVec4 color= bendDegrees < 15.f ? ImVec4(0.4f, 1.f, 0.4f, 1.f)
 													   : ImVec4(1.f, 0.85f, 0.3f, 1.f);
-				ImGui::TextColored(color, "  %s wrist bend: %.0f deg", sideName(sideIndex), bendDegrees);
+				ImGui::TextColored(color, locText("mountingWizard.wristBendFmt"), sideName(sideIndex), bendDegrees);
 			}
 
 			ImGui::Spacing();
-			if (ImGui::Button("Finish", ImVec2(180, 0)))
+			if (ImGui::Button(locLabel("common.finish"), ImVec2(180, 0)))
+			{
+				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
+			}
 			ImGui::SameLine();
-			if (ImGui::Button("Redo", ImVec2(120, 0)))
+			if (ImGui::Button(locLabel("mountingWizard.redoButton"), ImVec2(120, 0)))
 			{
 				m_bCaptureRequested= false;
 				beginMotionStage(eState::TwistForearms, eMountingMotion::Twist);

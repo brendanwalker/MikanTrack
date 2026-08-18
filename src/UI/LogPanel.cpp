@@ -2,6 +2,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "Logger.h"
 
 LogPanel& LogPanel::getInstance()
@@ -25,19 +27,19 @@ void LogPanel::addLine(int level, const char* line)
 
 void LogPanel::draw(bool* pOpen)
 {
-	if (!ImGui::Begin("Log", pOpen))
+	if (!ImGui::Begin(locWindowTitle("windows.log"), pOpen))
 	{
 		ImGui::End();
 		return;
 	}
 
-	if (ImGui::Button("Clear"))
+	if (ImGui::Button(locLabel("logPanel.clearButton")))
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
 		m_lines.clear();
 	}
 	ImGui::SameLine();
-	ImGui::Checkbox("Auto-scroll", &m_bAutoScroll);
+	ImGui::Checkbox(locLabel("logPanel.autoScrollCheckbox"), &m_bAutoScroll);
 
 	ImGui::Separator();
 	ImGui::BeginChild("LogScroll", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);

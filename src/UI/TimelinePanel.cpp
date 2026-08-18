@@ -5,6 +5,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "AppConfig.h"
 #include "VisionThread.h"
 
@@ -14,20 +16,20 @@ static const ImVec4 k_colorBad(1.f, 0.4f, 0.4f, 1.f);
 
 void TimelinePanel::draw(AppConfig* config, VisionThread* visionThread)
 {
-	if (!ImGui::Begin("Timeline"))
+	if (!ImGui::Begin(locWindowTitle("windows.timeline")))
 	{
 		ImGui::End();
 		return;
 	}
 
 	drawRecordingSection(config, visionThread);
-	ImGui::SeparatorText("Replay");
-	drawLoadSection(visionThread);
+	ImGui::SeparatorText(locText("timelinePanel.replayHeader"));
+	drawLoadSection(config, visionThread);
 	if (m_bLoaded && m_replay.didRun())
 	{
 		drawTransportSection();
 		drawFrameInfoSection();
-		ImGui::SeparatorText("What-if");
+		ImGui::SeparatorText(locText("timelinePanel.whatIfHeader"));
 		drawWhatIfSection();
 	}
 
@@ -37,76 +39,62 @@ void TimelinePanel::draw(AppConfig* config, VisionThread* visionThread)
 
 void TimelinePanel::drawRecordingSection(AppConfig* config, VisionThread* visionThread)
 {
-	ImGui::SeparatorText("Recording");
+	ImGui::SeparatorText(locText("timelinePanel.recordingHeader"));
 
 	if (visionThread->isRecording())
 	{
-		ImGui::TextColored(k_colorBad, "REC");
+		ImGui::TextColored(k_colorBad, "%s", locText("timelinePanel.recStatus"));
 		ImGui::SameLine();
-		ImGui::Text("%lld frames, %.1f MB", (long long)visionThread->getRecordingFrameCount(),
+		ImGui::Text(locText("timelinePanel.recordingStatsFmt"), (long long)visionThread->getRecordingFrameCount(),
 					(double)visionThread->getRecordingBytes() / (1024.0 * 1024.0));
 		if (visionThread->isRecordingRawFrames())
 		{
-			ImGui::TextColored(k_colorBad, "+ RAW FRAMES");
+			ImGui::TextColored(k_colorBad, "%s", locText("timelinePanel.rawFramesStatus"));
 			ImGui::SameLine();
-			ImGui::Text("%lld images, %.0f MB", (long long)visionThread->getRecordedFrameCount(),
+			ImGui::Text(locText("timelinePanel.rawFrameStatsFmt"), (long long)visionThread->getRecordedFrameCount(),
 						(double)visionThread->getRecordedFrameBytes() / (1024.0 * 1024.0));
 			const int64_t dropped= visionThread->getDroppedFrameCount();
 			if (dropped > 0)
-				ImGui::TextColored(k_colorBad, "%lld frames dropped (encoder behind)", (long long)dropped);
+				ImGui::TextColored(k_colorBad, locText("timelinePanel.droppedFramesFmt"), (long long)dropped);
 		}
-		if (ImGui::Button("Stop Recording (F10)", ImVec2(-1, 0)))
+		if (ImGui::Button(locLabel("timelinePanel.stopRecordingButton"), ImVec2(-1, 0)))
 			visionThread->requestRecordingStop();
 	}
 	else
 	{
-		if (ImGui::Button("Start Recording (F10)", ImVec2(-1, 0)))
-			visionThread->requestRecordingStart(AppConfig::makeRecordingFilePath());
-		ImGui::SetItemTooltip(
-			"Captures every input to the tracking stages (per-camera\n"
-			"landmarks, depth samples, timestamps) so the whole pipeline can\n"
-			"be re-run offline bit-exactly. Starting RESETS the transient\n"
-			"tracking state (brief blip), and editing any tracking/fusion\n"
-			"setting while recording finalizes the file. Roughly 0.5-1 MB\n"
-			"per second.");
+		if (ImGui::Button(locLabel("timelinePanel.startRecordingButton"), ImVec2(-1, 0)))
+			visionThread->requestRecordingStart(config->makeRecordingFilePath());
+		ImGui::SetItemTooltip("%s", locText("timelinePanel.startRecordingTooltip"));
 
 		// Deliberately below the start button and unchecked by default: this
 		// is the difference between recording abstract landmarks and
 		// recording video of the room
 		bool bRecordFrames= config->recording.recordRawFrames;
-		if (ImGui::Checkbox("Also record raw camera frames", &bRecordFrames))
+		if (ImGui::Checkbox(locLabel("timelinePanel.recordRawFramesCheckbox"), &bRecordFrames))
 		{
 			config->recording.recordRawFrames= bRecordFrames;
 			config->markDirty();
 		}
-		ImGui::SetItemTooltip(
-			"PRIVACY: this writes the actual camera images to disk as JPEGs,\n"
-			"next to the recording. Off by default, and worth leaving off\n"
-			"unless you are chasing a problem.\n\n"
-			"What it buys: a landmark recording cannot answer whether a\n"
-			"different pose model would have done better, because the model's\n"
-			"input is gone. With frames, that becomes an offline measurement\n"
-			"(--replay-bodypose) instead of a live impression.\n\n"
-			"Costs roughly 3-6 MB per second per camera.");
+		ImGui::SetItemTooltip("%s", locText("timelinePanel.recordRawFramesTooltip"));
 		if (bRecordFrames)
-			ImGui::TextColored(k_colorBad, "Raw frames WILL be written next recording");
+			ImGui::TextColored(k_colorBad, "%s", locText("timelinePanel.rawFramesPendingWarning"));
 
 		const std::string lastPath= visionThread->getLastRecordingPath();
 		if (!lastPath.empty())
 		{
 			if (visionThread->didLastRecordingAbort())
-				ImGui::TextColored(k_colorBad, "Last recording ABORTED (writer overflow)");
-			ImGui::TextWrapped("Last: %s", lastPath.c_str());
+				ImGui::TextColored(k_colorBad, "%s", locText("timelinePanel.lastRecordingAbortedWarning"));
+			ImGui::TextWrapped(locText("timelinePanel.lastRecordingPathFmt"), lastPath.c_str());
 		}
 	}
 }
 
-void TimelinePanel::refreshRecordingList()
+void TimelinePanel::refreshRecordingList(const AppConfig* config)
 {
 	m_recordingFiles.clear();
 	std::error_code ec;
 	for (const auto& entry :
-		 std::filesystem::directory_iterator(AppConfig::getRecordingsDirectoryPath(), ec))
+		 std::filesystem::directory_iterator(config->getRecordingsDirectoryPath(), ec))
 	{
 		if (entry.is_regular_file() && entry.path().extension() == ".jsonl")
 			m_recordingFiles.push_back(entry.path().string());
@@ -118,24 +106,24 @@ void TimelinePanel::refreshRecordingList()
 		m_selectedRecording= (int)m_recordingFiles.size() - 1; // newest by timestamp name
 }
 
-void TimelinePanel::drawLoadSection(VisionThread* visionThread)
+void TimelinePanel::drawLoadSection(const AppConfig* config, VisionThread* visionThread)
 {
 	if (m_recordingFiles.empty())
-		refreshRecordingList();
+		refreshRecordingList(config);
 
 	const char* selectedName= m_selectedRecording >= 0
 		? m_recordingFiles[m_selectedRecording].c_str()
-		: "<no recordings>";
+		: locText("timelinePanel.noRecordingsPlaceholder");
 	// Show just the filename in the combo (paths are long)
 	auto fileLabel= [](const std::string& path) {
 		return std::filesystem::path(path).filename().string();
 	};
 
-	if (ImGui::BeginCombo("Recording", m_selectedRecording >= 0
+	if (ImGui::BeginCombo(locLabel("timelinePanel.recordingCombo"), m_selectedRecording >= 0
 											? fileLabel(m_recordingFiles[m_selectedRecording]).c_str()
 											: selectedName))
 	{
-		refreshRecordingList();
+		refreshRecordingList(config);
 		for (int fileIndex= 0; fileIndex < (int)m_recordingFiles.size(); ++fileIndex)
 		{
 			if (ImGui::Selectable(fileLabel(m_recordingFiles[fileIndex]).c_str(),
@@ -147,7 +135,7 @@ void TimelinePanel::drawLoadSection(VisionThread* visionThread)
 
 	const bool bCanLoad= m_selectedRecording >= 0 && !visionThread->isRecording();
 	ImGui::BeginDisabled(!bCanLoad);
-	if (ImGui::Button("Load + Verify", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("timelinePanel.loadButton"), ImVec2(-1, 0)))
 	{
 		std::string error;
 		if (m_replay.load(m_recordingFiles[m_selectedRecording], error))
@@ -160,27 +148,24 @@ void TimelinePanel::drawLoadSection(VisionThread* visionThread)
 			setCurrentFrame(0);
 			m_bPlaying= false;
 
-			char status[256];
-			snprintf(status, sizeof(status), "%d frames, %d divergent%s", m_replay.getFrameCount(),
-					 (int)m_replay.getDivergentFrames().size(),
-					 m_replay.hasFooter()
-						 ? (m_replay.getFooter().bAborted ? " (recording aborted)" : "")
-						 : " (no footer - truncated)");
-			m_loadStatus= status;
+			const int frameCount= m_replay.getFrameCount();
+			const int divergentCount= (int)m_replay.getDivergentFrames().size();
+			if (!m_replay.hasFooter())
+				m_loadStatus= locFormat("timelinePanel.loadStatusTruncatedFmt", frameCount, divergentCount);
+			else if (m_replay.getFooter().bAborted)
+				m_loadStatus= locFormat("timelinePanel.loadStatusAbortedFmt", frameCount, divergentCount);
+			else
+				m_loadStatus= locFormat("timelinePanel.loadStatusFmt", frameCount, divergentCount);
 			m_bReplayViewActive= true;
 		}
 		else
 		{
 			m_bLoaded= false;
-			m_loadStatus= "Load failed: " + error;
+			m_loadStatus= locFormat("timelinePanel.loadFailedFmt", error.c_str());
 		}
 	}
 	ImGui::EndDisabled();
-	ImGui::SetItemTooltip(
-		"Loads the recording, re-runs the full tracking pipeline on its\n"
-		"inputs and verifies every frame's checksum against what live\n"
-		"produced. Divergent frames indicate a build mismatch (recordings\n"
-		"verify bit-exactly only against the binary that made them).");
+	ImGui::SetItemTooltip("%s", locText("timelinePanel.loadButtonTooltip"));
 
 	if (!m_loadStatus.empty())
 	{
@@ -191,11 +176,8 @@ void TimelinePanel::drawLoadSection(VisionThread* visionThread)
 
 	if (m_bLoaded && m_replay.didRun())
 	{
-		ImGui::Checkbox("Show replay in 3D scene", &m_bReplayViewActive);
-		ImGui::SetItemTooltip(
-			"Feeds the 3D scene from the replay at the scrub position\n"
-			"instead of live tracking. Live tracking and OSC keep running\n"
-			"either way.");
+		ImGui::Checkbox(locLabel("timelinePanel.showReplayCheckbox"), &m_bReplayViewActive);
+		ImGui::SetItemTooltip("%s", locText("timelinePanel.showReplayTooltip"));
 	}
 }
 
@@ -258,7 +240,7 @@ void TimelinePanel::drawTransportSection()
 		m_bPlaying= false;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button(m_bPlaying ? "Pause" : "Play"))
+	if (ImGui::Button(m_bPlaying ? locLabel("timelinePanel.pauseButton") : locLabel("timelinePanel.playButton")))
 	{
 		m_bPlaying= !m_bPlaying;
 		if (m_bPlaying)
@@ -304,19 +286,19 @@ void TimelinePanel::drawTransportSection()
 	}
 
 	// View selection + divergence jump list
-	ImGui::RadioButton("Recorded", &m_viewMode, 0);
+	ImGui::RadioButton(locLabel("timelinePanel.recordedRadio"), &m_viewMode, 0);
 	ImGui::SameLine();
-	ImGui::RadioButton("Replayed", &m_viewMode, 1);
+	ImGui::RadioButton(locLabel("timelinePanel.replayedRadio"), &m_viewMode, 1);
 	ImGui::SameLine();
 	ImGui::BeginDisabled(!m_replay.hasWhatIf());
-	ImGui::RadioButton("What-if", &m_viewMode, 2);
+	ImGui::RadioButton(locLabel("timelinePanel.whatIfRadio"), &m_viewMode, 2);
 	ImGui::EndDisabled();
-	ImGui::SetItemTooltip("Which output the 3D scene shows at the scrub position");
+	ImGui::SetItemTooltip("%s", locText("timelinePanel.viewModeTooltip"));
 
 	const std::vector<int>& divergent= m_replay.getDivergentFrames();
 	if (!divergent.empty())
 	{
-		ImGui::TextColored(k_colorWarn, "%d divergent frames:", (int)divergent.size());
+		ImGui::TextColored(k_colorWarn, locText("timelinePanel.divergentFramesFmt"), (int)divergent.size());
 		ImGui::SameLine();
 		for (size_t index= 0; index < divergent.size() && index < 8; ++index)
 		{
@@ -345,7 +327,8 @@ void TimelinePanel::drawFrameInfoSection()
 		snprintf(freshList + len, sizeof(freshList) - len, "%s%d%s", len > 0 ? " " : "",
 				 fresh.cameraIndex + 1, fresh.valid ? "" : "(invalid)");
 	}
-	ImGui::Text("%s | fresh cams: %s", recorded.bFused ? "fused" : "passthrough", freshList);
+	ImGui::Text(recorded.bFused ? locText("timelinePanel.fusedStatusFmt") : locText("timelinePanel.passthroughStatusFmt"),
+				freshList);
 
 	if (!frame.bChecksumMatch)
 		ImGui::TextColored(k_colorBad, "CHECKSUM MISMATCH (replay != recorded on this build)");
@@ -372,23 +355,20 @@ void TimelinePanel::drawWhatIfSection()
 	}
 
 	HandFusionConfig& fusion= m_whatIfParams.fusionConfig;
-	ImGui::Checkbox("Hand bones", &m_whatIfParams.bApplyCalibratedSkeleton);
-	ImGui::SetItemTooltip(
-		"Off = fall back to the landmark model's own proportions, which is\n"
-		"the A/B for a bone calibration. No effect on a recording made\n"
-		"before one was measured.");
+	ImGui::Checkbox(locLabel("timelinePanel.handBonesCheckbox"), &m_whatIfParams.bApplyCalibratedSkeleton);
+	ImGui::SetItemTooltip("%s", locText("timelinePanel.handBonesTooltip"));
 
 	float jitterReferenceMm= fusion.jitterReferenceM * 1000.f;
-	if (ImGui::SliderFloat("Jitter reference", &jitterReferenceMm, 3.f, 60.f, "%.0f mm"))
+	if (ImGui::SliderFloat(locLabel("timelinePanel.jitterReferenceSlider"), &jitterReferenceMm, 3.f, 60.f, "%.0f mm"))
 		fusion.jitterReferenceM= jitterReferenceMm * 0.001f;
-	ImGui::SliderFloat("Max tri residual", &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");
-	ImGui::SliderFloat("Residual reference", &fusion.residualReferencePx, 2.f, 30.f, "%.0f px");
+	ImGui::SliderFloat(locLabel("timelinePanel.maxTriResidualSlider"), &fusion.triangulationMaxResidualPx, 5.f, 80.f, "%.0f px");
+	ImGui::SliderFloat(locLabel("timelinePanel.residualReferenceSlider"), &fusion.residualReferencePx, 2.f, 30.f, "%.0f px");
 	float stalenessMs= (float)fusion.stalenessWindowMs;
-	if (ImGui::SliderFloat("Staleness window", &stalenessMs, 20.f, 200.f, "%.0f ms"))
+	if (ImGui::SliderFloat(locLabel("timelinePanel.stalenessWindowSlider"), &stalenessMs, 20.f, 200.f, "%.0f ms"))
 		fusion.stalenessWindowMs= stalenessMs;
-	ImGui::SliderFloat("Hand scale x", &m_whatIfParams.refLengthScale, 0.8f, 1.2f, "%.3f");
+	ImGui::SliderFloat(locLabel("timelinePanel.handScaleSlider"), &m_whatIfParams.refLengthScale, 0.8f, 1.2f, "%.3f");
 
-	if (ImGui::Button("Re-simulate", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("timelinePanel.resimulateButton"), ImVec2(-1, 0)))
 	{
 		m_replay.runWhatIf(m_whatIfParams);
 		m_viewMode= 2;
@@ -428,10 +408,7 @@ void TimelinePanel::drawWhatIfSection()
 				 differentFrames, m_replay.getFrameCount(), maxPalmDeltaMm);
 		m_whatIfStatus= status;
 	}
-	ImGui::SetItemTooltip(
-		"Re-runs the whole recording with these parameters. The original\n"
-		"recorded output is untouched - flip the view radio (or compare\n"
-		"the deltas below) to judge a candidate fix against the incident.");
+	ImGui::SetItemTooltip("%s", locText("timelinePanel.resimulateTooltip"));
 
 	if (!m_whatIfStatus.empty())
 		ImGui::Text("%s", m_whatIfStatus.c_str());

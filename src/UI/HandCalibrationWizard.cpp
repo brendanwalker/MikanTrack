@@ -2,6 +2,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "AppConfig.h"
 
 namespace
@@ -38,15 +40,15 @@ void drawStereoStatusLine(const TrackingFrameResult& fused)
 {
 	bool bStereo[2];
 	stereoStatus(fused, bStereo);
-	ImGui::Text("Stereo tracking  L:");
+	ImGui::Text("%s", locText("handWizard.stereoTrackingLeftLabel"));
 	ImGui::SameLine();
 	ImGui::TextColored(bStereo[0] ? ImVec4(0.4f, 1.f, 0.4f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f),
-					   bStereo[0] ? "yes" : "no");
+					   "%s", bStereo[0] ? locText("common.yes") : locText("common.no"));
 	ImGui::SameLine();
-	ImGui::Text(" R:");
+	ImGui::Text("%s", locText("handWizard.stereoTrackingRightLabel"));
 	ImGui::SameLine();
 	ImGui::TextColored(bStereo[1] ? ImVec4(0.4f, 1.f, 0.4f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f),
-					   bStereo[1] ? "yes" : "no");
+					   "%s", bStereo[1] ? locText("common.yes") : locText("common.no"));
 }
 } // namespace
 
@@ -60,6 +62,7 @@ void HandCalibrationWizard::enter()
 {
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::BonesIntro;
 	m_countdown= 0.f;
 	m_boneCapture= VisionThread::BoneCalibrationCapture();
@@ -78,7 +81,7 @@ bool HandCalibrationWizard::update(float deltaSeconds, const TrackingFrameResult
 		return false;
 
 	ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Appearing);
-	if (ImGui::Begin("Hand Calibration", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (ImGui::Begin(locWindowTitle("windows.handWizard"), nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		switch (m_state)
 		{
@@ -92,8 +95,11 @@ bool HandCalibrationWizard::update(float deltaSeconds, const TrackingFrameResult
 		}
 
 		ImGui::Separator();
-		if (ImGui::Button("Cancel Calibration"))
+		if (ImGui::Button(locLabel("handWizard.cancelCalibrationButton")))
+		{
+			m_result= eWizardResult::Cancelled;
 			m_bWantsClose= true;
+		}
 	}
 	ImGui::End();
 
@@ -102,22 +108,12 @@ bool HandCalibrationWizard::update(float deltaSeconds, const TrackingFrameResult
 
 void HandCalibrationWizard::drawBonesIntro(const TrackingFrameResult& fusedResult)
 {
-	ImGui::TextWrapped(
-		"Step 1 of 2: measure your hand bones.\n\n"
-		"The landmark model's metric hand is not your hand - its proximal "
-		"phalanges run about half length - which biases the single-camera "
-		"depth solve and ships the wrong skeleton to clients. This samples "
-		"every stereo-triangulated frame for %d seconds and takes the median "
-		"of each bone.\n\n"
-		"During the window: keep BOTH hands where two cameras see them, and "
-		"move them through varied poses and rotations, so no bone stays "
-		"aligned with a camera's view ray.",
-		(int)k_boneSampleSeconds);
+	ImGui::TextWrapped(locText("handWizard.bonesIntroFmt"), (int)k_boneSampleSeconds);
 	ImGui::Spacing();
 	drawStereoStatusLine(fusedResult);
 	ImGui::Spacing();
 
-	if (ImGui::Button("Start Bone Measurement", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.startBoneMeasurementButton"), ImVec2(-1, 0)))
 	{
 		m_countdown= k_countdownSeconds;
 		m_state= eState::BonesCountdown;
@@ -133,7 +129,7 @@ void HandCalibrationWizard::drawBonesCountdown(float deltaSeconds)
 		m_state= eState::BonesSampling;
 		return;
 	}
-	ImGui::TextWrapped("Get both hands into view of two cameras...");
+	ImGui::TextWrapped("%s", locText("handWizard.bonesCountdownHint"));
 	drawCenteredCountdown(m_countdown, k_countdownSeconds);
 }
 
@@ -143,8 +139,8 @@ void HandCalibrationWizard::drawBonesSampling()
 	int liveSamples[2]= {0, 0};
 	m_visionThread->getBoneCalibrationProgress(bSamplingActive, liveSamples[0], liveSamples[1]);
 
-	ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Sampling - move both hands");
-	ImGui::Text("Samples  L: %d  R: %d (need %d)", liveSamples[0], liveSamples[1],
+	ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s", locText("handWizard.samplingHint"));
+	ImGui::Text(locText("handWizard.samplesFmt"), liveSamples[0], liveSamples[1],
 				HandBoneCalibrator::k_minSamples);
 
 	if (m_visionThread->fetchBoneCalibration(m_boneCapture))
@@ -153,7 +149,7 @@ void HandCalibrationWizard::drawBonesSampling()
 		return;
 	}
 
-	if (ImGui::Button("Cancel Sampling", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.cancelSamplingButton"), ImVec2(-1, 0)))
 	{
 		m_visionThread->cancelBoneCalibration();
 		m_state= eState::BonesIntro;
@@ -166,10 +162,10 @@ void HandCalibrationWizard::drawBonesReview()
 	// client rebuilds the hand from, so it gets looked at first
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		const char* sideName= sideIndex == 0 ? "Left" : "Right";
+		const char* sideName= sideIndex == 0 ? locText("handWizard.leftLabel") : locText("handWizard.rightLabel");
 		if (!m_boneCapture.bCaptured[sideIndex])
 		{
-			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s: only %d stereo samples, need %d",
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), locText("handWizard.boneSampleShortfallFmt"),
 							   sideName, m_boneCapture.quality[sideIndex].sampleCount,
 							   HandBoneCalibrator::k_minSamples);
 			continue;
@@ -180,7 +176,7 @@ void HandCalibrationWizard::drawBonesReview()
 		const float spreadMm= m_boneCapture.quality[sideIndex].worstPhalanxSpread * 1000.f;
 		const ImVec4 spreadColor= spreadMm > k_boneSpreadWarnMm ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
 																: ImVec4(0.4f, 1.f, 0.4f, 1.f);
-		ImGui::TextColored(spreadColor, "%s: wrist->knuckle %.1f mm, %d samples, worst spread %.1f mm",
+		ImGui::TextColored(spreadColor, locText("handWizard.boneMeasurementSummaryFmt"),
 						   sideName, referenceBone * 1000.f,
 						   m_boneCapture.quality[sideIndex].sampleCount, spreadMm);
 
@@ -196,33 +192,24 @@ void HandCalibrationWizard::drawBonesReview()
 	const bool bAnyCaptured= m_boneCapture.bCaptured[0] || m_boneCapture.bCaptured[1];
 	ImGui::Spacing();
 	ImGui::BeginDisabled(!bAnyCaptured);
-	if (ImGui::Button("Accept and Continue", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.acceptAndContinueButton"), ImVec2(-1, 0)))
 	{
 		saveBones();
 		m_state= eState::RestIntro;
 	}
 	ImGui::EndDisabled();
-	if (ImGui::Button("Retry Measurement", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.retryMeasurementButton"), ImVec2(-1, 0)))
 		m_state= eState::BonesIntro;
 }
 
 void HandCalibrationWizard::drawRestIntro(const TrackingFrameResult& fusedResult)
 {
-	ImGui::TextWrapped(
-		"Step 2 of 2: capture your rest pose.\n\n"
-		"This pose becomes the all-zero-angles reference. Without it, zero "
-		"means an idealized flat hand, and a hand hovering over a keyboard "
-		"genuinely holds tens of degrees of knuckle flexion.\n\n"
-		"It is captured NOW, after the bone save, on purpose: measured bones "
-		"move the thumb's angle zero, so a rest pose captured before them "
-		"would be measured against a zero that no longer exists.\n\n"
-		"Hold both hands in your rest pose - flat, fingers together and "
-		"straight - where two cameras see them.");
+	ImGui::TextWrapped("%s", locText("handWizard.restIntro"));
 	ImGui::Spacing();
 	drawStereoStatusLine(fusedResult);
 	ImGui::Spacing();
 
-	if (ImGui::Button("Capture Rest Pose", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.captureRestPoseButton"), ImVec2(-1, 0)))
 	{
 		m_countdown= k_countdownSeconds;
 		m_state= eState::RestCountdown;
@@ -238,7 +225,7 @@ void HandCalibrationWizard::drawRestCountdown(float deltaSeconds)
 		m_state= eState::RestResult;
 		return;
 	}
-	ImGui::TextWrapped("Hold your rest pose...");
+	ImGui::TextWrapped("%s", locText("handWizard.restCountdownHint"));
 	drawCenteredCountdown(m_countdown, k_countdownSeconds);
 }
 
@@ -255,21 +242,22 @@ void HandCalibrationWizard::drawRestResult()
 	const bool bLeft= m_restCapture.bCaptured[0];
 	const bool bRight= m_restCapture.bCaptured[1];
 	if (bLeft && bRight)
-		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "Captured both hands");
+		ImGui::TextColored(ImVec4(0.4f, 1.f, 0.4f, 1.f), "%s", locText("handWizard.bothHandsCaptured"));
 	else if (bLeft || bRight)
-		ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f),
-						   "Captured %s hand only - the %s hand was not stereo-tracked",
-						   bLeft ? "left" : "right", bLeft ? "right" : "left");
+		ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "%s",
+						   bLeft ? locText("handWizard.leftOnlyCaptured") : locText("handWizard.rightOnlyCaptured"));
 	else
-		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-						   "Nothing captured - both hands need two cameras on them");
+		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", locText("handWizard.nothingCaptured"));
 
 	ImGui::Spacing();
-	if (ImGui::Button("Retry Rest Pose", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("handWizard.retryRestPoseButton"), ImVec2(-1, 0)))
 		m_state= eState::RestIntro;
 	ImGui::BeginDisabled(!bLeft && !bRight);
-	if (ImGui::Button("Done", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("common.done"), ImVec2(-1, 0)))
+	{
+		m_result= eWizardResult::Completed;
 		m_bWantsClose= true;
+	}
 	ImGui::EndDisabled();
 }
 

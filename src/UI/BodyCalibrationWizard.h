@@ -4,6 +4,7 @@
 
 #include "BodyDimensionCalibrator.h"
 #include "VisionThread.h" // VisionPreviewFrame
+#include "WizardResult.h"
 
 class AppConfig;
 struct TrackingFrameResult;
@@ -45,6 +46,7 @@ public:
 	void exit();
 	bool isActive() const { return m_bActive; }
 	int getCameraIndex() const { return m_cameraIndex; }
+	eWizardResult getResult() const { return m_wizardResult; }
 
 	// Returns false once the wizard wants to close
 	bool update(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
@@ -69,6 +71,8 @@ private:
 
 	eState m_state= eState::VerifyReady;
 	bool m_bActive= false;
+	// m_result is the calibrator's measurement result, hence the longer name
+	eWizardResult m_wizardResult= eWizardResult::None;
 	int m_cameraIndex= -1;
 
 	BodyDimensionCalibrator m_calibrator;
