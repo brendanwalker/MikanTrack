@@ -29,6 +29,7 @@ linked, so this app builds standalone.
 
 - **Dear ImGui** (docking branch) — MIT — `thirdparty/imgui` (submodule)
 - **tinyfiledialogs** 3.8.8 — zlib — `thirdparty/tinyfiledialogs` (vendored, two files)
+- **Mochiy Pop One** (UI font) — SIL OFL 1.1 — `resources/fonts/` (license text alongside as `OFL.txt`)
 - **glm** — MIT/Happy Bunny — `thirdparty/glm` (submodule)
 - **nlohmann/json** — MIT — `thirdparty/nlohmann_json` (submodule)
 - **readerwriterqueue** — BSD-2 — `thirdparty/readerwriterqueue` (submodule)

@@ -124,6 +124,8 @@ A freshly created project starts `SetupFlow` (`src/UI/SetupFlow.h`), the guided 
 
 `MainWindow` (`src/UI/MainWindow.h`) owns the ImGui dockspace, menu bar, panels, and wizards, and fetches the per-camera previews and fused result each update. The panels are `VideoPreviewPanel`, `Scene3dPanel`, `DevicePanel`, `CalibrationPanel`, and `TimelinePanel` (owned instances), plus the `LogPanel` singleton and the `SettingsPanels` namespace of free functions whose frame-to-frame state (`TrackingPanelState`) lives in `MainWindow`. The wizards are `IntrinsicsWizard`, `ExtrinsicsWizard`, `MountingWizard`, `BodyCalibrationWizard`, and `HandCalibrationWizard`.
 
+`ImGuiTheme` (`src/UI/ImGuiTheme.h`/`.cpp`) applies the dark pastel style and loads the Mochiy Pop One UI font from `resources/fonts/` (with Japanese glyph ranges), once in `App::startup`.
+
 `Scene3dPanel` renders the marker-plane grid, per-camera frustums, and the fused hand/arm skeletons (with optional dimmed per-camera skeletons) into an FBO using `src/Render/`. The skeleton it draws is the same FK reconstruction a client rebuilds from the streamed parameters.
 
 Global hotkeys, handled in `MainWindow.cpp`: F9 requests a diagnostic dump, F10 toggles the tracking recording.

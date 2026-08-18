@@ -13,6 +13,7 @@
 #include "AppConfig.h"
 #include "FrameTimer.h"
 #include "GlobalSettings.h"
+#include "ImGuiTheme.h"
 #include "Logger.h"
 #include "LogPanel.h"
 #include "MainWindow.h"
@@ -130,6 +131,8 @@ bool App::startup()
 	io.ConfigFlags|= ImGuiConfigFlags_DockingEnable;
 	io.ConfigFlags|= ImGuiConfigFlags_NavEnableKeyboard;
 	ImGui::StyleColorsDark();
+	ImGuiTheme::applyStyle();
+	ImGuiTheme::loadFonts();
 	ImGui_ImplSDL2_InitForOpenGL(m_sdlWindow, m_glContext);
 	ImGui_ImplOpenGL3_Init("#version 330 core");
 

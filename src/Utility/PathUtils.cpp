@@ -84,7 +84,7 @@ std::filesystem::path getFontPath(const std::string& fontName)
 {
 	const std::string fileFilename= fontName + ".ttf";
 
-	return getResourceDirectory() / "font" / fileFilename;
+	return getResourceDirectory() / "fonts" / fileFilename;
 }
 
 std::filesystem::path makeAbsoluteResourceFilePath(const std::filesystem::path& relative_path)
