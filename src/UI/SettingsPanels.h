@@ -62,4 +62,9 @@ void drawTrackingPanel(AppConfig* config, VisionThread* visionThread, VideoPrevi
 					   const TrackingFrameResult& fusedResult);
 // fusedResult: the latest fused tracking output (for the live angle readout)
 void drawOscPanel(AppConfig* config, VisionThread* visionThread, const TrackingFrameResult& fusedResult);
+// App-level settings dock window (language selection, app-global options)
+void drawAppSettingsPanel();
+// The language combo alone, shared between the Settings panel and the main
+// menu. Draws nothing when no LocalizationManager exists.
+void drawLanguageCombo();
 }

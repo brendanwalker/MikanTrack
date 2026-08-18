@@ -3,8 +3,10 @@
 #include "imgui.h"
 #include "tinyfiledialogs.h"
 
+#include "LocText.h"
 #include "PathUtils.h"
 #include "ProjectManager.h"
+#include "SettingsPanels.h"
 
 MainMenuScreen::Action MainMenuScreen::draw(bool bHasLastProject, const std::string& lastProjectName)
 {
@@ -34,26 +36,26 @@ MainMenuScreen::Action MainMenuScreen::draw(bool bHasLastProject, const std::str
 
 	if (bHasLastProject)
 	{
-		const std::string resumeLabel= "Resume " + lastProjectName;
+		const std::string resumeLabel= locFormat("mainMenu.resumeFmt", lastProjectName.c_str());
 		if (ImGui::Button(resumeLabel.c_str(), buttonSize))
 			action.type= Action::Type::Resume;
 	}
 
-	if (ImGui::Button("New Project...", buttonSize))
+	if (ImGui::Button(locLabel("mainMenu.newProjectButton"), buttonSize))
 	{
 		m_nameBuffer[0]= '\0';
 		m_bNameModalRequested= true;
 	}
 
-	if (ImGui::Button("Load Project...", buttonSize))
+	if (ImGui::Button(locLabel("mainMenu.loadProjectButton"), buttonSize))
 	{
 		// Blocks the frame loop while open; fine here, nothing is streaming in
 		// the menu state
 		const std::string defaultDir= (ProjectManager::getProjectsRootDirectory() / "").string();
 		const char* filterPatterns[]= {"project.json"};
 		const char* selectedPath= tinyfd_openFileDialog(
-			"Load Project", defaultDir.c_str(), 1, filterPatterns,
-			"MikanTrack project (project.json)", 0);
+			locText("mainMenu.loadProjectDialogTitle"), defaultDir.c_str(), 1, filterPatterns,
+			locText("mainMenu.loadProjectDialogFilterDescription"), 0);
 		if (selectedPath != nullptr)
 		{
 			action.type= Action::Type::LoadProject;
@@ -62,8 +64,12 @@ MainMenuScreen::Action MainMenuScreen::draw(bool bHasLastProject, const std::str
 		}
 	}
 
-	if (ImGui::Button("Exit", buttonSize))
+	if (ImGui::Button(locLabel("mainMenu.exitButton"), buttonSize))
 		action.type= Action::Type::Exit;
+
+	ImGui::Separator();
+	ImGui::SetNextItemWidth(-1.f);
+	SettingsPanels::drawLanguageCombo();
 
 	if (!m_statusMessage.empty())
 	{
@@ -76,13 +82,13 @@ MainMenuScreen::Action MainMenuScreen::draw(bool bHasLastProject, const std::str
 	// New Project name modal
 	if (m_bNameModalRequested)
 	{
-		ImGui::OpenPopup("New Project");
+		ImGui::OpenPopup(locWindowTitle("windows.modalNewProject"));
 		m_bNameModalRequested= false;
 	}
 	ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-	if (ImGui::BeginPopupModal("New Project", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+	if (ImGui::BeginPopupModal(locWindowTitle("windows.modalNewProject"), nullptr, ImGuiWindowFlags_AlwaysAutoResize))
 	{
-		ImGui::TextUnformatted("Project name:");
+		ImGui::TextUnformatted(locText("mainMenu.projectNameLabel"));
 		if (ImGui::IsWindowAppearing())
 			ImGui::SetKeyboardFocusHere();
 		ImGui::SetNextItemWidth(280.f);
@@ -95,16 +101,16 @@ MainMenuScreen::Action MainMenuScreen::draw(bool bHasLastProject, const std::str
 		if (bValid && std::filesystem::exists(ProjectManager::getProjectsRootDirectory() / name))
 		{
 			bValid= false;
-			nameError= "A project with this name already exists";
+			nameError= locText("errors.projectNameExists");
 		}
 		if (!name.empty() && !bValid)
 			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", nameError.c_str());
 
 		ImGui::BeginDisabled(!bValid);
-		const bool bCreatePressed= ImGui::Button("Create", ImVec2(120, 0));
+		const bool bCreatePressed= ImGui::Button(locLabel("common.create"), ImVec2(120, 0));
 		ImGui::EndDisabled();
 		ImGui::SameLine();
-		const bool bCancelPressed= ImGui::Button("Cancel", ImVec2(120, 0));
+		const bool bCancelPressed= ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0));
 
 		if ((bCreatePressed || bEnterPressed) && bValid)
 		{

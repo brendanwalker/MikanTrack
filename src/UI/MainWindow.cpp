@@ -13,6 +13,7 @@
 #include "HandCalibrationWizard.h"
 #include "MountingWizard.h"
 #include "GlobalSettings.h"
+#include "LocText.h"
 #include "LogPanel.h"
 #include "Logger.h"
 #include "MainMenuScreen.h"
@@ -153,15 +154,15 @@ void MainWindow::drawMainMenu()
 	{
 		case MainMenuScreen::Action::Type::Resume:
 			if (!m_app->activateProject(globalSettings->lastProjectPath))
-				m_mainMenuScreen->setStatusMessage("Could not load the last project");
+				m_mainMenuScreen->setStatusMessage(locText("errors.loadLastProjectFailed"));
 			break;
 		case MainMenuScreen::Action::Type::NewProject:
 			if (!m_app->activateNewProject(action.projectName))
-				m_mainMenuScreen->setStatusMessage("Could not create the project");
+				m_mainMenuScreen->setStatusMessage(locText("errors.createProjectFailed"));
 			break;
 		case MainMenuScreen::Action::Type::LoadProject:
 			if (!m_app->activateProject(action.projectFile))
-				m_mainMenuScreen->setStatusMessage("Could not load the project");
+				m_mainMenuScreen->setStatusMessage(locText("errors.loadProjectFailed"));
 			break;
 		case MainMenuScreen::Action::Type::Exit:
 			m_app->requestShutdown();
@@ -201,14 +202,15 @@ void MainWindow::drawDockspaceAndMenuBar()
 		const ImGuiID rightId= ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Right, 0.25f, nullptr, &centerId);
 		const ImGuiID bottomId= ImGui::DockBuilderSplitNode(centerId, ImGuiDir_Down, 0.22f, nullptr, &centerId);
 
-		ImGui::DockBuilderDockWindow("Video Preview", centerId);
-		ImGui::DockBuilderDockWindow("3D Scene", centerId);
-		ImGui::DockBuilderDockWindow("Device", leftId);
-		ImGui::DockBuilderDockWindow("Tracking", leftId);
-		ImGui::DockBuilderDockWindow("Calibration", rightId);
-		ImGui::DockBuilderDockWindow("OSC Output", rightId);
-		ImGui::DockBuilderDockWindow("Log", bottomId);
-		ImGui::DockBuilderDockWindow("Timeline", bottomId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.videoPreview"), centerId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.scene3d"), centerId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.device"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.tracking"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.settings"), leftId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.calibration"), rightId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.oscOutput"), rightId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.log"), bottomId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.timeline"), bottomId);
 		ImGui::DockBuilderFinish(dockspaceId);
 	}
 	m_bDockLayoutInitialized= true;
@@ -217,30 +219,30 @@ void MainWindow::drawDockspaceAndMenuBar()
 
 	if (ImGui::BeginMenuBar())
 	{
-		if (ImGui::BeginMenu("File"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.fileMenu")))
 		{
 			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
-			if (ImGui::MenuItem("Save Project"))
+			if (ImGui::MenuItem(locLabel("mainWindow.saveProject")))
 				m_app->getConfig()->save();
-			if (ImGui::MenuItem("Load Project...", nullptr, false, !bWizardActive))
+			if (ImGui::MenuItem(locLabel("mainWindow.loadProject"), nullptr, false, !bWizardActive))
 			{
 				const std::string defaultDir=
 					(ProjectManager::getProjectsRootDirectory() / "").string();
 				const char* filterPatterns[]= {"project.json"};
 				const char* selectedPath= tinyfd_openFileDialog(
-					"Load Project", defaultDir.c_str(), 1, filterPatterns,
-					"MikanTrack project (project.json)", 0);
+					locText("mainWindow.loadProjectDialogTitle"), defaultDir.c_str(), 1, filterPatterns,
+					locText("mainWindow.loadProjectDialogFilterDescription"), 0);
 				if (selectedPath != nullptr)
 					m_pendingLoadProjectFile= PathUtils::utf8ToPath(selectedPath);
 			}
-			if (ImGui::MenuItem("Close Project", nullptr, false, !bWizardActive))
+			if (ImGui::MenuItem(locLabel("mainWindow.closeProject"), nullptr, false, !bWizardActive))
 				m_bPendingCloseProject= true;
 			ImGui::Separator();
-			if (ImGui::MenuItem("Quit", "Alt+F4"))
+			if (ImGui::MenuItem(locLabel("mainWindow.quit"), "Alt+F4"))
 				m_app->requestShutdown();
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("Calibration"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.calibrationMenu")))
 		{
 			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
 			AppConfig* config= m_app->getConfig();
@@ -248,9 +250,8 @@ void MainWindow::drawDockspaceAndMenuBar()
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 			{
 				ImGui::PushID(cameraIndex);
-				char label[64];
-				snprintf(label, sizeof(label), "Camera %d Intrinsics...", cameraIndex + 1);
-				if (ImGui::MenuItem(label, nullptr, false, !bWizardActive))
+				const std::string label= locFormat("mainWindow.cameraIntrinsicsFmt", cameraIndex + 1);
+				if (ImGui::MenuItem(label.c_str(), nullptr, false, !bWizardActive))
 					m_intrinsicsWizard->enter(cameraIndex);
 				ImGui::PopID();
 			}
@@ -260,14 +261,15 @@ void MainWindow::drawDockspaceAndMenuBar()
 			bool bAllIntrinsics= true;
 			for (size_t i= 0; i < config->cameraCount(); ++i)
 				bAllIntrinsics&= config->camera(i).intrinsics.present;
-			if (ImGui::MenuItem("Extrinsics (all cameras)...", nullptr, false,
+			if (ImGui::MenuItem(locLabel("mainWindow.extrinsicsAllCameras"), nullptr, false,
 								!bWizardActive && bAllIntrinsics))
 				m_extrinsicsWizard->enter();
 			ImGui::EndMenu();
 		}
-		if (ImGui::BeginMenu("View"))
+		if (ImGui::BeginMenu(locLabel("mainWindow.viewMenu")))
 		{
-			ImGui::MenuItem("Log Panel", nullptr, &m_bShowLogPanel);
+			ImGui::MenuItem(locLabel("mainWindow.logPanel"), nullptr, &m_bShowLogPanel);
+			ImGui::MenuItem(locLabel("mainWindow.viewSettingsPanel"), nullptr, &m_bShowSettingsPanel);
 			ImGui::EndMenu();
 		}
 		ImGui::EndMenuBar();
@@ -355,6 +357,8 @@ void MainWindow::update(float deltaSeconds)
 	SettingsPanels::drawTrackingPanel(config, visionThread, m_videoPreviewPanel.get(), m_scene3dPanel.get(),
 									  m_trackingPanelState, m_latestPreviews, m_latestFused);
 	SettingsPanels::drawOscPanel(config, visionThread, m_latestFused);
+	if (m_bShowSettingsPanel)
+		SettingsPanels::drawAppSettingsPanel();
 	m_timelinePanel->draw(config, visionThread);
 
 	if (m_trackingPanelState.bLaunchMountingWizard)
@@ -395,7 +399,7 @@ void MainWindow::update(float deltaSeconds)
 	// may be the selected one in the shared center dock
 	const bool bCameraWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();
 	if (bCameraWizardActive && !m_bCameraWizardWasActive)
-		ImGui::SetWindowFocus("Video Preview");
+		ImGui::SetWindowFocus(locWindowTitle("windows.videoPreview"));
 	m_bCameraWizardWasActive= bCameraWizardActive;
 
 	// Pin the preview highlight to the wizard's camera while one is active

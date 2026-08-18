@@ -12,6 +12,9 @@ class GlobalSettings
 {
 public:
 	std::filesystem::path lastProjectPath;
+	// UI language code ("en", "ja"); empty until the user picks one, letting
+	// startup fall back to the OS language
+	std::string appLanguage;
 
 	bool hasLastProjectPath() const { return !lastProjectPath.empty(); }
 

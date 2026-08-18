@@ -1,5 +1,7 @@
 #include "IntrinsicsWizard.h"
 
+#include "LocText.h"
+
 #include "opencv2/imgproc.hpp"
 
 #include "AppConfig.h"
@@ -75,17 +77,17 @@ bool IntrinsicsWizard::areBoardParamsValid(std::string& outError) const
 {
 	if (m_boardCols < 3 || m_boardRows < 3)
 	{
-		outError= "Board must be at least 3x3 squares";
+		outError= locText("intrinsicsWizard.boardTooSmallError");
 		return false;
 	}
 	if (m_markerLengthMM <= 0.f)
 	{
-		outError= "Marker size must be positive";
+		outError= locText("intrinsicsWizard.markerSizePositiveError");
 		return false;
 	}
 	if (m_squareLengthMM <= m_markerLengthMM)
 	{
-		outError= "Square size must be larger than marker size";
+		outError= locText("intrinsicsWizard.squareLargerThanMarkerError");
 		return false;
 	}
 	return true;
@@ -140,8 +142,7 @@ bool IntrinsicsWizard::update(float deltaSeconds, const cv::Mat& bgrPreview, ImD
 		}
 		else
 		{
-			m_lastErrorMessage= "Camera calibration solve did not converge - "
-								"try recapturing with better board coverage";
+			m_lastErrorMessage= locText("intrinsicsWizard.calibrationDidNotConvergeError");
 			m_state= eState::Failed;
 		}
 	}
@@ -189,7 +190,7 @@ void IntrinsicsWizard::drawPatternOverlay(ImDrawList* drawList, const ImageToScr
 void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPreview)
 {
 	ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Appearing);
-	if (!ImGui::Begin("Intrinsics Calibration", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (!ImGui::Begin(locWindowTitle("windows.intrinsicsWizard"), nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return;
@@ -199,19 +200,12 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 	{
 		case eState::SelectBoardParams:
 		{
-			ImGui::TextWrapped(
-				"Calibrate the camera lens using a printed charuco board. "
-				"Print the board at 100%% scale, measure a square to confirm its size, "
-				"then capture it from 12 different angles/positions. "
-				"TILT MATTERS: focal length can only be measured from perspective, "
-				"so several captures must have the board clearly angled toward/away "
-				"from the camera - flat-on captures alone cannot calibrate. "
-				"Also cover the frame edges for distortion.");
+			ImGui::TextWrapped(locText("intrinsicsWizard.boardInstructionsFmt"));
 
-			ImGui::InputInt("Columns", &m_boardCols);
-			ImGui::InputInt("Rows", &m_boardRows);
-			ImGui::InputFloat("Square size (mm)", &m_squareLengthMM, 0.f, 0.f, "%.1f");
-			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.1f");
+			ImGui::InputInt(locLabel("intrinsicsWizard.columnsInput"), &m_boardCols);
+			ImGui::InputInt(locLabel("intrinsicsWizard.rowsInput"), &m_boardRows);
+			ImGui::InputFloat(locLabel("intrinsicsWizard.squareSizeInput"), &m_squareLengthMM, 0.f, 0.f, "%.1f");
+			ImGui::InputFloat(locLabel("intrinsicsWizard.markerSizeInput"), &m_markerLengthMM, 0.f, 0.f, "%.1f");
 
 			std::string paramError;
 			const bool bParamsValid= areBoardParamsValid(paramError);
@@ -219,25 +213,20 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
 
 			ImGui::BeginDisabled(!bParamsValid);
-			if (ImGui::Button("Export + open board PNG for printing..."))
+			if (ImGui::Button(locLabel("intrinsicsWizard.exportBoardButton")))
 			{
 				exportAndOpenCharucoBoard(m_boardCols, m_boardRows, m_squareLengthMM, m_markerLengthMM,
 										  eCharucoDictionaryType::DICT_6X6);
 			}
-			ImGui::SetItemTooltip(
-				"Writes the board to resources/calibration and opens it in your image\n"
-				"viewer. Print at 100%% scale and check a square with a ruler - a\n"
-				"rescaled print silently rescales the whole tracking world. The same\n"
-				"board is the extrinsics target, so its FORWARD label sets the world\n"
-				"axes.");
+			ImGui::SetItemTooltip(locText("intrinsicsWizard.exportBoardTooltip"));
 			ImGui::EndDisabled();
 
 			ImGui::Separator();
 			const bool bHasVideo= !bgrPreview.empty();
 			if (!bHasVideo)
-				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start a video stream first");
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "%s", locText("intrinsicsWizard.needVideoWarning"));
 			ImGui::BeginDisabled(!bHasVideo || !bParamsValid);
-			if (ImGui::Button("Begin Capture", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("intrinsicsWizard.beginCaptureButton"), ImVec2(-1, 0)))
 				beginCapture(bgrPreview.cols, bgrPreview.rows);
 			ImGui::EndDisabled();
 			break;
@@ -247,7 +236,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		{
 			const float progress= m_calibrator->computeCalibrationProgress();
 			const int captured= (int)(progress * (float)m_calibrator->getDesiredPatternCount() + 0.5f);
-			ImGui::Text("Captured %d / %d boards (%d tilted / %d needed)", captured,
+			ImGui::Text(locText("intrinsicsWizard.captureProgressFmt"), captured,
 						m_calibrator->getDesiredPatternCount(), m_calibrator->getTiltedSampleCount(),
 						MonoLensDistortionCalibrator::k_minTiltedSampleCount);
 			ImGui::ProgressBar(progress, ImVec2(-1, 0));
@@ -255,46 +244,42 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 			if (m_calibrator->wantsTiltedSample())
 			{
 				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f),
-								   "TILT the board toward/away from the camera");
-				ImGui::TextWrapped(
-					"Enough flat captures - the remaining samples must show real "
-					"perspective, or the focal length can't be solved.");
+								   "%s", locText("intrinsicsWizard.tiltWarning"));
+				ImGui::TextWrapped("%s", locText("intrinsicsWizard.tiltExplanation"));
 			}
 
 			if (m_calibrator->areCurrentImagePointsValid())
 			{
 				const float stability= m_calibrator->getStabilityFraction();
-				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Hold steady... %d%%", (int)(stability * 100.f));
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), locText("intrinsicsWizard.holdSteadyFmt"), (int)(stability * 100.f));
 				ImGui::ProgressBar(stability, ImVec2(-1, 4), "");
 			}
 			else
 			{
-				ImGui::TextDisabled("Show the board / move it to a new position");
+				ImGui::TextDisabled("%s", locText("intrinsicsWizard.showBoardHint"));
 			}
 
-			if (ImGui::Button("Restart"))
+			if (ImGui::Button(locLabel("intrinsicsWizard.restartButton")))
 				m_calibrator->resetCalibrationState();
 			break;
 		}
 
 		case eState::Solving:
-			ImGui::Text("Solving camera calibration...");
+			ImGui::Text("%s", locText("intrinsicsWizard.solvingStatus"));
 			break;
 
 		case eState::TestUndistort:
 		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Calibration complete");
-			ImGui::Text("Reprojection error: %.3f px", m_config->camera(m_cameraIndex).intrinsics.reprojectionError);
-			ImGui::TextWrapped(
-				"The preview now shows the undistorted image. "
-				"Straight lines in the scene should look straight.");
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s", locText("intrinsicsWizard.calibrationCompleteStatus"));
+			ImGui::Text(locText("intrinsicsWizard.reprojectionErrorFmt"), m_config->camera(m_cameraIndex).intrinsics.reprojectionError);
+			ImGui::TextWrapped("%s", locText("intrinsicsWizard.testUndistortExplanation"));
 
-			if (ImGui::Button("Accept", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("intrinsicsWizard.acceptButton"), ImVec2(-1, 0)))
 			{
 				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
 			}
-			if (ImGui::Button("Redo Capture"))
+			if (ImGui::Button(locLabel("intrinsicsWizard.redoCaptureButton")))
 			{
 				m_visionThread->setUndistortEnabled(m_cameraIndex, false);
 				m_state= eState::SelectBoardParams;
@@ -303,10 +288,10 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 		}
 
 		case eState::Failed:
-			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Calibration failed");
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", locText("intrinsicsWizard.calibrationFailedStatus"));
 			if (!m_lastErrorMessage.empty())
 				ImGui::TextWrapped("%s", m_lastErrorMessage.c_str());
-			if (ImGui::Button("Try Again"))
+			if (ImGui::Button(locLabel("intrinsicsWizard.tryAgainButton")))
 			{
 				m_lastErrorMessage.clear();
 				m_state= eState::SelectBoardParams;
@@ -315,7 +300,7 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Cancel / Close"))
+	if (ImGui::Button(locLabel("intrinsicsWizard.cancelCloseButton")))
 	{
 		m_result= eWizardResult::Cancelled;
 		m_bWantsClose= true;

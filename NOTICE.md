@@ -13,6 +13,7 @@ linked, so this app builds standalone.
 | `src/Utility/Logger.*`, `WorkerThread.*`, `ThreadUtils.*` | `src/Libraries/MikanCoreApp/` |
 | `src/Utility/PathUtils.*`, `StringUtils.*`, `MemoryUtils.h` | `src/Libraries/MikanUtility/` |
 | `src/App/FrameTimer.*` | `src/Editor/AppCore/` (verbatim) |
+| `src/App/LocalizationManager.*` | API shape modeled on `src/Editor/Localization/LocalizationManager.*`; storage rewritten from CSV to JSON, UTF-16 path and CDN fetcher dropped, English-fallback behavior added |
 | `src/Math/MathGLM.*`, `MathMikan.*`, `MathUtility.*`, `Transform.h` | `src/Libraries/MikanMath/` |
 | `src/Math/MathTypeConversion.*` | `src/Editor/Math/` (editor-only conversions removed) |
 | `src/Math/MikanMathTypes.h`, `MikanVideoSourceTypes.h` | plain-struct retypes of `src/Libraries/MikanClientAPI/Public/` types (reflection/serialization removed) |

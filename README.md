@@ -87,6 +87,8 @@ Two-Bone IK from the palm transform.
   scale is measured continuously by stereo triangulation while tracking runs,
   until calibrated hand skeletons supersede it.
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
+- Localized UI (English and Japanese; machine-translated Japanese for now),
+  switchable live from the main menu or the Settings panel
 - Dear ImGui (docking) UI; per-project config persisted to
   `%USERPROFILE%/Documents/MikanTrack/<project>/project.json` (the last-project
   pointer lives in `%APPDATA%/MikanTrack/config.json`)

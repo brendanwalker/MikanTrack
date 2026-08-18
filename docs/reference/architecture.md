@@ -12,7 +12,7 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 
 ## Module map
 
-- `src/App`: process orchestration and the record/replay/diagnostics machinery. `App` (`App.h`) owns startup/shutdown, the SDL window and GL context, the ~90 Hz main loop (`FrameTimer(11)` in `App::exec`), and the MainMenu/Project state machine. `VisionThread` is the hub of the app: the inference thread that drains cameras, runs the ML pipelines, fuses, and streams (see Frame anatomy below). `AppConfig` is the per-project settings model, `GlobalSettings` the slim app-global one, and `ProjectManager` the project lifecycle (see Config below). `TrackingRecording`/`TrackingRecorder`/`TrackingReplay`/`FrameRecorder`/`DiagnosticDump`/`TrackingJson` are the recording and diagnostics inventory (see below).
+- `src/App`: process orchestration and the record/replay/diagnostics machinery. `App` (`App.h`) owns startup/shutdown, the SDL window and GL context, the ~90 Hz main loop (`FrameTimer(11)` in `App::exec`), and the MainMenu/Project state machine. `VisionThread` is the hub of the app: the inference thread that drains cameras, runs the ML pipelines, fuses, and streams (see Frame anatomy below). `AppConfig` is the per-project settings model, `GlobalSettings` the slim app-global one, and `ProjectManager` the project lifecycle (see Config below). `LocalizationManager` serves every UI string (see Localization below). `TrackingRecording`/`TrackingRecorder`/`TrackingReplay`/`FrameRecorder`/`DiagnosticDump`/`TrackingJson` are the recording and diagnostics inventory (see below).
 
 - `src/Video`: webcam capture. `VideoCaptureSystem` is the app-facing facade; `VideoFrame.h` defines `VideoFrameBlock`, the heap-owned raw frame copy. `src/Video/Interfaces/` holds the device interfaces (`IUsbVideoDevice`, `IUsbVideoDeviceManager`) and `src/Video/WMF/` the Windows Media Foundation backend (`MikanWMFVideoDevice`, `MikanWMFVideoDeviceManager`, `DeviceHotplugNotifier`), copied from MikanXR's MikanWMFVideo plugin with its vendor-MFT blacklists and hang workarounds intact (see `NOTICE.md`).
 
@@ -87,6 +87,21 @@ Settings live in two files:
 A project is a folder under `%USERPROFILE%/Documents/MikanTrack/<name>/` holding `project.json` plus that project's `recordings/` and `dumps/`. `ProjectManager` (`src/App/ProjectManager.h`/`.cpp`) creates and loads projects. Loading applies the file into the existing `AppConfig` object IN PLACE (after resetting it to defaults), because the UI panels, wizards, and the vision thread all hold raw pointers to that object. The vision thread is always stopped before the config mutates (`App::activateProject` / `App::returnToMainMenu` are the only mutation points), since it reads the config without synchronization. Headless tools that want the active project's config go through `ProjectManager::loadActiveProjectConfig`.
 
 The free functions `makeHandFusionConfig` and `makeBodyDimensions` (declared in `AppConfig.h`) are the single mappings from an `AppConfig` to the fusion config and body dimensions. They exist so the live vision thread, the replay engine, and the replay self-test cannot assemble different configs from the same source.
+
+---
+
+## Localization
+
+Every user-visible UI string is fetched from `LocalizationManager` (`src/App/LocalizationManager.h`/`.cpp`) as UTF-8. The API shape follows MikanXR's manager; storage and fallback differ (see `NOTICE.md`). String tables are JSON, one file per language at `resources/localization/<code>.json` (currently `en`, `ja`), two levels: top-level section objects (one per panel/flow, plus `common`, `errors`, `windows`), lowerCamel keys inside, looked up as `"section.key"`. A `_meta` section carries the language code and native display name. English is the source of truth: at load, every other language is validated against it, and a missing key, an orphan key, a printf-specifier mismatch, or an embedded `##` warns and falls back to the English text, so a bad translation degrades instead of crashing an ImGui format call. The active language persists as `GlobalSettings::appLanguage`; startup resolves saved language, then OS language, then `en`. Switching is live (the manager flips its active table and ImGui refetches every frame), from the combo on the main menu or the Settings panel.
+
+Call sites use three helpers (`src/App/LocText.h`), all safe without a manager (headless tools get the key back):
+
+- `locText("section.key")` for display text, tooltips, and validated printf format strings (`...Fmt` keys keep their `%` specifiers in argument order, since ImGui has no positional specifiers)
+- `locLabel("section.key")` for every interactive widget: it appends a hidden `##section.key`, so the widget ID is the key and translations can never collide IDs
+- `locWindowTitle("windows.key")` for window and popup titles: it appends `###` plus the English title, so the ImGui ID (and therefore `imgui.ini` layouts, `DockBuilderDockWindow`, `SetWindowFocus`, and popup opens) stays identical in every language
+- `locFormat("section.keyFmt", ...)` printf-expands into a `std::string` for labels assembled at runtime
+
+Conventions: a meaning-changing English edit renames the key, so the parity check forces the translations to follow. Adding a language is one new `<code>.json` file (it appears in the selector automatically); its glyphs must fall inside the Japanese ranges the font atlas bakes (`ImGuiTheme::getJapaneseGlyphRanges`). Log output, OSC addresses, config keys, video mode names, and device names are never localized. `MikanTrack.exe --loc-test` validates all of this: load warnings are failures, `windows.*` English titles must be unique, the unknown-key fallback must pass the key through, and every string of every language is glyph-checked against the baked ranges.
 
 ---
 

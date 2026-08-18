@@ -6,6 +6,7 @@
 
 #include "AppConfig.h"
 #include "GlobalSettings.h"
+#include "LocText.h"
 #include "Logger.h"
 #include "PathUtils.h"
 
@@ -26,17 +27,17 @@ bool ProjectManager::isValidProjectName(const std::string& name, std::string& ou
 {
 	if (name.empty())
 	{
-		outError= "Project name is empty";
+		outError= locText("errors.projectNameEmpty");
 		return false;
 	}
 	if (name == "." || name == "..")
 	{
-		outError= "Project name is reserved";
+		outError= locText("errors.projectNameReserved");
 		return false;
 	}
 	if (name.size() > 64)
 	{
-		outError= "Project name is longer than 64 characters";
+		outError= locText("errors.projectNameTooLong");
 		return false;
 	}
 
@@ -45,13 +46,13 @@ bool ProjectManager::isValidProjectName(const std::string& name, std::string& ou
 	{
 		if (invalidChars.find(c) != std::string::npos || (unsigned char)c < 0x20)
 		{
-			outError= "Project name contains a character not allowed in folder names";
+			outError= locText("errors.projectNameInvalidChar");
 			return false;
 		}
 	}
 	if (name.front() == ' ' || name.back() == ' ' || name.back() == '.')
 	{
-		outError= "Project name cannot begin or end with a space, or end with a period";
+		outError= locText("errors.projectNameInvalidEdges");
 		return false;
 	}
 

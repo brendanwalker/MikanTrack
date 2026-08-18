@@ -10,6 +10,7 @@
 #include "IntrinsicsWizard.h"
 #include "MainWindow.h"
 #include "MountingWizard.h"
+#include "LocText.h"
 #include "PatternExport.h"
 #include "VideoCaptureSystem.h"
 #include "VideoPreviewPanel.h"
@@ -150,33 +151,33 @@ void SetupFlow::requestDiscardProject()
 
 void SetupFlow::updateTrackingSetupPrompt()
 {
-	if (!beginCenteredModal("Tracking Setup"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalTrackingSetup")))
 		return;
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted("What is your desired tracking setup?");
+	ImGui::TextUnformatted(locText("setupFlow.trackingSetupPrompt"));
 	ImGui::Spacing();
 
 	int setup= (int)m_trackingSetup;
-	ImGui::RadioButton("Two overhead cameras", &setup, (int)eTrackingSetup::DualOverhead);
-	ImGui::TextDisabled("    Sees the desk and hands only.");
-	ImGui::RadioButton("Two overhead cameras + wrist Joy-Cons", &setup,
+	ImGui::RadioButton(locLabel("setupFlow.dualOverheadRadio"), &setup, (int)eTrackingSetup::DualOverhead);
+	ImGui::TextDisabled("%s", locText("setupFlow.dualOverheadHint"));
+	ImGui::RadioButton(locLabel("setupFlow.dualOverheadJoyConsRadio"), &setup,
 					   (int)eTrackingSetup::DualOverheadJoyCons);
-	ImGui::TextDisabled("    Sees the desk and hands; the Joy-Cons provide elbow pose.");
-	ImGui::RadioButton("Two overhead cameras + one front camera", &setup,
+	ImGui::TextDisabled("%s", locText("setupFlow.dualOverheadJoyConsHint"));
+	ImGui::RadioButton(locLabel("setupFlow.triCameraFrontRadio"), &setup,
 					   (int)eTrackingSetup::TriCameraFront);
-	ImGui::TextDisabled("    Overhead cameras for hands; the front camera adds head and upper body.");
+	ImGui::TextDisabled("%s", locText("setupFlow.triCameraFrontHint"));
 	m_trackingSetup= (eTrackingSetup)setup;
 	ImGui::PopTextWrapPos();
 
 	ImGui::Separator();
-	if (ImGui::Button("Next", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.next"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		transitionTo(eStep::CameraSelection);
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		enterConfirmCancel();
@@ -186,14 +187,14 @@ void SetupFlow::updateTrackingSetupPrompt()
 
 void SetupFlow::updateCameraSelectionPrompt()
 {
-	if (!beginCenteredModal("Select Cameras"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalSelectCameras")))
 		return;
 
 	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
 	const int requiredCameras= getRequiredCameraCount();
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted("Pick a device for each camera.");
+	ImGui::TextUnformatted(locText("setupFlow.pickCameraPrompt"));
 	ImGui::PopTextWrapPos();
 	ImGui::Spacing();
 
@@ -201,14 +202,12 @@ void SetupFlow::updateCameraSelectionPrompt()
 	{
 		const bool bFrontCamera=
 			m_trackingSetup == eTrackingSetup::TriCameraFront && slotIndex == 2;
-		char label[32];
-		if (bFrontCamera)
-			snprintf(label, sizeof(label), "Front camera");
-		else
-			snprintf(label, sizeof(label), "Overhead camera %d", slotIndex + 1);
+		const std::string label= bFrontCamera
+			? locFormat("setupFlow.frontCameraLabel")
+			: locFormat("setupFlow.overheadCameraLabelFmt", slotIndex + 1);
 
 		int& selected= m_selectedDeviceIndices[slotIndex];
-		std::string previewName= "<select a camera>";
+		std::string previewName= locText("setupFlow.selectCameraPlaceholder");
 		if (selected >= 0)
 		{
 			std::string name;
@@ -218,7 +217,7 @@ void SetupFlow::updateCameraSelectionPrompt()
 				selected= -1; // the device list changed underneath the pick
 		}
 
-		if (ImGui::BeginCombo(label, previewName.c_str()))
+		if (ImGui::BeginCombo(label.c_str(), previewName.c_str()))
 		{
 			for (int deviceIndex= 0; deviceIndex < (int)videoCapture->getDeviceCount(); ++deviceIndex)
 			{
@@ -258,7 +257,7 @@ void SetupFlow::updateCameraSelectionPrompt()
 		ImGui::Spacing();
 	}
 
-	if (ImGui::Button("Refresh Devices"))
+	if (ImGui::Button(locLabel("setupFlow.refreshDevicesButton")))
 		videoCapture->refreshDeviceList();
 
 	bool bReady= true;
@@ -270,29 +269,29 @@ void SetupFlow::updateCameraSelectionPrompt()
 
 	if (m_trackingSetup == eTrackingSetup::DualOverheadJoyCons)
 	{
-		ImGui::SeparatorText("Wrist Joy-Cons");
+		ImGui::SeparatorText(locText("setupFlow.wristJoyConsHeader"));
 		VisionThread* visionThread= m_app->getVisionThread();
 		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 		{
 			const ImuSideStatus status= visionThread->getImuSideStatus((eHandSide)sideIndex);
-			const char* sideName= sideIndex == 0 ? "Left" : "Right";
+			const char* connectedKey= sideIndex == 0 ? "setupFlow.leftConnectedFmt" : "setupFlow.rightConnectedFmt";
+			const char* notConnectedKey= sideIndex == 0 ? "setupFlow.leftNotConnected" : "setupFlow.rightNotConnected";
 			if (status.deviceConnected)
-				ImGui::TextColored(k_colorGood, "%s: connected (%s)", sideName, status.deviceName.c_str());
+				ImGui::TextColored(k_colorGood, locText(connectedKey), status.deviceName.c_str());
 			else
 			{
-				ImGui::TextColored(k_colorWait, "%s: not connected", sideName);
+				ImGui::TextColored(k_colorWait, "%s", locText(notConnectedKey));
 				bReady= false;
 			}
 		}
 		ImGui::PushTextWrapPos(k_promptWrapWidth);
-		ImGui::TextDisabled(
-			"Pair Joy-Cons in Windows Bluetooth settings; they connect here automatically once paired.");
+		ImGui::TextDisabled("%s", locText("setupFlow.pairingHint"));
 		ImGui::PopTextWrapPos();
 	}
 
 	ImGui::Separator();
 	ImGui::BeginDisabled(!bReady);
-	if (ImGui::Button("Ok", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.ok"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		applyCameraSelection();
@@ -300,7 +299,7 @@ void SetupFlow::updateCameraSelectionPrompt()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		enterConfirmCancel();
@@ -356,23 +355,20 @@ void SetupFlow::applyCameraSelection()
 
 void SetupFlow::updateCharucoPrintPrompt()
 {
-	if (!beginCenteredModal("Print the Intrinsics Board"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalPrintIntrinsicsBoard")))
 		return;
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted(
-		"Print the checkerboard used for camera intrinsics, then measure it. "
-		"Print dialogs rescale pages silently, so measure a black square on the "
-		"printed sheet rather than trusting these numbers.");
+	ImGui::TextUnformatted(locText("setupFlow.charucoPrintPrompt"));
 	ImGui::PopTextWrapPos();
 	ImGui::Spacing();
 
-	ImGui::InputInt("Board columns", &m_boardCols);
-	ImGui::InputInt("Board rows", &m_boardRows);
-	ImGui::InputFloat("Black square size (mm)", &m_boardSquareLengthMM, 0.f, 0.f, "%.2f");
-	ImGui::InputFloat("Marker size (mm)", &m_boardMarkerLengthMM, 0.f, 0.f, "%.2f");
+	ImGui::InputInt(locLabel("setupFlow.boardColumnsLabel"), &m_boardCols);
+	ImGui::InputInt(locLabel("setupFlow.boardRowsLabel"), &m_boardRows);
+	ImGui::InputFloat(locLabel("setupFlow.blackSquareSizeMmLabel"), &m_boardSquareLengthMM, 0.f, 0.f, "%.2f");
+	ImGui::InputFloat(locLabel("setupFlow.markerSizeMmLabel"), &m_boardMarkerLengthMM, 0.f, 0.f, "%.2f");
 
-	if (ImGui::Button("Print Board...", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("setupFlow.printBoardButton"), ImVec2(-1, 0)))
 	{
 		exportAndOpenCharucoBoard(m_boardCols, m_boardRows, m_boardSquareLengthMM,
 								  m_boardMarkerLengthMM, eCharucoDictionaryType::DICT_6X6);
@@ -382,11 +378,11 @@ void SetupFlow::updateCharucoPrintPrompt()
 							 m_boardMarkerLengthMM > 0.f &&
 							 m_boardSquareLengthMM > m_boardMarkerLengthMM;
 	if (!bParamsValid)
-		ImGui::TextColored(k_colorWait, "Columns/rows need at least 2, and the square must be larger than the marker");
+		ImGui::TextColored(k_colorWait, "%s", locText("setupFlow.charucoValidationWarning"));
 
 	ImGui::Separator();
 	ImGui::BeginDisabled(!bParamsValid);
-	if (ImGui::Button("Continue", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.continueLabel"), ImVec2(120, 0)))
 	{
 		AppConfig* config= m_app->getConfig();
 		config->charucoBoard.cols= m_boardCols;
@@ -399,7 +395,7 @@ void SetupFlow::updateCharucoPrintPrompt()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		enterConfirmCancel();
@@ -409,21 +405,18 @@ void SetupFlow::updateCharucoPrintPrompt()
 
 void SetupFlow::updateArucoPrintPrompt()
 {
-	if (!beginCenteredModal("Print the Extrinsics Marker"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalPrintExtrinsicsMarker")))
 		return;
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted(
-		"Print the origin marker used for camera extrinsics, then measure the "
-		"black square's edge precisely. The marker defines the tracking world's "
-		"origin, axes, and scale, so a mismeasured edge rescales everything.");
+	ImGui::TextUnformatted(locText("setupFlow.arucoPrintPrompt"));
 	ImGui::PopTextWrapPos();
 	ImGui::Spacing();
 
-	ImGui::InputFloat("Marker size (mm)", &m_arucoMarkerLengthMM, 0.f, 0.f, "%.2f");
+	ImGui::InputFloat(locLabel("setupFlow.markerSizeMmLabel"), &m_arucoMarkerLengthMM, 0.f, 0.f, "%.2f");
 
 	AppConfig* config= m_app->getConfig();
-	if (ImGui::Button("Print Marker...", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("setupFlow.printMarkerButton"), ImVec2(-1, 0)))
 	{
 		exportAndOpenArucoMarker(config->camera(0).extrinsics.markerId,
 								 eCharucoDictionaryType::DICT_6X6, m_arucoMarkerLengthMM);
@@ -432,7 +425,7 @@ void SetupFlow::updateArucoPrintPrompt()
 	const bool bParamsValid= m_arucoMarkerLengthMM > 0.f;
 	ImGui::Separator();
 	ImGui::BeginDisabled(!bParamsValid);
-	if (ImGui::Button("Continue", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.continueLabel"), ImVec2(120, 0)))
 	{
 		// The extrinsics wizard seeds its marker params from camera 0, but the
 		// length is written everywhere so a per-camera read stays consistent
@@ -444,7 +437,7 @@ void SetupFlow::updateArucoPrintPrompt()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		enterConfirmCancel();
@@ -454,36 +447,43 @@ void SetupFlow::updateArucoPrintPrompt()
 
 void SetupFlow::updateOutputProtocolPrompt()
 {
-	if (!beginCenteredModal("Output Protocol"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalOutputProtocol")))
 		return;
 
 	AppConfig* config= m_app->getConfig();
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted(
-		"Select the wire format for streaming tracking output. Mikan is the "
-		"native OSC bundle format; VMC speaks the Virtual Motion Capture "
-		"protocol that VRM avatar tools listen for.");
+	ImGui::TextUnformatted(locText("setupFlow.outputProtocolPrompt"));
 	ImGui::PopTextWrapPos();
 	ImGui::Spacing();
 
+	static const char* k_outputModeKeys[]= {"setupFlow.outputFormatMikan", "setupFlow.outputFormatVmc"};
+
 	int outputMode= (int)config->osc.outputMode;
-	if (ImGui::Combo("Format", &outputMode, "Mikan\0VMC (VRM)\0"))
+	if (ImGui::BeginCombo(locLabel("setupFlow.outputFormatLabel"), locText(k_outputModeKeys[outputMode])))
 	{
-		config->osc.outputMode= (eOscOutputMode)outputMode;
-		config->markDirty();
-		m_app->getVisionThread()->requestConfigRefresh();
+		for (int modeIndex= 0; modeIndex < 2; ++modeIndex)
+		{
+			if (ImGui::Selectable(locLabel(k_outputModeKeys[modeIndex]), outputMode == modeIndex))
+			{
+				outputMode= modeIndex;
+				config->osc.outputMode= (eOscOutputMode)outputMode;
+				config->markDirty();
+				m_app->getVisionThread()->requestConfigRefresh();
+			}
+		}
+		ImGui::EndCombo();
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Finish", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.finish"), ImVec2(120, 0)))
 	{
 		config->save();
 		ImGui::CloseCurrentPopup();
 		m_step= eStep::Inactive;
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		enterConfirmCancel();
@@ -493,25 +493,22 @@ void SetupFlow::updateOutputProtocolPrompt()
 
 void SetupFlow::updateConfirmCancelPrompt()
 {
-	if (!beginCenteredModal("Cancel Project Setup"))
+	if (!beginCenteredModal(locWindowTitle("windows.modalCancelSetup")))
 		return;
 
 	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted(
-		"Cancel the project setup? This new project will be DELETED from disk, "
-		"including any calibration completed so far, and the app returns to "
-		"the main menu.");
+	ImGui::TextUnformatted(locText("setupFlow.confirmCancelPrompt"));
 	ImGui::PopTextWrapPos();
 
 	ImGui::Separator();
-	if (ImGui::Button("Continue Setup", ImVec2(160, 0)))
+	if (ImGui::Button(locLabel("setupFlow.continueSetupButton"), ImVec2(160, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		m_step= m_stepBeforeConfirm;
 		m_bWizardLaunched= false; // re-enter the wizard the user backed out of
 	}
 	ImGui::SameLine();
-	if (ImGui::Button("Delete Project", ImVec2(140, 0)))
+	if (ImGui::Button(locLabel("setupFlow.deleteProjectButton"), ImVec2(140, 0)))
 	{
 		ImGui::CloseCurrentPopup();
 		requestDiscardProject();

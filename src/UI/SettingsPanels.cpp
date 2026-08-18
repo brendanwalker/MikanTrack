@@ -10,6 +10,8 @@
 #include "AppConfig.h"
 #include "HandPoseModel.h"
 #include "HandRoiQuality.h"
+#include "LocalizationManager.h"
+#include "LocText.h"
 #include "Scene3dPanel.h"
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
@@ -60,12 +62,12 @@ static float bandSeverity(float value, const MetricBand& band)
 
 struct QualityRowDesc
 {
-	const char* label;
+	const char* labelKey;
 	const char* format; // printf format for the value in display units
 	float displayScale; // raw metric -> display units (100 for ratio -> %)
 	MetricBand band;    // in display units
 	float (*extract)(const HandImageQuality&);
-	const char* tooltip;
+	const char* tooltipKey;
 };
 
 // Bands live at the analyzer's fixed ~160px working scale, tuned against real
@@ -73,42 +75,27 @@ struct QualityRowDesc
 // low thousands, so sharpness only means something when it drops (blur), and
 // high values are just texture/scale
 static const QualityRowDesc k_qualityRows[]= {
-	{"Luminance", "%.0f", 1.f, {90.f, 180.f, 60.f, 220.f},
+	{"trackingPanel.luminanceLabel", "%.0f", 1.f, {90.f, 180.f, 60.f, 220.f},
 	 [](const HandImageQuality& q) { return q.meanLuma; },
-	 "Mean brightness of the hand region, 0-255.\n"
-	 "Low = underexposed: raise exposure or add light.\n"
-	 "High = overexposed: lower exposure before highlights clip."},
-	{"Highlight clip", "%.1f%%", 100.f, {0.f, 1.f, 0.f, 5.f},
+	 "trackingPanel.luminanceTooltip"},
+	{"trackingPanel.highlightClipLabel", "%.1f%%", 100.f, {0.f, 1.f, 0.f, 5.f},
 	 [](const HandImageQuality& q) { return q.highlightClipRatio; },
-	 "Blown-out pixels in the hand region. Clipping erases the skin\n"
-	 "texture and joint boundaries the landmark model reads - reduce\n"
-	 "exposure, or diffuse/angle the light to kill specular hot spots."},
-	{"Shadow clip", "%.1f%%", 100.f, {0.f, 5.f, 0.f, 15.f},
+	 "trackingPanel.highlightClipTooltip"},
+	{"trackingPanel.shadowClipLabel", "%.1f%%", 100.f, {0.f, 5.f, 0.f, 15.f},
 	 [](const HandImageQuality& q) { return q.shadowClipRatio; },
-	 "Pixels stuck at black in the hand region. Some background is\n"
-	 "normal; a high value together with low luminance means real\n"
-	 "underexposure."},
-	{"Contrast", "%.0f", 1.f, {30.f, 1e9f, 15.f, 1e9f},
+	 "trackingPanel.shadowClipTooltip"},
+	{"trackingPanel.contrastLabel", "%.0f", 1.f, {30.f, 1e9f, 15.f, 1e9f},
 	 [](const HandImageQuality& q) { return q.contrast; },
-	 "Gray-level spread inside the hand region - the texture the\n"
-	 "landmark model actually reads. Raise with more (soft) light;\n"
-	 "flat frontal glare and near-clipping both flatten it."},
-	{"Separation", "%.0f", 1.f, {20.f, 1e9f, 8.f, 1e9f},
+	 "trackingPanel.contrastTooltip"},
+	{"trackingPanel.separationLabel", "%.0f", 1.f, {20.f, 1e9f, 8.f, 1e9f},
 	 [](const HandImageQuality& q) { return q.backgroundSeparation; },
-	 "Hand brightness vs the surrounding background. Low = the hand\n"
-	 "blends in, which starves palm DETECTION (internal contrast can\n"
-	 "still be fine). Change the surface under your hands, or light\n"
-	 "the hands rather than the table."},
-	{"Sharpness", "%.0f", 1.f, {1000.f, 1e9f, 300.f, 1e9f},
+	 "trackingPanel.separationTooltip"},
+	{"trackingPanel.sharpnessLabel", "%.0f", 1.f, {1000.f, 1e9f, 300.f, 1e9f},
 	 [](const HandImageQuality& q) { return q.sharpness; },
-	 "Edge strength with sensor noise filtered out first. Low = motion\n"
-	 "blur or defocus - shorten the exposure time (adding light to\n"
-	 "compensate) or refocus the camera."},
-	{"Noise", "%.1f", 1.f, {0.f, 4.f, 0.f, 7.f},
+	 "trackingPanel.sharpnessTooltip"},
+	{"trackingPanel.noiseLabel", "%.1f", 1.f, {0.f, 4.f, 0.f, 7.f},
 	 [](const HandImageQuality& q) { return q.noise; },
-	 "Sensor noise (median-filter residual). High = auto-exposure has\n"
-	 "cranked the gain in dim light, which directly destabilizes the\n"
-	 "landmarks - add light so the gain comes back down."},
+	 "trackingPanel.noiseTooltip"},
 };
 // The flicker row is appended after these (per camera, not per hand)
 static constexpr int k_flickerRowIndex= (int)IM_ARRAYSIZE(k_qualityRows);
@@ -121,25 +108,18 @@ static void drawImageQualitySection(AppConfig* config, TrackingPanelState& panel
 	if (cameraCount <= 0)
 		return;
 
-	ImGui::TextDisabled("Worst tracked hand per camera, ~1s average");
-	ImGui::SetItemTooltip(
-		"Diagnoses WHY tracking jitters, in terms of the knobs that fix\n"
-		"it: exposure, gain, lighting, background. Statistics come from\n"
-		"each hand's region in the exact image the model consumed,\n"
-		"at a fixed working scale so values are comparable across\n"
-		"resolutions. Hover a metric name for what to adjust. The\n"
-		"diagnostic dump (F9) records the raw per-frame series.");
+	ImGui::TextDisabled("%s", locText("trackingPanel.imageQualityHeader"));
+	ImGui::SetItemTooltip("%s", locText("trackingPanel.imageQualityTooltip"));
 
 	if (!ImGui::BeginTable("imageQuality", 1 + cameraCount,
 						   ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
 		return;
 
-	ImGui::TableSetupColumn("Metric");
+	ImGui::TableSetupColumn(locText("trackingPanel.metricColumn"));
 	for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
 	{
-		char header[32];
-		snprintf(header, sizeof(header), "Camera %d", cameraIndex + 1);
-		ImGui::TableSetupColumn(header);
+		const std::string header= locFormat("trackingPanel.cameraFmt", cameraIndex + 1);
+		ImGui::TableSetupColumn(header.c_str());
 	}
 	ImGui::TableHeadersRow();
 
@@ -151,14 +131,10 @@ static void drawImageQualitySection(AppConfig* config, TrackingPanelState& panel
 		const bool bFlickerRow= rowIndex == k_flickerRowIndex;
 		ImGui::TableNextRow();
 		ImGui::TableNextColumn();
-		ImGui::Text("%s", bFlickerRow ? "Flicker" : k_qualityRows[rowIndex].label);
+		ImGui::Text("%s", bFlickerRow ? locText("trackingPanel.flickerLabel") : locText(k_qualityRows[rowIndex].labelKey));
 		ImGui::SetItemTooltip("%s", bFlickerRow
-			? "Frame-to-frame brightness oscillation of the whole image.\n"
-			  "A steady frequency = light PWM/mains flicker beating against\n"
-			  "the shutter (change lights, or match the shutter to the mains\n"
-			  "rate). Oscillation with no clear frequency = auto-exposure\n"
-			  "hunting - lock exposure and gain."
-			: k_qualityRows[rowIndex].tooltip);
+			? locText("trackingPanel.flickerTooltip")
+			: locText(k_qualityRows[rowIndex].tooltipKey));
 
 		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
 		{
@@ -244,7 +220,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 									   const std::vector<VisionPreviewFrame>& latestPreviews,
 									   const TrackingFrameResult& fusedResult)
 {
-	if (!ImGui::Begin("Tracking"))
+	if (!ImGui::Begin(locWindowTitle("windows.tracking")))
 	{
 		ImGui::End();
 		return;
@@ -253,8 +229,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 	bool bChanged= false;
 	TrackingConfig& tracking= config->tracking;
 
-	bChanged|= ImGui::Checkbox("Flip handedness", &tracking.flipHandedness);
-	ImGui::SetItemTooltip("MediaPipe assumes a mirrored selfie view.\nEnable for a normal (non-mirrored) camera.");
+	bChanged|= ImGui::Checkbox(locLabel("trackingPanel.flipHandedness"), &tracking.flipHandedness);
+	ImGui::SetItemTooltip("%s", locText("trackingPanel.flipHandednessTooltip"));
 
 	// The tracking/fusion tuning values (staleness window, jitter and
 	// residual references, detector cadence) live in config.json and the
@@ -263,12 +239,12 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 	if (config->cameraCount() > 1)
 	{
-		ImGui::SeparatorText("Fusion");
+		ImGui::SeparatorText(locText("trackingPanel.fusionSection"));
 
 		// Which camera won each hand in the last fusion
 		const int leftCam= visionThread->getDominantCamera(eHandSide::Left);
 		const int rightCam= visionThread->getDominantCamera(eHandSide::Right);
-		ImGui::Text("Dominant camera  L: %s  R: %s",
+		ImGui::Text(locText("trackingPanel.dominantCameraFmt"),
 					leftCam >= 0 ? std::to_string(leftCam + 1).c_str() : "-",
 					rightCam >= 0 ? std::to_string(rightCam + 1).c_str() : "-");
 
@@ -276,14 +252,14 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		if (ImGui::BeginTable("confidence", 3, ImGuiTableFlags_SizingStretchProp))
 		{
 			ImGui::TableSetupColumn("");
-			ImGui::TableSetupColumn("Left");
-			ImGui::TableSetupColumn("Right");
+			ImGui::TableSetupColumn(locText("trackingPanel.left"));
+			ImGui::TableSetupColumn(locText("trackingPanel.right"));
 			ImGui::TableHeadersRow();
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 			{
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
-				ImGui::Text("Camera %d", cameraIndex + 1);
+				ImGui::Text(locText("trackingPanel.cameraFmt"), cameraIndex + 1);
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 				{
 					ImGui::TableNextColumn();
@@ -297,32 +273,25 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			ImGui::EndTable();
 		}
 
-		ImGui::SeparatorText("Hand Scale");
+		ImGui::SeparatorText(locText("trackingPanel.handScaleSection"));
 		// Measured live and applied live - there is nothing to press. The
 		// wrist->knuckle bone is re-measured from stereo/depth every session,
 		// so persisting it would only save the few seconds the EMA takes to
 		// converge, at the cost of a button and a stale value to explain.
 		const float scaleFactor= visionThread->getAutoHandScaleFactor();
 		const double autoScaleMeters= config->handScale.refLengthMeters * (double)scaleFactor;
-		ImGui::Text("Measured: %.2f cm (x%.3f)", autoScaleMeters * 100.0, scaleFactor);
-		ImGui::SetItemTooltip(
-			"Your wrist->knuckle bone length, measured continuously from\n"
-			"stereo triangulation / depth. Nothing to configure.");
+		ImGui::Text(locText("trackingPanel.measuredScaleFmt"), autoScaleMeters * 100.0, scaleFactor);
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.measuredScaleTooltip"));
 	}
 
-	ImGui::SeparatorText("Image Quality");
+	ImGui::SeparatorText(locText("trackingPanel.imageQualitySection"));
 	drawImageQualitySection(config, panelState, latestPreviews);
 
-	ImGui::SeparatorText("Wrist IMU");
+	ImGui::SeparatorText(locText("trackingPanel.wristImuSection"));
 	{
 		ImuConfig& imu= config->imu;
-		bChanged|= ImGui::Checkbox("Enable wrist IMU", &imu.enabled);
-		ImGui::SetItemTooltip(
-			"Wrist-strapped inertial trackers supply FOREARM orientation at\n"
-			"~200 Hz, immune to occlusion. A wrist strap sits proximal to the\n"
-			"wrist joint, so it measures the forearm - not the palm - which is\n"
-			"what makes the wrist joint angle measurable and places the\n"
-			"elbow. The forearm frame is streamed on /mikan/hand/{s}/forearm.");
+		bChanged|= ImGui::Checkbox(locLabel("trackingPanel.enableWristImu"), &imu.enabled);
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.enableWristImuTooltip"));
 
 		ImGui::BeginDisabled(!imu.enabled);
 
@@ -330,11 +299,11 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		// controller, so pairing one in Windows Bluetooth settings is enough
 		if (ImGui::BeginTable("imu", 5, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
 		{
-			ImGui::TableSetupColumn("Wrist");
-			ImGui::TableSetupColumn("Device");
-			ImGui::TableSetupColumn("Rate");
-			ImGui::TableSetupColumn("Yaw drift");
-			ImGui::TableSetupColumn("Roll error");
+			ImGui::TableSetupColumn(locText("trackingPanel.wristTableWrist"));
+			ImGui::TableSetupColumn(locText("trackingPanel.wristTableDevice"));
+			ImGui::TableSetupColumn(locText("trackingPanel.wristTableRate"));
+			ImGui::TableSetupColumn(locText("trackingPanel.wristTableYawDrift"));
+			ImGui::TableSetupColumn(locText("trackingPanel.wristTableRollError"));
 			ImGui::TableHeadersRow();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -342,18 +311,18 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				const ImuSideStatus status= visionThread->getImuSideStatus((eHandSide)sideIndex);
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
-				ImGui::Text("%s", sideIndex == 0 ? "Left" : "Right");
+				ImGui::Text("%s", sideIndex == 0 ? locText("trackingPanel.left") : locText("trackingPanel.right"));
 
 				ImGui::TableNextColumn();
 				if (!status.deviceConnected)
-					ImGui::TextDisabled("none");
+					ImGui::TextDisabled("%s", locText("trackingPanel.deviceNone"));
 				else if (!status.calibrated)
-					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "%s (uncalibrated)",
+					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), locText("trackingPanel.deviceUncalibratedFmt"),
 									   status.deviceName.c_str());
 				else if (status.orientationValid)
 					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s", status.deviceName.c_str());
 				else
-					ImGui::TextDisabled("%s (converging)", status.deviceName.c_str());
+					ImGui::TextDisabled(locText("trackingPanel.deviceConvergingFmt"), status.deviceName.c_str());
 
 				ImGui::TableNextColumn();
 				if (status.streaming)
@@ -364,7 +333,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				{
 					// Silent but open: asleep or the link dropped. The service
 					// reopens it automatically; this just makes it visible.
-					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "silent %.0fs",
+					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), locText("trackingPanel.deviceSilentFmt"),
 									   status.millisecondsSinceLastSample / 1000.0);
 				}
 				else
@@ -386,7 +355,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				ImGui::TableNextColumn();
 				if (status.wristAxialTwistDegrees < -900.f)
 				{
-					ImGui::TextDisabled("measuring");
+					ImGui::TextDisabled("%s", locText("trackingPanel.measuring"));
 				}
 				else
 				{
@@ -396,136 +365,91 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 						: (residual < 15.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f));
 					ImGui::TextColored(color, "%+.0f deg", status.wristAxialTwistDegrees);
 				}
-				ImGui::SetItemTooltip(
-					"Mounting roll error, read straight off anatomy: the wrist\n"
-					"cannot rotate about the forearm's long axis, so any twist\n"
-					"measured in the wrist joint is calibration error.\n"
-					"Near 0 = good. A large value rolls the forearm frame, which\n"
-					"makes the elbow bend along a rotated arc and shows up as\n"
-					"phantom wrist bend when you pronate.\n"
-					"Recalibrate the mounting if this stays large.");
+				ImGui::SetItemTooltip("%s", locText("trackingPanel.wristRollErrorTooltip"));
 			}
 			ImGui::EndTable();
 		}
 
-		bChanged|= ImGui::Checkbox("Swap wrists", &imu.swapSides);
-		ImGui::SetItemTooltip("If the Joy-Con L is strapped to your RIGHT wrist");
+		bChanged|= ImGui::Checkbox(locLabel("trackingPanel.swapWrists"), &imu.swapSides);
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.swapWristsTooltip"));
 
-		bChanged|= ImGui::SliderFloat("Forearm length", &config->body.forearmLengthMeters, 0.10f, 0.40f, "%.2f m");
-		ImGui::SetItemTooltip(
-			"Wrist-to-elbow distance, used to place the elbow back along the\n"
-			"MEASURED forearm direction. An error here slides the elbow along\n"
-			"the forearm axis without rotating it.\n\n"
-			"The mounting wizard's curl stage measures this from the arc the\n"
-			"controller sweeps, and overwrites this value. That reads slightly\n"
-			"SHORT of a true elbow-to-wrist length, because it is the radius to\n"
-			"the controller rather than to the wrist - nudge it up if the elbow\n"
-			"marker sits inside your actual elbow in the camera view.");
+		bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.forearmLength"), &config->body.forearmLengthMeters, 0.10f, 0.40f, "%.2f m");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.forearmLengthTooltip"));
 
 		// No "vision yaw anchor" slider: the value is settled, and it is still
 		// in the config file for anyone who needs to retune it
 
-		if (ImGui::Button("Calibrate Mounting...", ImVec2(-1, 0)))
+		if (ImGui::Button(locLabel("trackingPanel.calibrateMounting"), ImVec2(-1, 0)))
 			panelState.bLaunchMountingWizard= true;
-		ImGui::SetItemTooltip(
-			"Opens a guided calibration: twist your forearms (which measures\n"
-			"each arm's long axis), then curl at the elbows (which measures\n"
-			"the roll about that axis, and your forearm length).");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.calibrateMountingTooltip"));
 
 		ImGui::EndDisabled();
 	}
 
-	ImGui::SeparatorText("Body Pose");
+	ImGui::SeparatorText(locText("trackingPanel.bodyPoseSection"));
 	{
-		ImGui::TextWrapped(
-			"Body tracking for measured elbows, shoulders, and head pose. "
-			"Opt-in per camera: the person detector only fires on a camera "
-			"that sees you upright, so leave overhead cameras off.");
+		ImGui::TextWrapped("%s", locText("trackingPanel.bodyPoseIntro"));
 
 		for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
 		{
 			BodyPoseCameraConfig& bodyPose= config->camera(cameraIndex).bodyPose;
 			ImGui::PushID(cameraIndex);
 
-			char label[32];
-			snprintf(label, sizeof(label), "Camera %d", cameraIndex + 1);
-			bChanged|= ImGui::Checkbox(label, &bodyPose.enabled);
+			const std::string label= locFormat("trackingPanel.cameraFmt", cameraIndex + 1);
+			bChanged|= ImGui::Checkbox(label.c_str(), &bodyPose.enabled);
 
 			ImGui::PopID();
 		}
 
-		ImGui::TextWrapped(
-			"Body proportions. Only lengths are assumed - every direction is "
-			"measured - but they set the scale of the estimates, so correcting "
-			"them for your own body is worth a minute.");
+		ImGui::TextWrapped("%s", locText("trackingPanel.bodyPoseProportionsIntro"));
 
-		if (ImGui::Button("Measure My Body...", ImVec2(-1, 0)))
+		if (ImGui::Button(locLabel("trackingPanel.measureMyBody"), ImVec2(-1, 0)))
 			panelState.bLaunchBodyCalibrationWizard= true;
-		ImGui::SetItemTooltip(
-			"Measures these four lengths against your own body, using the fused\n"
-			"wrists as the ruler.\n\n"
-			"They are NOT anatomical numbers: they are distances between the\n"
-			"pose model's landmarks, which sit inside your real joints by an\n"
-			"amount that differs per person and per model. A guessed shoulder\n"
-			"width put a measured shoulder 0.8 m too far away.");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.measureMyBodyTooltip"));
 		bChanged|=
-			ImGui::Checkbox("Upper arm from shoulder width", &config->body.bDeriveUpperArmFromShoulderWidth);
-		ImGui::SetItemTooltip(
-			"Take the upper arm as a multiple of the shoulder width instead of\n"
-			"measuring it. Measuring it needs the arm straight and square to the\n"
-			"camera, which is hard to hold at a desk and reads 20%% short when\n"
-			"missed - and a short upper arm makes the elbow bend the wrong way.\n"
-			"Proportions are stable enough that a multiple of a width that IS\n"
-			"easy to measure wins.");
+			ImGui::Checkbox(locLabel("trackingPanel.deriveUpperArmFromShoulderWidth"), &config->body.bDeriveUpperArmFromShoulderWidth);
+		ImGui::SetItemTooltip(locText("trackingPanel.deriveUpperArmTooltip"));
 		if (config->body.bDeriveUpperArmFromShoulderWidth)
 		{
-			bChanged|= ImGui::SliderFloat("Upper arm ratio", &config->body.upperArmPerShoulderWidth, 0.80f,
-										  1.40f, "%.2f x shoulders");
-			ImGui::SetItemTooltip(
-				"NOT the anatomical ratio: the model's shoulder points sit inside\n"
-				"your real joints (measured at ~0.74 of a biacromial breadth), so\n"
-				"the familiar 'arm is about 1.5 shoulder widths' becomes ~2.0 of\n"
-				"THIS width, and the upper arm alone lands near 1.05.");
-			ImGui::TextDisabled("   = %.1f cm upper arm", config->body.shoulderWidthMeters *
+			bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.upperArmRatio"), &config->body.upperArmPerShoulderWidth, 0.80f,
+										  1.40f, locText("trackingPanel.upperArmRatioFmt"));
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.upperArmRatioTooltip"));
+			ImGui::TextDisabled(locText("trackingPanel.upperArmDerivedFmt"), config->body.shoulderWidthMeters *
 															 config->body.upperArmPerShoulderWidth * 100.f);
 		}
 		else
 		{
-			bChanged|= ImGui::SliderFloat("Upper arm", &config->body.upperArmLengthMeters, 0.20f, 0.45f,
+			bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.upperArm"), &config->body.upperArmLengthMeters, 0.20f, 0.45f,
 										  "%.2f m");
-			ImGui::SetItemTooltip("Shoulder to elbow. Decides which of the two elbow solutions is real.");
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.upperArmTooltip"));
 		}
-		bChanged|= ImGui::SliderFloat("Shoulder width", &config->body.shoulderWidthMeters, 0.25f, 0.60f, "%.2f m");
-		ImGui::SetItemTooltip("Between the shoulder joints. Sets the shoulders' distance from the camera.");
-		bChanged|= ImGui::SliderFloat("Head width", &config->body.headWidthMeters, 0.10f, 0.22f, "%.2f m");
-		ImGui::SetItemTooltip("Ear to ear. Sets the head's distance from the camera.");
-		bChanged|= ImGui::SliderFloat("Nose forward", &config->body.noseForwardMeters, 0.05f, 0.18f, "%.2f m");
-		ImGui::SetItemTooltip("Ear midpoint to nose tip. Sets head yaw and pitch.");
+		bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.shoulderWidth"), &config->body.shoulderWidthMeters, 0.25f, 0.60f, "%.2f m");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.shoulderWidthTooltip"));
+		bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.headWidth"), &config->body.headWidthMeters, 0.10f, 0.22f, "%.2f m");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.headWidthTooltip"));
+		bChanged|= ImGui::SliderFloat(locLabel("trackingPanel.noseForward"), &config->body.noseForwardMeters, 0.05f, 0.18f, "%.2f m");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.noseForwardTooltip"));
 	}
 
 	// -- Hand calibration: one wizard, in the only order that works -----
-	ImGui::SeparatorText("Hand Calibration");
+	ImGui::SeparatorText(locText("trackingPanel.handCalibrationSection"));
 	{
-		ImGui::Text("Bones  L: %s  R: %s   Rest pose  L: %s  R: %s",
-					config->handSkeleton.present[0] ? "yes" : "no",
-					config->handSkeleton.present[1] ? "yes" : "no",
-					config->fusedRestAngles.present[0] ? "yes" : "no",
-					config->fusedRestAngles.present[1] ? "yes" : "no");
+		ImGui::Text(locText("trackingPanel.handCalibrationStatusFmt"),
+					config->handSkeleton.present[0] ? locText("common.yes") : locText("common.no"),
+					config->handSkeleton.present[1] ? locText("common.yes") : locText("common.no"),
+					config->fusedRestAngles.present[0] ? locText("common.yes") : locText("common.no"),
+					config->fusedRestAngles.present[1] ? locText("common.yes") : locText("common.no"));
 
-		if (ImGui::Button("Calibrate Hands...", ImVec2(-1, 0)))
+		if (ImGui::Button(locLabel("trackingPanel.calibrateHands"), ImVec2(-1, 0)))
 			panelState.bLaunchHandCalibrationWizard= true;
-		ImGui::SetItemTooltip(
-			"Guided flow: measure your bone lengths from stereo triangulation,\n"
-			"then capture your rest pose - in that order, enforced, because\n"
-			"saving bones moves the thumb's angle zero and a rest pose captured\n"
-			"first would be measured against a zero that no longer exists.");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.calibrateHandsTooltip"));
 
 		const bool bAnyHandCalibration= config->handSkeleton.present[0] ||
 			config->handSkeleton.present[1] || config->fusedRestAngles.present[0] ||
 			config->fusedRestAngles.present[1];
 		if (bAnyHandCalibration)
 		{
-			if (ImGui::Button("Clear Hand Calibration"))
+			if (ImGui::Button(locLabel("trackingPanel.clearHandCalibration")))
 			{
 				// One Clear for both: they are a matched set (the rest pose is
 				// measured against the skeleton's thumb zero)
@@ -535,44 +459,35 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				config->fusedRestAngles.present[1]= false;
 				bChanged= true;
 			}
-			ImGui::SetItemTooltip(
-				"Reverts to the landmark model's proportions and the flat-hand\n"
-				"zero, and re-enables the stereo auto hand-scale.");
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.clearHandCalibrationTooltip"));
 		}
 	}
 
-	ImGui::SeparatorText("Overlay");
+	ImGui::SeparatorText(locText("trackingPanel.overlaySection"));
 	bool bShowOverlay= previewPanel->getShowOverlay();
-	if (ImGui::Checkbox("Show skeleton overlay", &bShowOverlay))
+	if (ImGui::Checkbox(locLabel("trackingPanel.showSkeletonOverlay"), &bShowOverlay))
 		previewPanel->setShowOverlay(bShowOverlay);
 
 	bool bShowBoxes= previewPanel->getShowDetectionBoxes();
-	if (ImGui::Checkbox("Show detection boxes", &bShowBoxes))
+	if (ImGui::Checkbox(locLabel("trackingPanel.showDetectionBoxes"), &bShowBoxes))
 		previewPanel->setShowDetectionBoxes(bShowBoxes);
 
 	bool bShowBodyPose= previewPanel->getShowBodyPose();
-	if (ImGui::Checkbox("Show body landmarks", &bShowBodyPose))
+	if (ImGui::Checkbox(locLabel("trackingPanel.showBodyLandmarks"), &bShowBodyPose))
 		previewPanel->setShowBodyPose(bShowBodyPose);
-	ImGui::SetItemTooltip(
-		"Draws the raw body skeleton on cameras running body pose.\n"
-		"Landmarks below the solver's visibility gate are dimmed, and the\n"
-		"joints it consumes (shoulders, elbows, wrists) carry their\n"
-		"visibility - so a bad elbow can be traced to its source landmark.");
+	ImGui::SetItemTooltip("%s", locText("trackingPanel.showBodyLandmarksTooltip"));
 	if (config->cameraCount() > 1)
 	{
 		bool bShowPerCamera= scene3dPanel->getShowPerCameraSkeletons();
-		if (ImGui::Checkbox("3D: per-camera skeletons", &bShowPerCamera))
+		if (ImGui::Checkbox(locLabel("trackingPanel.showPerCameraSkeletons"), &bShowPerCamera))
 			scene3dPanel->setShowPerCameraSkeletons(bShowPerCamera);
-		ImGui::SetItemTooltip(
-			"Draws each camera's unfused skeleton dimmed in that camera's\n"
-			"color - use to verify the cameras agree in world space\n"
-			"(they should overlap within a few cm)");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.showPerCameraSkeletonsTooltip"));
 	}
 
-	ImGui::SeparatorText("Inference");
+	ImGui::SeparatorText(locText("trackingPanel.inferenceSection"));
 	for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
-		ImGui::Text("Camera %d EP: %s", cameraIndex + 1, visionThread->getActiveExecutionProvider(cameraIndex));
-	ImGui::Text("Inference (all cameras): %.1f ms", visionThread->getLastInferenceMs());
+		ImGui::Text(locText("trackingPanel.cameraEpFmt"), cameraIndex + 1, visionThread->getActiveExecutionProvider(cameraIndex));
+	ImGui::Text(locText("trackingPanel.inferenceMsFmt"), visionThread->getLastInferenceMs());
 
 	// Frame-loop hitches: one thread serves every camera, so a long phase
 	// starves all of them at once and reads downstream as a camera fault
@@ -580,34 +495,26 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		const int hitchCount= visionThread->getHitchCount();
 		if (hitchCount == 0)
 		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "Frame loop: no hitches");
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s", locText("trackingPanel.frameLoopNoHitches"));
 		}
 		else
 		{
-			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Frame loop hitches: %d (worst %s %.0f ms)",
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), locText("trackingPanel.frameLoopHitchesFmt"),
 							   hitchCount,
 							   VisionThread::getPhaseName(visionThread->getLastHitchPhase()),
 							   visionThread->getLastHitchMs());
 		}
-		ImGui::SetItemTooltip(
-			"Loop iterations over 50 ms. Every camera shares this thread, so a\n"
-			"hitch drops frames on ALL of them at once and shows up as a\n"
-			"synchronized tracking gap. The named phase is where the time\n"
-			"went; the log line carries the full breakdown.");
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.frameLoopHitchesTooltip"));
 	}
 
-	ImGui::SeparatorText("Diagnostics");
-	if (ImGui::Button("Dump tracking state (F9)"))
+	ImGui::SeparatorText(locText("trackingPanel.diagnosticsSection"));
+	if (ImGui::Button(locLabel("trackingPanel.dumpTrackingState")))
 		visionThread->requestDiagnosticDump(config->makeDumpDirectoryPath());
-	ImGui::SetItemTooltip(
-		"Writes the last few seconds of tracking/fusion history\n"
-		"(including cluster + side-assignment scores), the live config\n"
-		"and each camera's current frame (raw + annotated PNG) to a\n"
-		"timestamped folder - hit it the moment tracking misbehaves.");
+	ImGui::SetItemTooltip("%s", locText("trackingPanel.dumpTrackingStateTooltip"));
 	{
 		const std::string lastDump= visionThread->getLastDumpPath();
 		if (!lastDump.empty())
-			ImGui::TextWrapped("Last dump: %s", lastDump.c_str());
+			ImGui::TextWrapped(locText("trackingPanel.lastDumpFmt"), lastDump.c_str());
 	}
 
 	// Hold-still jitter test: THE repeatable A/B number for camera-settings
@@ -630,7 +537,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				panelState.holdStillAccum[1]= TrackingPanelState::HoldStillAccum();
 			}
 
-			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), "Get ready - hold both hands still... %d",
+			ImGui::TextColored(ImVec4(1.f, 0.85f, 0.3f, 1.f), locText("trackingPanel.holdStillCountdownFmt"),
 							   (int)ceilf(panelState.holdStillCountdown));
 			ImGui::ProgressBar(1.f - panelState.holdStillCountdown / k_holdStillCountdownSeconds,
 							   ImVec2(-1, 4), "");
@@ -697,41 +604,36 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 				panelState.bHoldStillHasResult= true;
 			}
 
-			ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.f, 1.f), "Sampling - keep holding still...");
+			ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.f, 1.f), "%s", locText("trackingPanel.holdStillSampling"));
 			ImGui::ProgressBar(1.f - panelState.holdStillSecondsLeft / k_holdStillSampleSeconds,
 							   ImVec2(-1, 4), "");
 		}
-		else if (ImGui::Button("Hold-Still Jitter Test"))
+		else if (ImGui::Button(locLabel("trackingPanel.holdStillJitterTest")))
 		{
 			panelState.holdStillCountdown= k_holdStillCountdownSeconds;
 		}
 		if (panelState.holdStillCountdown <= 0.f && panelState.holdStillSecondsLeft <= 0.f)
 		{
-			ImGui::SetItemTooltip(
-				"Hold both hands still for a few seconds and get ONE number\n"
-				"per hand: the mean per-landmark deviation over the window.\n"
-				"With the hands genuinely still, that deviation IS tracking\n"
-				"noise - so run it once per camera-settings or lighting\n"
-				"change and compare. Uses the fused world-space output\n"
-				"(what clients actually receive).");
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.holdStillJitterTestTooltip"));
 		}
 
 		if (panelState.bHoldStillHasResult)
 		{
-			ImGui::Text("Jitter:");
+			ImGui::Text("%s", locText("trackingPanel.jitterLabel"));
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
 				ImGui::SameLine();
 				const float deviationMm= panelState.holdStillDeviationMm[sideIndex];
 				if (deviationMm < 0.f)
 				{
-					ImGui::TextDisabled("%s: too few samples", sideIndex == 0 ? "L" : "R");
+					ImGui::TextDisabled(locText("trackingPanel.jitterTooFewSamplesFmt"),
+										sideIndex == 0 ? locText("trackingPanel.leftAbbr") : locText("trackingPanel.rightAbbr"));
 					continue;
 				}
 				const ImVec4 color= deviationMm < 2.f
 					? ImVec4(0.4f, 1.f, 0.5f, 1.f)
 					: (deviationMm < 5.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f) : ImVec4(1.f, 0.4f, 0.4f, 1.f));
-				ImGui::TextColored(color, "%s: %.1f mm", sideIndex == 0 ? "L" : "R", deviationMm);
+				ImGui::TextColored(color, "%s: %.1f mm", sideIndex == 0 ? locText("trackingPanel.leftAbbr") : locText("trackingPanel.rightAbbr"), deviationMm);
 			}
 		}
 	}
@@ -748,7 +650,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 								  const TrackingFrameResult& fusedResult)
 {
-	if (!ImGui::Begin("OSC Output"))
+	if (!ImGui::Begin(locWindowTitle("windows.oscOutput")))
 	{
 		ImGui::End();
 		return;
@@ -757,27 +659,32 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 	bool bChanged= false;
 	OscConfig& osc= config->osc;
 
-	bChanged|= ImGui::Checkbox("Enabled", &osc.enabled);
+	bChanged|= ImGui::Checkbox(locLabel("oscPanel.enabled"), &osc.enabled);
 
+	static const char* const k_oscFormatKeys[]= {"oscPanel.formatMikan", "oscPanel.formatVmc"};
 	int outputMode= (int)osc.outputMode;
-	if (ImGui::Combo("Format", &outputMode, "Mikan\0VMC (VRM)\0"))
+	if (ImGui::BeginCombo(locLabel("oscPanel.format"), locText(k_oscFormatKeys[outputMode])))
 	{
-		osc.outputMode= (eOscOutputMode)outputMode;
-		bChanged= true;
+		for (int optionIndex= 0; optionIndex < IM_ARRAYSIZE(k_oscFormatKeys); ++optionIndex)
+		{
+			const bool bSelected= outputMode == optionIndex;
+			if (ImGui::Selectable(locLabel(k_oscFormatKeys[optionIndex]), bSelected))
+			{
+				osc.outputMode= (eOscOutputMode)optionIndex;
+				bChanged= true;
+			}
+			if (bSelected)
+				ImGui::SetItemDefaultFocus();
+		}
+		ImGui::EndCombo();
 	}
-	ImGui::SetItemTooltip(
-		"Mikan: the native /mikan/* schema - world-space poses, finger\n"
-		"angles and per-joint confidences.\n"
-		"VMC: the VMC protocol (protocol.vmc.info) - head, clavicle, arm,\n"
-		"hand and finger bones as parent-relative Unity transforms, for\n"
-		"receivers such as VMC4UE.\n"
-		"One at a time: they describe the same pose in incompatible terms.");
+	ImGui::SetItemTooltip("%s", locText("oscPanel.formatTooltip"));
 
 	const bool bVmc= osc.outputMode == eOscOutputMode::Vmc;
 
 	char ipBuffer[64];
 	snprintf(ipBuffer, sizeof(ipBuffer), "%s", osc.targetIp.c_str());
-	if (ImGui::InputText("Target IP", ipBuffer, sizeof(ipBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
+	if (ImGui::InputText(locLabel("oscPanel.targetIp"), ipBuffer, sizeof(ipBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
 	{
 		osc.targetIp= ipBuffer;
 		bChanged= true;
@@ -787,95 +694,75 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 	// the stream at a listener that speaks the other one
 	int& activePort= bVmc ? osc.vmcPort : osc.targetPort;
 	int port= activePort;
-	if (ImGui::InputInt(bVmc ? "Port (VMC)" : "Port", &port, 0) && port > 0 && port <= 65535)
+	if (ImGui::InputInt(bVmc ? locLabel("oscPanel.portVmc") : locLabel("oscPanel.port"), &port, 0) && port > 0 && port <= 65535)
 	{
 		activePort= port;
 		bChanged= true;
 	}
 	if (bVmc)
-		ImGui::SetItemTooltip("39539 is VMC's conventional Performer -> Marionette port.");
+		ImGui::SetItemTooltip("%s", locText("oscPanel.portVmcTooltip"));
 
-	bChanged|= ImGui::SliderInt("Max rate", &osc.maxRateHz, 10, 120, "%d Hz");
+	bChanged|= ImGui::SliderInt(locLabel("oscPanel.maxRate"), &osc.maxRateHz, 10, 120, "%d Hz");
 
-	bChanged|= ImGui::SliderFloat("Min confidence", &osc.minConfidence, 0.f, 1.f, "%.2f");
-	ImGui::SetItemTooltip(
-		"Below this fused confidence a hand is streamed as tracked=0 with\n"
-		"NO palm/finger messages, so the client can hold its last good\n"
-		"pose or blend to a rest pose instead of following jitter.\n"
-		"0 = always send. Confidence is on /tracked as the 3rd value;\n"
-		"watch the live values below to pick a threshold.");
+	bChanged|= ImGui::SliderFloat(locLabel("oscPanel.minConfidence"), &osc.minConfidence, 0.f, 1.f, "%.2f");
+	ImGui::SetItemTooltip("%s", locText("oscPanel.minConfidenceTooltip"));
 
-	bChanged|= ImGui::SliderFloat("Dropout hold", &osc.holdOnDropoutMs, 0.f, 1000.f, "%.0f ms");
-	ImGui::SetItemTooltip(
-		"After a hand goes untracked (or below min confidence), keep\n"
-		"streaming its last good pose with the confidence decaying to\n"
-		"zero for this long before reporting tracked=0. Bridges brief\n"
-		"2-10 frame losses so the client doesn't slam to its rest-pose\n"
-		"blend and back. 0 = report dropouts immediately.");
+	bChanged|= ImGui::SliderFloat(locLabel("oscPanel.dropoutHold"), &osc.holdOnDropoutMs, 0.f, 1000.f, "%.0f ms");
+	ImGui::SetItemTooltip("%s", locText("oscPanel.dropoutHoldTooltip"));
 
-	bChanged|= ImGui::Checkbox("Log palm frames", &osc.logPalmFrames);
-	ImGui::SetItemTooltip(
-		"Writes every palm transform to the log as it goes on the wire,\n"
-		"tagged with the frame id, so it can be diffed against a client's\n"
-		"own receive log to prove what did or did not arrive.\n"
-		"One line per hand per frame - leave it off for normal use.");
+	bChanged|= ImGui::Checkbox(locLabel("oscPanel.logPalmFrames"), &osc.logPalmFrames);
+	ImGui::SetItemTooltip("%s", locText("oscPanel.logPalmFramesTooltip"));
 
 	if (bVmc)
 	{
 		ImGui::Separator();
-		ImGui::TextDisabled("VMC");
+		ImGui::TextDisabled("%s", locText("oscPanel.vmcSection"));
 
-		bChanged|= ImGui::SliderFloat("Head offset", &osc.vmcHeadOffsetMeters, 0.f, 0.25f, "%.3f m");
-		ImGui::SetItemTooltip(
-			"Neck -> head bone offset. A VMC receiver replaces the position\n"
-			"of every bone it is sent, and nothing here measures a neck, so\n"
-			"this is the knob: raise it if the head sinks into the shoulders,\n"
-			"lower it if it floats.");
+		bChanged|= ImGui::SliderFloat(locLabel("oscPanel.headOffset"), &osc.vmcHeadOffsetMeters, 0.f, 0.25f, "%.3f m");
+		ImGui::SetItemTooltip("%s", locText("oscPanel.headOffsetTooltip"));
 
-		bChanged|= ImGui::Checkbox("Freeze on loss", &osc.vmcFreezeOnLoss);
-		ImGui::SetItemTooltip(
-			"VMC carries no confidence, so a lost hand can only be expressed\n"
-			"as motion. On: that arm's last bones keep streaming and it holds\n"
-			"still. Off: the bones stop, and the receiver returns the arm to\n"
-			"the avatar's rest T-pose.");
+		bChanged|= ImGui::Checkbox(locLabel("oscPanel.freezeOnLoss"), &osc.vmcFreezeOnLoss);
+		ImGui::SetItemTooltip("%s", locText("oscPanel.freezeOnLossTooltip"));
 
-		ImGui::TextDisabled("Bones: head, clavicles, arms,\nhands, fingers (37)");
-		ImGui::TextDisabled("The avatar takes the measured\nbone lengths (Body panel)");
+		ImGui::TextDisabled("%s", locText("oscPanel.vmcBonesInfo"));
+		ImGui::TextDisabled("%s", locText("oscPanel.vmcAvatarBoneLengths"));
 	}
 
 	ImGui::Separator();
-	ImGui::TextDisabled("Space: marker-anchored, meters,\nright-handed, +Z up from table");
-	ImGui::TextDisabled("Palm frame: +X fingers, +Z out of palm\nAngles: degrees on the wire");
+	ImGui::TextDisabled("%s", locText("oscPanel.spaceInfo"));
+	ImGui::TextDisabled("%s", locText("oscPanel.palmFrameInfo"));
 
 	// Live readout of exactly what's being streamed: palm transform + the 20
 	// finger angles per hand (shown in degrees)
-	static const char* s_fingerNames[FINGER_COUNT]= {"Thumb", "Index", "Middle", "Ring", "Pinky"};
+	static const char* s_fingerNames[FINGER_COUNT]= {
+		"oscPanel.fingerThumb", "oscPanel.fingerIndex", "oscPanel.fingerMiddle",
+		"oscPanel.fingerRing", "oscPanel.fingerPinky"};
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		const HandPose& pose= fusedResult.poses[sideIndex];
-		const char* sideName= sideIndex == (int)eHandSide::Left ? "Left Hand" : "Right Hand";
+		const char* sideKey= sideIndex == (int)eHandSide::Left ? "oscPanel.leftHand" : "oscPanel.rightHand";
 
-		if (!ImGui::CollapsingHeader(sideName, ImGuiTreeNodeFlags_DefaultOpen))
+		if (!ImGui::CollapsingHeader(locLabel(sideKey), ImGuiTreeNodeFlags_DefaultOpen))
 			continue;
 
 		// Confidence vs the gate: red while the pose is being withheld
 		const bool bGated= pose.tracked && pose.confidence < osc.minConfidence;
 		if (bGated)
-			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "Confidence: %.2f (WITHHELD - below %.2f)",
+			ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), locText("oscPanel.confidenceWithheldFmt"),
 							   pose.confidence, osc.minConfidence);
 		else
-			ImGui::Text("Confidence: %.2f", pose.confidence);
+			ImGui::Text(locText("oscPanel.confidenceFmt"), pose.confidence);
 
 		if (!pose.tracked)
 		{
-			ImGui::TextDisabled("not tracked");
+			ImGui::TextDisabled("%s", locText("oscPanel.notTracked"));
 			continue;
 		}
 
 		const bool bWorld= pose.hasWorldPose;
 		const glm::vec3& palmPos= bWorld ? pose.palmPositionWorld : pose.palmPositionCamera;
-		ImGui::Text("Palm: (%.3f, %.3f, %.3f) m %s", palmPos.x, palmPos.y, palmPos.z,
-					bWorld ? "" : "(camera space)");
+		ImGui::Text(locText("oscPanel.palmFmt"), palmPos.x, palmPos.y, palmPos.z,
+					bWorld ? "" : locText("oscPanel.cameraSpaceSuffix"));
 
 		// Wrist bend. NOT a wire value - /mikan/hand/{s}/forearm carries the
 		// forearm frame and leaves the joint angle to the consumer, which gets
@@ -894,36 +781,32 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 			const ImVec4 wristColor= wristDegrees < 25.f  ? ImVec4(0.4f, 1.f, 0.5f, 1.f)
 									 : wristDegrees < 60.f ? ImVec4(1.f, 0.85f, 0.3f, 1.f)
 														   : ImVec4(1.f, 0.5f, 0.4f, 1.f);
-			ImGui::TextColored(wristColor, "Wrist bend: %.0f deg", wristDegrees);
-			ImGui::SetItemTooltip(
-				"Rotation of the palm relative to the forearm, measured from\n"
-				"your mounting-calibration pose. Hold your wrist STRAIGHT: if\n"
-				"this doesn't drop near zero, recalibrate the mounting (or the\n"
-				"IMU yaw has drifted since you did).");
+			ImGui::TextColored(wristColor, locText("oscPanel.wristBendFmt"), wristDegrees);
+			ImGui::SetItemTooltip("%s", locText("oscPanel.wristBendTooltip"));
 
 			const glm::quat& forearm= pose.forearmOrientationWorld;
-			ImGui::Text("  forearm quat: (%.3f, %.3f, %.3f, %.3f)", forearm.x, forearm.y, forearm.z,
+			ImGui::Text(locText("oscPanel.forearmQuatFmt"), forearm.x, forearm.y, forearm.z,
 						forearm.w);
-			ImGui::Text("  wrist quat:   (%.3f, %.3f, %.3f, %.3f)", wristRotation.x, wristRotation.y,
+			ImGui::Text(locText("oscPanel.wristQuatFmt"), wristRotation.x, wristRotation.y,
 						wristRotation.z, wristRotation.w);
 
 			const glm::vec3 elbow= pose.getElbowPositionWorld(config->body.forearmLengthMeters);
-			ImGui::Text("  elbow: (%.3f, %.3f, %.3f) m", elbow.x, elbow.y, elbow.z);
+			ImGui::Text(locText("oscPanel.elbowFmt"), elbow.x, elbow.y, elbow.z);
 		}
 		else
 		{
-			ImGui::TextDisabled("Wrist: no IMU (streams valid=0)");
+			ImGui::TextDisabled("%s", locText("oscPanel.wristNoImu"));
 		}
 
 		ImGui::PushID(sideIndex);
 		if (ImGui::BeginTable("angles", 5,
 							  ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders))
 		{
-			ImGui::TableSetupColumn("Finger");
-			ImGui::TableSetupColumn("Lat");
-			ImGui::TableSetupColumn("Prox");
-			ImGui::TableSetupColumn("Inter");
-			ImGui::TableSetupColumn("Dist");
+			ImGui::TableSetupColumn(locText("oscPanel.fingerColumn"));
+			ImGui::TableSetupColumn(locText("oscPanel.latColumn"));
+			ImGui::TableSetupColumn(locText("oscPanel.proxColumn"));
+			ImGui::TableSetupColumn(locText("oscPanel.interColumn"));
+			ImGui::TableSetupColumn(locText("oscPanel.distColumn"));
 			ImGui::TableHeadersRow();
 
 			constexpr float kRadToDeg= 57.29578f;
@@ -932,7 +815,7 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 				const FingerAngles& angles= pose.fingers[finger];
 				ImGui::TableNextRow();
 				ImGui::TableNextColumn();
-				ImGui::TextUnformatted(s_fingerNames[finger]);
+				ImGui::TextUnformatted(locText(s_fingerNames[finger]));
 				ImGui::TableNextColumn();
 				ImGui::Text("%+.0f", angles.lateral * kRadToDeg);
 				ImGui::TableNextColumn();
@@ -952,6 +835,48 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		config->markDirty();
 		visionThread->requestConfigRefresh();
 	}
+
+	ImGui::End();
+}
+
+void SettingsPanels::drawLanguageCombo()
+{
+	LocalizationManager* localization= LocalizationManager::getInstance();
+	if (localization == nullptr)
+		return;
+
+	const std::vector<LocalizationManager::LanguageInfo> languages=
+		localization->getSupportedLanguages();
+
+	const char* currentNativeName= localization->getLanguage().c_str();
+	for (const LocalizationManager::LanguageInfo& info : languages)
+	{
+		if (info.code == localization->getLanguage())
+			currentNativeName= info.nativeName.c_str();
+	}
+
+	if (ImGui::BeginCombo(locLabel("settingsPanel.language"), currentNativeName))
+	{
+		for (const LocalizationManager::LanguageInfo& info : languages)
+		{
+			ImGui::PushID(info.code.c_str());
+			if (ImGui::Selectable(info.nativeName.c_str(), info.code == localization->getLanguage()))
+				localization->setLanguage(info.code);
+			ImGui::PopID();
+		}
+		ImGui::EndCombo();
+	}
+}
+
+void SettingsPanels::drawAppSettingsPanel()
+{
+	if (!ImGui::Begin(locWindowTitle("windows.settings")))
+	{
+		ImGui::End();
+		return;
+	}
+
+	drawLanguageCombo();
 
 	ImGui::End();
 }

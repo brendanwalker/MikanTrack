@@ -4,6 +4,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/gtc/constants.hpp"
 
@@ -51,7 +53,7 @@ Scene3dPanel::~Scene3dPanel()= default;
 void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
 						const std::vector<const TrackingFrameResult*>& perCameraResults)
 {
-	if (!ImGui::Begin("3D Scene"))
+	if (!ImGui::Begin(locWindowTitle("windows.scene3d")))
 	{
 		ImGui::End();
 		return;
@@ -66,7 +68,7 @@ void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vecto
 		m_bRenderInitialized= m_frameBuffer->init(fbWidth, fbHeight) && m_lineRenderer->startup();
 		if (!m_bRenderInitialized)
 		{
-			ImGui::TextDisabled("3D renderer failed to initialize (see log)");
+			ImGui::TextDisabled("%s", locText("scene3dPanel.rendererInitFailedText"));
 			ImGui::End();
 			return;
 		}

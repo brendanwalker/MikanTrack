@@ -37,6 +37,7 @@ bool GlobalSettings::load()
 			return false;
 
 		lastProjectPath= PathUtils::utf8ToPath(j.value("lastProjectPath", std::string()));
+		appLanguage= j.value("appLanguage", std::string());
 	}
 	catch (const std::exception& e)
 	{
@@ -60,6 +61,7 @@ bool GlobalSettings::save() const
 	const json j= {
 		{"appSettingsVersion", k_appSettingsVersion},
 		{"lastProjectPath", PathUtils::pathToUtf8(lastProjectPath)},
+		{"appLanguage", appLanguage},
 	};
 	file << j.dump(2);
 	return true;

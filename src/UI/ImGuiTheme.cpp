@@ -101,6 +101,15 @@ void applyStyle()
 	style.IndentSpacing= 20.0f;
 }
 
+const ImWchar* getJapaneseGlyphRanges()
+{
+	// The range table is static data inside ImGui; the atlas only provides
+	// access, so a local throwaway instance is fine (and needs no GL context,
+	// which lets the localization self-test share these exact ranges)
+	static ImFontAtlas s_rangeAtlas;
+	return s_rangeAtlas.GetGlyphRangesJapanese();
+}
+
 void loadFonts()
 {
 	ImGuiIO& io= ImGui::GetIO();
@@ -111,7 +120,7 @@ void loadFonts()
 		// Japanese ranges: the font ships CJK glyphs, so text that carries
 		// them renders instead of drawing '?' boxes
 		io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 16.f, nullptr,
-									 io.Fonts->GetGlyphRangesJapanese());
+									 getJapaneseGlyphRanges());
 	}
 	else
 	{

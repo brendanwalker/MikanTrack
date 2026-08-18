@@ -9,6 +9,7 @@ typedef void* SDL_GLContext;
 
 class AppConfig;
 class GlobalSettings;
+class LocalizationManager;
 class ProjectManager;
 class VideoCaptureSystem;
 class VisionThread;
@@ -56,6 +57,7 @@ public:
 
 	AppConfig* getConfig() { return m_config.get(); }
 	GlobalSettings* getGlobalSettings() { return m_globalSettings.get(); }
+	LocalizationManager* getLocalization() { return m_localization.get(); }
 	ProjectManager* getProjectManager() { return m_projectManager.get(); }
 	VideoCaptureSystem* getVideoCapture() { return m_videoCapture.get(); }
 	VisionThread* getVisionThread() { return m_visionThread.get(); }
@@ -71,6 +73,7 @@ private:
 
 	std::unique_ptr<AppConfig> m_config;
 	std::unique_ptr<GlobalSettings> m_globalSettings;
+	std::unique_ptr<LocalizationManager> m_localization;
 	std::unique_ptr<ProjectManager> m_projectManager;
 	std::unique_ptr<VideoCaptureSystem> m_videoCapture;
 	std::unique_ptr<VisionThread> m_visionThread;

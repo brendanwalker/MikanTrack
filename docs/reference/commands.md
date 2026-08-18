@@ -46,6 +46,7 @@ Prints every registered command grouped by category (self-tests, hardware requir
 
 ### Self-tests (deterministic, no hardware or input files needed)
 
+- `--loc-test`: localization tables: key parity, printf specifiers, window IDs, glyph coverage
 - `--selftest`: OSC writer packet round-trip
 - `--test-angleprior`: finger-angle prior fitting (mean, correlations, floors)
 - `--test-bodycalib`: body dimension calibration recovers known landmark separations

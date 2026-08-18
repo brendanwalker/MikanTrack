@@ -1,5 +1,7 @@
 #include "VideoPreviewPanel.h"
 
+#include "LocText.h"
+
 #include <algorithm>
 
 #include "GlTexture.h"
@@ -72,7 +74,7 @@ void VideoPreviewPanel::draw(const std::vector<const TrackingFrameResult*>& resu
 {
 	m_lastDrawList= nullptr;
 
-	if (!ImGui::Begin("Video Preview"))
+	if (!ImGui::Begin(locWindowTitle("windows.videoPreview")))
 	{
 		ImGui::End();
 		return;
@@ -104,7 +106,8 @@ void VideoPreviewPanel::draw(const std::vector<const TrackingFrameResult*>& resu
 
 		if (!pane.bHasFrame || !pane.texture->getIsValid())
 		{
-			const char* message= paneCount > 1 ? "No stream" : "No video stream - select a camera in the Device panel";
+			const char* message= paneCount > 1 ? locText("videoPreviewPanel.noStreamText")
+												: locText("videoPreviewPanel.noVideoStreamText");
 			const ImVec2 textSize= ImGui::CalcTextSize(message);
 			m_lastDrawList->AddText(
 				ImVec2(paneOrigin.x + (paneWidth - textSize.x) * 0.5f, paneOrigin.y + (paneHeight - textSize.y) * 0.5f),
@@ -157,26 +160,26 @@ void VideoPreviewPanel::draw(const std::vector<const TrackingFrameResult*>& resu
 			const char* executionProvider=
 				cameraIndex < (int)executionProviders.size() ? executionProviders[cameraIndex] : "?";
 
-			char hud[160];
+			std::string hud;
 			if (result != nullptr)
 			{
-				snprintf(hud, sizeof(hud), "Cam %d  |  %.0f fps  |  %.1f ms  |  %s",
-						 cameraIndex + 1, result->captureFps, result->inferenceMs, executionProvider);
+				hud= locFormat("videoPreviewPanel.hudWithResultFmt",
+							   cameraIndex + 1, result->captureFps, result->inferenceMs, executionProvider);
 			}
 			else
 			{
-				snprintf(hud, sizeof(hud), "Cam %d  |  %s", cameraIndex + 1, executionProvider);
+				hud= locFormat("videoPreviewPanel.hudFmt", cameraIndex + 1, executionProvider);
 			}
 
 			const ImVec2 hudPos(imagePos.x + 8.f, imagePos.y + 8.f);
-			const ImVec2 hudSize= ImGui::CalcTextSize(hud);
+			const ImVec2 hudSize= ImGui::CalcTextSize(hud.c_str());
 			m_lastDrawList->AddRectFilled(
 				ImVec2(hudPos.x - 4.f, hudPos.y - 2.f),
 				ImVec2(hudPos.x + hudSize.x + 4.f, hudPos.y + hudSize.y + 2.f),
 				IM_COL32(0, 0, 0, 160), 3.f);
 
 			const bool bGpu= executionProvider != nullptr && strstr(executionProvider, "DirectML") != nullptr;
-			m_lastDrawList->AddText(hudPos, bGpu ? IM_COL32(120, 255, 120, 255) : IM_COL32(255, 220, 100, 255), hud);
+			m_lastDrawList->AddText(hudPos, bGpu ? IM_COL32(120, 255, 120, 255) : IM_COL32(255, 220, 100, 255), hud.c_str());
 		}
 	}
 

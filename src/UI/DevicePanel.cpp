@@ -2,6 +2,8 @@
 
 #include "imgui.h"
 
+#include "LocText.h"
+
 #include "App.h"
 #include "AppConfig.h"
 #include "Logger.h"
@@ -77,15 +79,15 @@ void DevicePanel::refreshCameraSettings(int cameraIndex)
 		eVideoSettingType type;
 		const char* name;
 	} kSettings[]= {
-		{eVideoSettingType::Exposure, "Exposure"},
-		{eVideoSettingType::Gain, "Gain"},
-		{eVideoSettingType::Brightness, "Brightness"},
-		{eVideoSettingType::Contrast, "Contrast"},
-		{eVideoSettingType::Saturation, "Saturation"},
-		{eVideoSettingType::Sharpness, "Sharpness"},
-		{eVideoSettingType::WhiteBalance, "White Balance"},
-		{eVideoSettingType::Focus, "Focus"},
-		{eVideoSettingType::Zoom, "Zoom"},
+		{eVideoSettingType::Exposure, "devicePanel.exposureSlider"},
+		{eVideoSettingType::Gain, "devicePanel.gainSlider"},
+		{eVideoSettingType::Brightness, "devicePanel.brightnessSlider"},
+		{eVideoSettingType::Contrast, "devicePanel.contrastSlider"},
+		{eVideoSettingType::Saturation, "devicePanel.saturationSlider"},
+		{eVideoSettingType::Sharpness, "devicePanel.sharpnessSlider"},
+		{eVideoSettingType::WhiteBalance, "devicePanel.whiteBalanceSlider"},
+		{eVideoSettingType::Focus, "devicePanel.focusSlider"},
+		{eVideoSettingType::Zoom, "devicePanel.zoomSlider"},
 	};
 
 	for (const auto& settingInfo : kSettings)
@@ -109,7 +111,7 @@ void DevicePanel::drawCameraSettings(int cameraIndex)
 	if (state.settings.empty())
 		return;
 
-	if (!ImGui::TreeNode("Camera Settings"))
+	if (!ImGui::TreeNode(locLabel("devicePanel.cameraSettingsHeader")))
 		return;
 
 	IUsbVideoDevice* device= m_videoCapture->getCurrentDevice(cameraIndex);
@@ -117,23 +119,18 @@ void DevicePanel::drawCameraSettings(int cameraIndex)
 	{
 		for (CameraSettingUi& setting : state.settings)
 		{
-			if (ImGui::SliderInt(setting.name, &setting.value, setting.constraint.min_value,
+			if (ImGui::SliderInt(locLabel(setting.name), &setting.value, setting.constraint.min_value,
 								 setting.constraint.max_value))
 			{
 				device->setVideoSetting(setting.type, setting.value);
 			}
 			if (setting.type == eVideoSettingType::Exposure)
 			{
-				ImGui::SetItemTooltip(
-					"Dragging this switches the camera to MANUAL exposure.\n"
-					"Auto-exposure in dim light extends exposure past the\n"
-					"frame interval and silently halves the frame rate\n"
-					"(30fps -> 15fps). Shorten exposure (or add light) to\n"
-					"get the full rate back.");
+				ImGui::SetItemTooltip("%s", locText("devicePanel.exposureTooltip"));
 			}
 		}
 
-		if (ImGui::Button("Reset Defaults"))
+		if (ImGui::Button(locLabel("devicePanel.resetDefaultsButton")))
 		{
 			for (CameraSettingUi& setting : state.settings)
 			{
@@ -142,7 +139,7 @@ void DevicePanel::drawCameraSettings(int cameraIndex)
 			}
 		}
 		ImGui::SameLine();
-		if (ImGui::Button("Re-read"))
+		if (ImGui::Button(locLabel("devicePanel.rereadButton")))
 			refreshCameraSettings(cameraIndex);
 	}
 
@@ -199,14 +196,14 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 
 	ImGui::PushID(cameraIndex);
 
-	char headerLabel[64];
-	snprintf(headerLabel, sizeof(headerLabel), "Camera %d", cameraIndex + 1);
-	if (ImGui::CollapsingHeader(headerLabel, ImGuiTreeNodeFlags_DefaultOpen))
+	const std::string headerLabel= locFormat("devicePanel.cameraHeaderFmt", cameraIndex + 1);
+	if (ImGui::CollapsingHeader(headerLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
 	{
 		// Device combo (devices open in another slot are disabled)
 		const char* currentDeviceLabel=
-			state.selectedDeviceIndex >= 0 ? m_deviceNames[state.selectedDeviceIndex].c_str() : "<select camera>";
-		if (ImGui::BeginCombo("Device", currentDeviceLabel))
+			state.selectedDeviceIndex >= 0 ? m_deviceNames[state.selectedDeviceIndex].c_str()
+											: locText("devicePanel.selectCameraPlaceholder");
+		if (ImGui::BeginCombo(locLabel("devicePanel.deviceCombo"), currentDeviceLabel))
 		{
 			for (int i= 0; i < (int)m_deviceNames.size(); ++i)
 			{
@@ -260,21 +257,21 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 		};
 
 		bool bModeChanged= false;
-		bModeChanged|= drawOptionCombo("Resolution", state.resolutionOptions, state.selectedResolution);
-		bModeChanged|= drawOptionCombo("Frame Rate", state.frameRateOptions, state.selectedFrameRate);
-		bModeChanged|= drawOptionCombo("Format", state.formatOptions, state.selectedFormat);
+		bModeChanged|= drawOptionCombo(locLabel("devicePanel.resolutionCombo"), state.resolutionOptions, state.selectedResolution);
+		bModeChanged|= drawOptionCombo(locLabel("devicePanel.frameRateCombo"), state.frameRateOptions, state.selectedFrameRate);
+		bModeChanged|= drawOptionCombo(locLabel("devicePanel.formatCombo"), state.formatOptions, state.selectedFormat);
 		if (bModeChanged)
 			applyModeSelection(cameraIndex);
 
 		// Stream control
 		if (m_videoCapture->isStreaming(cameraIndex))
 		{
-			if (ImGui::Button("Stop Stream", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("devicePanel.stopStreamButton"), ImVec2(-1, 0)))
 				m_videoCapture->stopStream(cameraIndex);
 		}
 		else
 		{
-			if (ImGui::Button("Start Stream", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("devicePanel.startStreamButton"), ImVec2(-1, 0)))
 				m_videoCapture->startStream(cameraIndex);
 		}
 
@@ -282,18 +279,18 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 
 		if (bDeviceOpen)
 		{
-			ImGui::TextDisabled("Mode: %s", m_videoCapture->getCurrentVideoModeName(cameraIndex).c_str());
+			ImGui::TextDisabled(locText("devicePanel.modeFmt"), m_videoCapture->getCurrentVideoModeName(cameraIndex).c_str());
 
 			// Device-side delivery rate: if this reads below the mode's rate,
 			// the CAMERA is the bottleneck (usually auto-exposure in dim light
 			// or USB bandwidth), not the processing pipeline
 			if (m_videoCapture->isStreaming(cameraIndex))
-				ImGui::TextDisabled("Device delivering: %.1f fps",
+				ImGui::TextDisabled(locText("devicePanel.deviceDeliveringFmt"),
 									m_videoCapture->getDeviceFrameRate(cameraIndex));
 
 			const uint64_t droppedFrames= m_videoCapture->getDroppedFrameCount(cameraIndex);
 			if (droppedFrames > 0)
-				ImGui::TextDisabled("Dropped frames: %llu", (unsigned long long)droppedFrames);
+				ImGui::TextDisabled(locText("devicePanel.droppedFramesFmt"), (unsigned long long)droppedFrames);
 
 			drawCameraSettings(cameraIndex);
 		}
@@ -301,7 +298,7 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 		// Remove (never camera 0)
 		if (cameraIndex > 0)
 		{
-			if (ImGui::Button("Remove Camera", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("devicePanel.removeCameraButton"), ImVec2(-1, 0)))
 			{
 				m_videoCapture->closeDevice(cameraIndex);
 				m_config->cameras.erase(m_config->cameras.begin() + cameraIndex);
@@ -316,7 +313,7 @@ void DevicePanel::drawCameraSection(int cameraIndex)
 
 void DevicePanel::draw()
 {
-	if (!ImGui::Begin("Device"))
+	if (!ImGui::Begin(locWindowTitle("windows.device")))
 	{
 		ImGui::End();
 		return;
@@ -324,7 +321,7 @@ void DevicePanel::draw()
 
 	syncCameraStateCount();
 
-	if (ImGui::SmallButton("Rescan Devices"))
+	if (ImGui::SmallButton(locLabel("devicePanel.rescanDevicesButton")))
 	{
 		m_videoCapture->refreshDeviceList();
 		refreshDeviceList();
@@ -335,7 +332,7 @@ void DevicePanel::draw()
 
 	ImGui::Separator();
 	ImGui::BeginDisabled((int)m_config->cameraCount() >= k_maxCameras);
-	if (ImGui::Button("Add Camera", ImVec2(-1, 0)))
+	if (ImGui::Button(locLabel("devicePanel.addCameraButton"), ImVec2(-1, 0)))
 	{
 		CameraProfile newProfile;
 		// New cameras default to 720p - two uncompressed 1080p streams can

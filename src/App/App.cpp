@@ -14,6 +14,7 @@
 #include "FrameTimer.h"
 #include "GlobalSettings.h"
 #include "ImGuiTheme.h"
+#include "LocalizationManager.h"
 #include "Logger.h"
 #include "LogPanel.h"
 #include "MainWindow.h"
@@ -79,6 +80,11 @@ bool App::startup()
 
 	m_projectManager->migrateLegacyConfigIfNeeded();
 	m_globalSettings->load();
+
+	// Before any UI exists: everything drawn from here on fetches its strings
+	// through this
+	m_localization= std::make_unique<LocalizationManager>();
+	m_localization->startup(m_globalSettings.get());
 
 	// SDL + GL context
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
@@ -273,6 +279,9 @@ void App::shutdown()
 	}
 
 	m_mainWindow= nullptr;
+
+	if (m_localization != nullptr)
+		m_localization->shutdown();
 
 	if (ImGui::GetCurrentContext() != nullptr)
 	{

@@ -1,5 +1,7 @@
 #include "ExtrinsicsWizard.h"
 
+#include "LocText.h"
+
 #include <algorithm>
 
 #include "opencv2/imgproc.hpp"
@@ -111,12 +113,12 @@ bool ExtrinsicsWizard::areMarkerParamsValid(std::string& outError) const
 	// DICT_6X6_250 has marker ids 0..249
 	if (m_markerId < 0 || m_markerId > 249)
 	{
-		outError= "Marker ID must be 0-249 (DICT_6X6_250)";
+		outError= locText("extrinsicsWizard.markerIdRangeError");
 		return false;
 	}
 	if (m_markerLengthMM <= 0.f)
 	{
-		outError= "Marker size must be positive";
+		outError= locText("extrinsicsWizard.markerSizePositiveError");
 		return false;
 	}
 	return true;
@@ -311,7 +313,7 @@ void ExtrinsicsWizard::drawMarkerOverlays(VideoPreviewPanel* previewPanel)
 void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& previews)
 {
 	ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_Appearing);
-	if (!ImGui::Begin("Extrinsics Calibration (all cameras)", nullptr, ImGuiWindowFlags_NoCollapse))
+	if (!ImGui::Begin(locWindowTitle("windows.extrinsicsWizard"), nullptr, ImGuiWindowFlags_NoCollapse))
 	{
 		ImGui::End();
 		return;
@@ -320,12 +322,9 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 	if (!allCamerasHaveIntrinsics())
 	{
 		ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f),
-						   "Every camera needs calibrated intrinsics first");
-		ImGui::TextWrapped(
-			"Extrinsics are always calibrated for ALL cameras together, against the "
-			"same marker placement - otherwise the cameras end up in disagreeing "
-			"world frames.");
-		if (ImGui::Button("Close"))
+						   "%s", locText("extrinsicsWizard.needsIntrinsicsWarning"));
+		ImGui::TextWrapped("%s", locText("extrinsicsWizard.needsIntrinsicsExplanation"));
+		if (ImGui::Button(locLabel("common.close")))
 		{
 			m_result= eWizardResult::Cancelled;
 			m_bWantsClose= true;
@@ -338,23 +337,16 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 	{
 		case eState::VerifySetup:
 		{
-			ImGui::TextWrapped(
-				"Place the printed origin aruco marker flat on the table where the world "
-				"origin should be. The marker stays there during hand tracking - it defines "
-				"the tracking space. ALL cameras are calibrated in this one session so they "
-				"agree on the same marker placement; make sure every camera can see it.");
+			ImGui::TextWrapped("%s", locText("extrinsicsWizard.verifySetupIntro"));
 
 			ImGui::Spacing();
 			// The marker defines the world AXES, not just the origin, and a
 			// sheet laid down turned gives tracking that is self-consistent
 			// and points the wrong way - which reads as a tracking fault
-			ImGui::TextWrapped(
-				"ORIENTATION MATTERS: lay the sheet down the way it reads, with the printed "
-				"FORWARD arrow pointing away from you. That makes the tracking world +X "
-				"forward, +Y left, +Z up.");
+			ImGui::TextWrapped("%s", locText("extrinsicsWizard.orientationWarning"));
 
-			ImGui::InputInt("Marker ID", &m_markerId);
-			ImGui::InputFloat("Marker size (mm)", &m_markerLengthMM, 0.f, 0.f, "%.0f");
+			ImGui::InputInt(locLabel("extrinsicsWizard.markerIdInput"), &m_markerId);
+			ImGui::InputFloat(locLabel("extrinsicsWizard.markerSizeInput"), &m_markerLengthMM, 0.f, 0.f, "%.0f");
 
 			std::string paramError;
 			const bool bParamsValid= areMarkerParamsValid(paramError);
@@ -362,17 +354,12 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", paramError.c_str());
 
 			ImGui::BeginDisabled(!bParamsValid);
-			if (ImGui::Button("Export + open marker PNG for printing..."))
+			if (ImGui::Button(locLabel("extrinsicsWizard.exportMarkerButton")))
 			{
 				exportAndOpenArucoMarker(m_markerId, eCharucoDictionaryType::DICT_6X6,
 										 m_markerLengthMM);
 			}
-			ImGui::SetItemTooltip(
-				"Writes the marker to resources/calibration and opens it in your\n"
-				"image viewer. Print at 100%% scale and check the square with a\n"
-				"ruler - a rescaled print silently rescales the whole tracking\n"
-				"world. The sheet also carries the axis labels this world frame\n"
-				"depends on.");
+			ImGui::SetItemTooltip(locText("extrinsicsWizard.exportMarkerTooltip"));
 			ImGui::EndDisabled();
 
 			ImGui::Separator();
@@ -380,10 +367,10 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 			for (size_t i= 0; i < m_captures.size() && bAllHaveVideo; ++i)
 				bAllHaveVideo= i < previews.size() && !previews[i].bgr.empty();
 			if (!bAllHaveVideo)
-				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "Start video streams on all cameras first");
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "%s", locText("extrinsicsWizard.needVideoWarning"));
 
 			ImGui::BeginDisabled(!bAllHaveVideo || !bParamsValid);
-			if (ImGui::Button("Capture Camera Poses", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("extrinsicsWizard.captureCameraPosesButton"), ImVec2(-1, 0)))
 				beginPoseCapture(previews);
 			ImGui::EndDisabled();
 			break;
@@ -391,26 +378,25 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 
 		case eState::CaptureCameraPose:
 		{
-			ImGui::Text("Sampling marker pose on every camera...");
+			ImGui::Text("%s", locText("extrinsicsWizard.samplingStatus"));
 			for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 			{
 				const CameraCapture& capture= m_captures[cameraIndex];
-				char label[32];
-				snprintf(label, sizeof(label), "Camera %d", (int)cameraIndex + 1);
+				const std::string label= locFormat("extrinsicsWizard.cameraLabelFmt", (int)cameraIndex + 1);
 				if (capture.bHasPose)
 				{
-					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s: captured", label);
+					ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), locText("extrinsicsWizard.cameraCapturedFmt"), label.c_str());
 				}
 				else if (capture.sampler != nullptr)
 				{
-					ImGui::Text("%s:", label);
+					ImGui::Text(locText("extrinsicsWizard.cameraLabelColonFmt"), label.c_str());
 					ImGui::SameLine();
 					ImGui::ProgressBar(capture.sampler->getCalibrationProgress(), ImVec2(-1, 0));
 					if (!capture.sampler->hasValidDetection())
-						ImGui::TextDisabled("  marker not visible to this camera");
+						ImGui::TextDisabled("%s", locText("extrinsicsWizard.markerNotVisibleHint"));
 				}
 			}
-			if (ImGui::Button("Restart"))
+			if (ImGui::Button(locLabel("extrinsicsWizard.restartButton")))
 			{
 				for (CameraCapture& capture : m_captures)
 				{
@@ -424,13 +410,13 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 
 		case eState::Review:
 		{
-			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "All camera poses captured");
+			ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), "%s", locText("extrinsicsWizard.allPosesCapturedStatus"));
 
 			for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
 			{
 				const CameraCapture& capture= m_captures[cameraIndex];
 				const glm::dmat4 worldFromCamera= computeWorldFromCameraPose(capture.cameraFromMarker);
-				ImGui::Text("Camera %d: %.2f m from marker, height %.2f m, reproj %.2f px",
+				ImGui::Text(locText("extrinsicsWizard.cameraSummaryFmt"),
 							(int)cameraIndex + 1,
 							glm::length(glm::dvec3(capture.cameraFromMarker[3])),
 							worldFromCamera[3].z,
@@ -445,29 +431,22 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				if (!quality.valid)
 				{
 					ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f),
-									   "Cameras %d+%d: not enough shared corners to validate",
+									   locText("extrinsicsWizard.pairInvalidFmt"),
 									   quality.cameraA + 1, quality.cameraB + 1);
 					continue;
 				}
 				const bool bGood= quality.reprojectionRmsPx < 2.f && quality.spacingErrorMm < 3.f;
 				ImGui::TextColored(bGood ? ImVec4(0.4f, 1.f, 0.5f, 1.f) : ImVec4(1.f, 0.85f, 0.3f, 1.f),
-								   "Cameras %d+%d agree to %.2f px rms, marker size err %.2f mm, scale %.3f",
+								   locText("extrinsicsWizard.pairQualityFmt"),
 								   quality.cameraA + 1, quality.cameraB + 1, quality.reprojectionRmsPx,
 								   quality.spacingErrorMm, quality.spacingScale);
 			}
-			ImGui::SetItemTooltip(
-				"The marker corners both cameras saw, triangulated with the new\n"
-				"extrinsics and checked against the marker's known size. rms px is\n"
-				"comparable to the tracking pipeline's triangulation residual; the\n"
-				"size error and scale catch a wrong baseline that reprojection\n"
-				"alone can hide. Only four corners, so read it as pass/fail.");
+			ImGui::SetItemTooltip("%s", locText("extrinsicsWizard.pairQualityTooltip"));
 			ImGui::TextWrapped(
-				"Sanity check these numbers against your physical setup. Hand scale is "
-				"measured automatically from stereo/depth while tracking runs "
-				"(current: %.1f cm).",
+				locText("extrinsicsWizard.handScaleSanityCheckFmt"),
 				m_config->handScale.refLengthMeters * 100.0);
 
-			if (ImGui::Button("Accept & Save All", ImVec2(-1, 0)))
+			if (ImGui::Button(locLabel("extrinsicsWizard.acceptSaveAllButton"), ImVec2(-1, 0)))
 			{
 
 				for (size_t cameraIndex= 0; cameraIndex < m_captures.size(); ++cameraIndex)
@@ -507,14 +486,14 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
 			}
-			if (ImGui::Button("Recapture Poses"))
+			if (ImGui::Button(locLabel("extrinsicsWizard.recapturePosesButton")))
 				m_state= eState::VerifySetup;
 			break;
 		}
 	}
 
 	ImGui::Separator();
-	if (ImGui::Button("Cancel / Close"))
+	if (ImGui::Button(locLabel("extrinsicsWizard.cancelCloseButton")))
 	{
 		m_result= eWizardResult::Cancelled;
 		m_bWantsClose= true;

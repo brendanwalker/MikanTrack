@@ -84,5 +84,6 @@ private:
 	bool m_bCameraWizardWasActive= false;
 
 	bool m_bShowLogPanel= true;
+	bool m_bShowSettingsPanel= true;
 	bool m_bDockLayoutInitialized= false;
 };
