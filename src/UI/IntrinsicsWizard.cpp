@@ -23,6 +23,7 @@ void IntrinsicsWizard::enter(int cameraIndex)
 	m_cameraIndex= cameraIndex;
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::SelectBoardParams;
 
 	m_boardCols= m_config->charucoBoard.cols;
@@ -289,7 +290,10 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 				"Straight lines in the scene should look straight.");
 
 			if (ImGui::Button("Accept", ImVec2(-1, 0)))
+			{
+				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
+			}
 			if (ImGui::Button("Redo Capture"))
 			{
 				m_visionThread->setUndistortEnabled(m_cameraIndex, false);
@@ -312,7 +316,10 @@ void IntrinsicsWizard::drawWizardWindow(float deltaSeconds, const cv::Mat& bgrPr
 
 	ImGui::Separator();
 	if (ImGui::Button("Cancel / Close"))
+	{
+		m_result= eWizardResult::Cancelled;
 		m_bWantsClose= true;
+	}
 
 	ImGui::End();
 }

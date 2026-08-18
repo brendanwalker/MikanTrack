@@ -42,6 +42,13 @@ public:
 	// Draw list for wizard overlays (nullptr when the panel isn't visible)
 	ImDrawList* getLastDrawList() const { return m_lastDrawList; }
 
+	// Live GL texture of one camera's latest frame (0 until a frame arrived),
+	// for embedding small previews outside the panel (e.g. the setup flow's
+	// camera-selection prompt)
+	uint32_t getCameraTextureId(int cameraIndex) const;
+	// Width over height of that texture; 16:9 until a frame arrived
+	float getCameraAspect(int cameraIndex) const;
+
 	void setActiveCamera(int cameraIndex) { m_activeCamera= cameraIndex; }
 	int getActiveCamera() const { return m_activeCamera; }
 

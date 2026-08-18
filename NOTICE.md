@@ -28,6 +28,7 @@ linked, so this app builds standalone.
 ## Third-party libraries
 
 - **Dear ImGui** (docking branch) — MIT — `thirdparty/imgui` (submodule)
+- **tinyfiledialogs** 3.8.8 — zlib — `thirdparty/tinyfiledialogs` (vendored, two files)
 - **glm** — MIT/Happy Bunny — `thirdparty/glm` (submodule)
 - **nlohmann/json** — MIT — `thirdparty/nlohmann_json` (submodule)
 - **readerwriterqueue** — BSD-2 — `thirdparty/readerwriterqueue` (submodule)

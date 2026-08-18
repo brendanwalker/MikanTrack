@@ -60,6 +60,7 @@ void HandCalibrationWizard::enter()
 {
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::BonesIntro;
 	m_countdown= 0.f;
 	m_boneCapture= VisionThread::BoneCalibrationCapture();
@@ -93,7 +94,10 @@ bool HandCalibrationWizard::update(float deltaSeconds, const TrackingFrameResult
 
 		ImGui::Separator();
 		if (ImGui::Button("Cancel Calibration"))
+		{
+			m_result= eWizardResult::Cancelled;
 			m_bWantsClose= true;
+		}
 	}
 	ImGui::End();
 
@@ -269,7 +273,10 @@ void HandCalibrationWizard::drawRestResult()
 		m_state= eState::RestIntro;
 	ImGui::BeginDisabled(!bLeft && !bRight);
 	if (ImGui::Button("Done", ImVec2(-1, 0)))
+	{
+		m_result= eWizardResult::Completed;
 		m_bWantsClose= true;
+	}
 	ImGui::EndDisabled();
 }
 

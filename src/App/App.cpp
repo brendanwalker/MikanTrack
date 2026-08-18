@@ -1,6 +1,7 @@
 #include "App.h"
 
 #include <chrono>
+#include <filesystem>
 
 #include "GL/glew.h"
 #include "SDL.h"
@@ -11,9 +12,12 @@
 
 #include "AppConfig.h"
 #include "FrameTimer.h"
+#include "GlobalSettings.h"
 #include "Logger.h"
 #include "LogPanel.h"
 #include "MainWindow.h"
+#include "PathUtils.h"
+#include "ProjectManager.h"
 #include "VideoCaptureSystem.h"
 #include "VisionThread.h"
 
@@ -69,7 +73,11 @@ bool App::startup()
 	MIKAN_LOG_INFO("App::startup") << "MikanTrack starting up";
 
 	m_config= std::make_unique<AppConfig>();
-	m_config->load();
+	m_globalSettings= std::make_unique<GlobalSettings>();
+	m_projectManager= std::make_unique<ProjectManager>(m_globalSettings.get(), m_config.get());
+
+	m_projectManager->migrateLegacyConfigIfNeeded();
+	m_globalSettings->load();
 
 	// SDL + GL context
 	if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0)
@@ -134,15 +142,99 @@ bool App::startup()
 	}
 	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
 
+	// Constructed but not started: the app boots into the main menu, and the
+	// vision thread and cameras only spin up when a project is activated
 	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_config.get());
-	m_visionThread->start();
 
 	m_mainWindow= std::make_unique<MainWindow>(this);
 
-	// Restore last-used device/mode
-	m_mainWindow->tryRestoreVideoDeviceFromConfig();
-
 	return true;
+}
+
+bool App::activateProject(const std::filesystem::path& projectFile)
+{
+	// Stop the config's consumers before loadProject mutates it in place
+	m_visionThread->stop();
+	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
+		m_videoCapture->closeDevice(cameraIndex);
+
+	if (!m_projectManager->loadProject(projectFile))
+	{
+		m_appState= eAppState::MainMenu;
+		return false;
+	}
+
+	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
+	m_visionThread->start();
+	m_mainWindow->tryRestoreVideoDeviceFromConfig();
+	m_appState= eAppState::Project;
+	return true;
+}
+
+bool App::activateNewProject(const std::string& projectName)
+{
+	// Remembered so a cancelled setup can hand Resume back to this project
+	// (loadProject below overwrites the last-project pointer)
+	m_lastProjectPathBeforeNew= m_globalSettings->lastProjectPath;
+
+	// New projects start from the defaults, not whatever project was loaded
+	// before; stop the config's consumer before resetting it in place
+	m_visionThread->stop();
+	*m_config= AppConfig();
+
+	std::filesystem::path projectFile;
+	if (!m_projectManager->createProject(projectName, projectFile))
+		return false;
+	if (!activateProject(projectFile))
+		return false;
+
+	m_bStartSetupFlowOnEnter= true;
+	return true;
+}
+
+void App::returnToMainMenu()
+{
+	m_config->save();
+	m_visionThread->stop();
+	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
+		m_videoCapture->closeDevice(cameraIndex);
+	m_appState= eAppState::MainMenu;
+}
+
+void App::discardNewProjectAndReturnToMenu()
+{
+	const std::filesystem::path projectFile= m_config->getProjectFilePath();
+
+	m_visionThread->stop();
+	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
+		m_videoCapture->closeDevice(cameraIndex);
+
+	// Clear the in-place config (and its remembered path) before touching the
+	// folder, so the autosave cannot recreate the deleted file
+	*m_config= AppConfig();
+	PathUtils::setProjectDirectory(std::filesystem::path());
+
+	ProjectManager::deleteProject(projectFile);
+
+	if (!m_lastProjectPathBeforeNew.empty() &&
+		std::filesystem::is_regular_file(m_lastProjectPathBeforeNew))
+	{
+		m_globalSettings->lastProjectPath= m_lastProjectPathBeforeNew;
+	}
+	else
+	{
+		m_globalSettings->lastProjectPath.clear();
+	}
+	m_globalSettings->save();
+
+	m_appState= eAppState::MainMenu;
+}
+
+bool App::consumeStartSetupFlowFlag()
+{
+	const bool bStart= m_bStartSetupFlowOnEnter;
+	m_bStartSetupFlowOnEnter= false;
+	return bStart;
 }
 
 void App::applyCameraCountChange()

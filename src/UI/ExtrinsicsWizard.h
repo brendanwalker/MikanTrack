@@ -10,6 +10,7 @@
 #include "ExtrinsicsValidation.h"
 #include "HandOverlay.h"
 #include "TrackingTypes.h"
+#include "WizardResult.h"
 
 class AppConfig;
 class PatternPoseSampler;
@@ -43,6 +44,7 @@ public:
 	void enter();
 	void exit();
 	bool isActive() const { return m_bActive; }
+	eWizardResult getResult() const { return m_result; }
 
 	bool update(float deltaSeconds, const std::vector<VisionPreviewFrame>& previews,
 				VideoPreviewPanel* previewPanel);
@@ -89,6 +91,7 @@ private:
 	eState m_state= eState::VerifySetup;
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
+	eWizardResult m_result= eWizardResult::None;
 
 	std::vector<CameraCapture> m_captures; // indexed by camera
 

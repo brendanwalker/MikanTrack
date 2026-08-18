@@ -598,7 +598,7 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 
 	ImGui::SeparatorText("Diagnostics");
 	if (ImGui::Button("Dump tracking state (F9)"))
-		visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath());
+		visionThread->requestDiagnosticDump(config->makeDumpDirectoryPath());
 	ImGui::SetItemTooltip(
 		"Writes the last few seconds of tracking/fusion history\n"
 		"(including cluster + side-assignment scores), the live config\n"

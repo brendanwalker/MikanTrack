@@ -87,7 +87,9 @@ Two-Bone IK from the palm transform.
   scale is measured continuously by stereo triangulation while tracking runs,
   until calibrated hand skeletons supersede it.
 - OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
-- Dear ImGui (docking) UI; config persisted to `%APPDATA%/MikanTrack/config.json`
+- Dear ImGui (docking) UI; per-project config persisted to
+  `%USERPROFILE%/Documents/MikanTrack/<project>/project.json` (the last-project
+  pointer lives in `%APPDATA%/MikanTrack/config.json`)
 - **Image quality diagnostics** (Tracking panel): per-camera statistics of
   each hand's region in the exact image the model consumed - luminance,
   highlight/shadow clipping, contrast, hand-vs-background separation,
@@ -101,7 +103,7 @@ Two-Bone IK from the palm transform.
   history (per-camera hand states with image-quality statistics, fusion
   clusters and the L/R side-assignment scores), the live config and each
   camera's current frame (raw + annotated PNG) to
-  `%APPDATA%/MikanTrack/dumps/<timestamp>/` - hit it the moment
+  `<project folder>/dumps/<timestamp>/` - hit it the moment
   tracking misbehaves and attach the folder to a bug report
 - **Frame-loop hitch watchdog**: every camera is served by one vision thread,
   so any phase that overruns the frame budget drops frames on all of them at
@@ -111,8 +113,8 @@ Two-Bone IK from the palm transform.
   to block that thread for ~200 ms at a time, runs on its own worker.
 - **Tracking recording + deterministic replay (F10 / Timeline panel)**:
   records every input to the post-inference stages (per-camera landmarks and
-  timestamps - no video, ~1 MB/s) as JSONL under
-  `%APPDATA%/MikanTrack/recordings/`, then re-runs the whole
+  timestamps - no video, ~1 MB/s) as JSONL under the project folder's
+  `recordings/`, then re-runs the whole
   triangulation/fusion/estimation pipeline offline, verified bit-exact by
   per-frame checksums. The Timeline panel scrubs/steps/plays a recording in
   the 3D scene view, marks any divergent frames, and re-simulates the same
@@ -170,6 +172,22 @@ one lives in its own file under `src/Tests` and registers itself, so adding a
 test means adding a file. Run one by passing its flag (for example
 `--test-fusion`); it logs to `<flag>.log` next to the exe and exits non-zero on
 failure.
+
+## Projects
+
+A tracking setup is a project: a folder under `%USERPROFILE%/Documents/MikanTrack/`
+holding `project.json` plus that project's `recordings/` and `dumps/`. The app
+starts at a menu (Resume / New Project / Load Project), so several setups (say
+a dual-camera and a triple-camera rig) can coexist and be switched or shared
+without disturbing each other. **New Project** runs a guided setup: pick the
+tracking variant (two overhead cameras, with or without wrist Joy-Cons, or
+overhead pair + front camera), assign camera devices, print and measure the
+calibration patterns, and the calibration wizards below run in the right order,
+ending at the output-protocol choice. Cancelling the guided setup (after a
+confirmation) deletes the new project again, and Resume returns to whatever
+project came before it.
+On first run an existing `%APPDATA%/MikanTrack/config.json` is migrated into a
+`Default` project automatically (a `config.json.bak` is left beside it).
 
 ## Calibration workflow
 

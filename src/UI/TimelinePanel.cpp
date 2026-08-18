@@ -22,7 +22,7 @@ void TimelinePanel::draw(AppConfig* config, VisionThread* visionThread)
 
 	drawRecordingSection(config, visionThread);
 	ImGui::SeparatorText("Replay");
-	drawLoadSection(visionThread);
+	drawLoadSection(config, visionThread);
 	if (m_bLoaded && m_replay.didRun())
 	{
 		drawTransportSection();
@@ -61,7 +61,7 @@ void TimelinePanel::drawRecordingSection(AppConfig* config, VisionThread* vision
 	else
 	{
 		if (ImGui::Button("Start Recording (F10)", ImVec2(-1, 0)))
-			visionThread->requestRecordingStart(AppConfig::makeRecordingFilePath());
+			visionThread->requestRecordingStart(config->makeRecordingFilePath());
 		ImGui::SetItemTooltip(
 			"Captures every input to the tracking stages (per-camera\n"
 			"landmarks, depth samples, timestamps) so the whole pipeline can\n"
@@ -101,12 +101,12 @@ void TimelinePanel::drawRecordingSection(AppConfig* config, VisionThread* vision
 	}
 }
 
-void TimelinePanel::refreshRecordingList()
+void TimelinePanel::refreshRecordingList(const AppConfig* config)
 {
 	m_recordingFiles.clear();
 	std::error_code ec;
 	for (const auto& entry :
-		 std::filesystem::directory_iterator(AppConfig::getRecordingsDirectoryPath(), ec))
+		 std::filesystem::directory_iterator(config->getRecordingsDirectoryPath(), ec))
 	{
 		if (entry.is_regular_file() && entry.path().extension() == ".jsonl")
 			m_recordingFiles.push_back(entry.path().string());
@@ -118,10 +118,10 @@ void TimelinePanel::refreshRecordingList()
 		m_selectedRecording= (int)m_recordingFiles.size() - 1; // newest by timestamp name
 }
 
-void TimelinePanel::drawLoadSection(VisionThread* visionThread)
+void TimelinePanel::drawLoadSection(const AppConfig* config, VisionThread* visionThread)
 {
 	if (m_recordingFiles.empty())
-		refreshRecordingList();
+		refreshRecordingList(config);
 
 	const char* selectedName= m_selectedRecording >= 0
 		? m_recordingFiles[m_selectedRecording].c_str()
@@ -135,7 +135,7 @@ void TimelinePanel::drawLoadSection(VisionThread* visionThread)
 											? fileLabel(m_recordingFiles[m_selectedRecording]).c_str()
 											: selectedName))
 	{
-		refreshRecordingList();
+		refreshRecordingList(config);
 		for (int fileIndex= 0; fileIndex < (int)m_recordingFiles.size(); ++fileIndex)
 		{
 			if (ImGui::Selectable(fileLabel(m_recordingFiles[fileIndex]).c_str(),

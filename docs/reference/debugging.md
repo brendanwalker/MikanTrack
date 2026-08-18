@@ -39,11 +39,11 @@ Adding a test means adding one file under `src/Tests` plus a CMake re-run: the t
 
 ## The diagnostic dump (F9)
 
-Trigger: `F9` anywhere in the app (`MainWindow::update`, `src/UI/MainWindow.cpp`), or the "Dump tracking state (F9)" button in the Tracking panel's Diagnostics section (`SettingsPanels.cpp`). Both call `visionThread->requestDiagnosticDump(AppConfig::makeDumpDirectoryPath())`.
+Trigger: `F9` anywhere in the app (`MainWindow::update`, `src/UI/MainWindow.cpp`), or the "Dump tracking state (F9)" button in the Tracking panel's Diagnostics section (`SettingsPanels.cpp`). Both call `visionThread->requestDiagnosticDump(config->makeDumpDirectoryPath())`.
 
-Output directory: `AppConfig::makeDumpDirectoryPath()` (`src/App/AppConfig.cpp`) returns `%APPDATA%/MikanTrack/dumps/<yyyy-mm-dd_hh-mm-ss>/`. `DiagnosticDump::write` (`src/App/DiagnosticDump.cpp`) fills that directory with `dump.json` plus per-camera PNGs:
+Output directory: `AppConfig::makeDumpDirectoryPath()` (`src/App/AppConfig.cpp`) returns `<project folder>/dumps/<yyyy-mm-dd_hh-mm-ss>/` under the active project. `DiagnosticDump::write` (`src/App/DiagnosticDump.cpp`) fills that directory with `dump.json` plus per-camera PNGs:
 
-- `config`: the live `AppConfig` snapshot, which may differ from the saved `config.json`.
+- `config`: the live `AppConfig` snapshot, which may differ from the saved `project.json`.
 - `cameras[]`: per camera, `trackingEnabled`, `activeEp`, `deviceFps`, `droppedFrames`, cumulative `seedStats` (cross-camera search-hint accounting), `hasExtrinsics`, a full landmark `snapshot` of that camera's last result, and `images` (`camN_raw.png` plus `camN_annotated.png`, the latter drawn by `annotateFrame` with landmarks, bones, ROI boxes, and per-hand labels overlaid).
 - `fusedSnapshot`: a full landmark snapshot of the latest fused output, same schema as a per-camera snapshot.
 - `history[]`: the rolling ring, oldest first. `DiagnosticDump::record` appends one compact entry every fusion iteration on the vision thread (`kMaxHistory= 240`, roughly 4-8s of history depending on the fusion rate). Each entry carries per-camera compact hand/body state, the fused `left`/`right` state, `dominantCamera`, `autoScaleFactor`, `fusion` (that iteration's `FusionDiagnostics`), and per-side `imu` state.
@@ -66,9 +66,9 @@ How to read a dump:
 
 ## Record/replay (F10)
 
-Trigger: `F10` anywhere, or the Timeline panel's "Start/Stop Recording (F10)" button (`src/UI/TimelinePanel.cpp`), calling `VisionThread::requestRecordingStart(AppConfig::makeRecordingFilePath())` / `requestRecordingStop()`.
+Trigger: `F10` anywhere, or the Timeline panel's "Start/Stop Recording (F10)" button (`src/UI/TimelinePanel.cpp`), calling `VisionThread::requestRecordingStart(config->makeRecordingFilePath())` / `requestRecordingStop()`.
 
-Format: JSONL at `%APPDATA%/MikanTrack/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl` (`AppConfig::makeRecordingFilePath`): one header line, one line per frame, one footer line (`src/App/TrackingRecording.h`). A missing or torn footer is tolerated as a crash-truncated recording; `TrackingReplay::load` stops cleanly at the first unparseable line.
+Format: JSONL at `<project folder>/recordings/<yyyy-mm-dd_hh-mm-ss>.jsonl` (`AppConfig::makeRecordingFilePath`): one header line, one line per frame, one footer line (`src/App/TrackingRecording.h`). A missing or torn footer is tolerated as a crash-truncated recording; `TrackingReplay::load` stops cleanly at the first unparseable line.
 
 What gets recorded (`RecordedFrame`): the per-hand fields `LandmarkTo3D::process` consumes (`imagePoints`, `modelPoints`, presence/handedness scores, `imageQuality`) for every camera that popped a fresh frame that iteration, post hand-model, pre-3D-projection and pre-fusion. It also carries the effective `refLengthMeters` (the auto-scale EMA recorded as a plain input rather than re-derived), the opt-in body-pose observation when that stage ran, and the fused output taken immediately after `fuse()` plus an FNV-1a-64 `checksum`. Both the snapshot and checksum are computed PRE-IMU and PRE-body-pose-solver (`TrackingRecording::computeFusedChecksum`), matching the point at which the live vision thread taps them.
 

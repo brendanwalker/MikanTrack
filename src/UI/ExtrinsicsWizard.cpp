@@ -37,6 +37,7 @@ void ExtrinsicsWizard::enter()
 {
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::VerifySetup;
 
 	m_markerId= m_config->camera(0).extrinsics.markerId;
@@ -325,7 +326,10 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 			"same marker placement - otherwise the cameras end up in disagreeing "
 			"world frames.");
 		if (ImGui::Button("Close"))
+		{
+			m_result= eWizardResult::Cancelled;
 			m_bWantsClose= true;
+		}
 		ImGui::End();
 		return;
 	}
@@ -500,6 +504,7 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 				}
 				m_config->markDirty();
 				m_config->save();
+				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
 			}
 			if (ImGui::Button("Recapture Poses"))
@@ -510,7 +515,10 @@ void ExtrinsicsWizard::drawWizardWindow(const std::vector<VisionPreviewFrame>& p
 
 	ImGui::Separator();
 	if (ImGui::Button("Cancel / Close"))
+	{
+		m_result= eWizardResult::Cancelled;
 		m_bWantsClose= true;
+	}
 
 	ImGui::End();
 }

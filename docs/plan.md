@@ -4,6 +4,7 @@ The living plan: what is in flight now, what comes next, and the open questions.
 
 ## Now
 
+- [ ] Live-verify the setup-flow usability pass: cancel mid-flow deletes the new project and Resume falls back to the previous one, camera-selection previews appear as devices are picked, the Video Preview tab fronts when intrinsics/extrinsics start, and a Resume pointing at a deleted project is hidden. Remaining from the original walkthrough: the Joy-Con and tri-camera setup variants end to end.
 - [ ] Finish the MikanTrack rename outside the source tree: rename the repo working directory and the GitHub repository, then re-clone or update the remote. The code, docs, and appdata folder already use the new name.
 - [ ] Live-verify the `/mikan/hand/{s}/forearm` wire change end to end with an OSC consumer (both sides built and self-tested, not yet exercised live).
 

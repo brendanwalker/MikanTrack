@@ -36,6 +36,28 @@ void VideoPreviewPanel::setFrame(int cameraIndex, const cv::Mat& bgr)
 	}
 }
 
+uint32_t VideoPreviewPanel::getCameraTextureId(int cameraIndex) const
+{
+	if (cameraIndex < 0 || cameraIndex >= (int)m_panes.size())
+		return 0;
+
+	const CameraPane& pane= *m_panes[cameraIndex];
+	if (!pane.bHasFrame || !pane.texture->getIsValid())
+		return 0;
+	return pane.texture->getGlTextureId();
+}
+
+float VideoPreviewPanel::getCameraAspect(int cameraIndex) const
+{
+	if (cameraIndex >= 0 && cameraIndex < (int)m_panes.size())
+	{
+		const CameraPane& pane= *m_panes[cameraIndex];
+		if (pane.bHasFrame && pane.texture->getHeight() > 0)
+			return (float)pane.texture->getWidth() / (float)pane.texture->getHeight();
+	}
+	return 16.f / 9.f;
+}
+
 const ImageToScreenMapping& VideoPreviewPanel::getImageToScreenMapping(int cameraIndex) const
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_panes.size())

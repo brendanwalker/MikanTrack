@@ -45,6 +45,7 @@ void MountingWizard::enter()
 {
 	m_bActive= true;
 	m_bWantsClose= false;
+	m_result= eWizardResult::None;
 	m_state= eState::VerifyDevices;
 	m_bCaptureRequested= false;
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
@@ -224,7 +225,10 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
@@ -293,7 +297,10 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			}
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
@@ -324,7 +331,10 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 			break;
 		}
 
@@ -377,7 +387,10 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 			ImGui::EndDisabled();
 			ImGui::SameLine();
 			if (ImGui::Button("Cancel", ImVec2(120, 0)))
+			{
+				m_result= eWizardResult::Cancelled;
 				m_bWantsClose= true;
+			}
 
 			// The capture is serviced on the vision thread; collect the result
 			if (m_bCaptureRequested)
@@ -508,7 +521,10 @@ bool MountingWizard::update(float deltaSeconds, const TrackingFrameResult& fused
 
 			ImGui::Spacing();
 			if (ImGui::Button("Finish", ImVec2(180, 0)))
+			{
+				m_result= eWizardResult::Completed;
 				m_bWantsClose= true;
+			}
 			ImGui::SameLine();
 			if (ImGui::Button("Redo", ImVec2(120, 0)))
 			{

@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.15)
 
-project(MikanTrack VERSION 0.1.0 LANGUAGES CXX)
+# C is only for thirdparty/tinyfiledialogs (a single .c file)
+project(MikanTrack VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -57,6 +58,10 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
 )
 
+# tinyfiledialogs (native file dialogs), compiled directly into the exe
+set(TINYFD_DIR ${THIRDPARTY_DIR}/tinyfiledialogs)
+set(TINYFD_SOURCES ${TINYFD_DIR}/tinyfiledialogs.c ${TINYFD_DIR}/tinyfiledialogs.h)
+
 # ---------------------------------------------------------------- sources
 file(GLOB APP_SRC          ${ROOT_DIR}/src/App/*.h          ${ROOT_DIR}/src/App/*.cpp)
 file(GLOB UTILITY_SRC      ${ROOT_DIR}/src/Utility/*.h      ${ROOT_DIR}/src/Utility/*.cpp)
@@ -92,6 +97,7 @@ add_executable(MikanTrack WIN32
     ${UI_SRC}
     ${TESTS_SRC}
     ${IMGUI_SOURCES}
+    ${TINYFD_SOURCES}
 )
 
 source_group(TREE ${ROOT_DIR}/src PREFIX "src" FILES
@@ -100,6 +106,7 @@ source_group(TREE ${ROOT_DIR}/src PREFIX "src" FILES
     ${CALIBRATION_SRC} ${VISION_SRC} ${TRACKING_SRC}
     ${OSC_SRC} ${RENDER_SRC} ${UI_SRC} ${TESTS_SRC} ${ROOT_DIR}/src/main.cpp)
 source_group("thirdparty\\imgui" FILES ${IMGUI_SOURCES})
+source_group("thirdparty\\tinyfiledialogs" FILES ${TINYFD_SOURCES})
 
 target_include_directories(MikanTrack PRIVATE
     ${ROOT_DIR}/src
@@ -127,6 +134,7 @@ target_include_directories(MikanTrack PRIVATE
     ${RWQUEUE_INCLUDE_DIR}
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+    ${TINYFD_DIR}
 )
 
 target_link_libraries(MikanTrack PRIVATE
@@ -141,6 +149,8 @@ target_link_libraries(MikanTrack PRIVATE
     hid setupapi
     # misc win32
     winmm shlwapi ws2_32
+    # common dialogs (tinyfiledialogs)
+    comdlg32 ole32
 )
 
 # ImGui GL loader: use GLEW (already linked) instead of the built-in loader

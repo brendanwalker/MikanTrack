@@ -6,6 +6,7 @@
 #include "opencv2/core/mat.hpp"
 
 #include "HandOverlay.h"
+#include "WizardResult.h"
 
 class AppConfig;
 class MonoLensDistortionCalibrator;
@@ -33,6 +34,7 @@ public:
 	void exit();
 	bool isActive() const { return m_bActive; }
 	int getCameraIndex() const { return m_cameraIndex; }
+	eWizardResult getResult() const { return m_result; }
 
 	// Called each frame while active. bgrPreview is the newest preview frame
 	// (may be empty when no stream). Overlay drawing goes to the video panel's
@@ -54,6 +56,7 @@ private:
 	int m_cameraIndex= 0;
 	bool m_bActive= false;
 	bool m_bWantsClose= false;
+	eWizardResult m_result= eWizardResult::None;
 
 	std::unique_ptr<MonoLensDistortionCalibrator> m_calibrator;
 	cv::Mat m_grayFrame;

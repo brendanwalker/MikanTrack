@@ -1,6 +1,7 @@
 #include "TestCommon.h"
 
 #include "PathUtils.h"
+#include "ProjectManager.h"
 
 // Writes (and opens) the printable charuco board without launching the app.
 // Uses the saved config's board parameters by default, so the sheet always
@@ -9,7 +10,7 @@
 static int runExportBoardTool(const TestArgs& args)
 {
 	AppConfig config;
-	config.load();
+	ProjectManager::loadActiveProjectConfig(config);
 
 	int cols= config.charucoBoard.cols;
 	int rows= config.charucoBoard.rows;

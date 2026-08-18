@@ -151,7 +151,7 @@ std::filesystem::path getProjectsRootDirectory()
 		projectsRoot= "/";
 	}
 #endif
-	projectsRoot/= "MikanXR";
+	projectsRoot/= "MikanTrack";
 
 	// Create the directory if it doesn't exist
 	if (!std::filesystem::exists(projectsRoot))

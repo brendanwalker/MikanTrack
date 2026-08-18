@@ -40,6 +40,7 @@ BodyCalibrationWizard::BodyCalibrationWizard(AppConfig* config, VisionThread* vi
 void BodyCalibrationWizard::enter()
 {
 	m_bActive= true;
+	m_wizardResult= eWizardResult::None;
 	m_state= eState::VerifyReady;
 	m_cameraIndex= findBodyPoseCamera();
 	m_calibrator.reset();
@@ -165,7 +166,10 @@ bool BodyCalibrationWizard::drawVerifyStage(const std::vector<VisionPreviewFrame
 	ImGui::EndDisabled();
 	ImGui::SameLine();
 	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
@@ -244,7 +248,10 @@ bool BodyCalibrationWizard::drawFrontalStage(float deltaSeconds, const std::vect
 
 	ImGui::Separator();
 	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
@@ -301,7 +308,10 @@ bool BodyCalibrationWizard::drawHeadTurnStage(float deltaSeconds,
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Cancel", ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }
 
@@ -316,7 +326,10 @@ bool BodyCalibrationWizard::drawReviewStage()
 			"Every sample needs both hands tracked, the shoulders, elbows and ears "
 			"visible, and the arms held across the camera rather than toward it.");
 		if (ImGui::Button("Close", ImVec2(120, 0)))
+		{
+			m_wizardResult= eWizardResult::Cancelled;
 			return false;
+		}
 		return true;
 	}
 
@@ -355,6 +368,7 @@ bool BodyCalibrationWizard::drawReviewStage()
 			m_config->body.noseForwardMeters= m_result.noseForward;
 		m_config->markDirty();
 		m_visionThread->requestConfigRefresh();
+		m_wizardResult= eWizardResult::Completed;
 		return false;
 	}
 	ImGui::SameLine();
@@ -367,6 +381,9 @@ bool BodyCalibrationWizard::drawReviewStage()
 	}
 	ImGui::SameLine();
 	if (ImGui::Button("Discard", ImVec2(120, 0)))
+	{
+		m_wizardResult= eWizardResult::Cancelled;
 		return false;
+	}
 	return true;
 }

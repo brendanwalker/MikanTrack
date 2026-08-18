@@ -35,11 +35,11 @@ public:
 
 private:
 	void drawRecordingSection(AppConfig* config, VisionThread* visionThread);
-	void drawLoadSection(VisionThread* visionThread);
+	void drawLoadSection(const AppConfig* config, VisionThread* visionThread);
 	void drawTransportSection();
 	void drawWhatIfSection();
 	void drawFrameInfoSection();
-	void refreshRecordingList();
+	void refreshRecordingList(const AppConfig* config);
 	void setCurrentFrame(int frameIndex);
 	// Rebuilds m_displayFused/m_perCameraCopies for the current frame + view
 	void rebuildDisplayFrame();
