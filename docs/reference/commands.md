@@ -1,6 +1,6 @@
 # Command Cheat Sheet
 
-Handy commands for working in the MikanTrack repo, all run from the repo root unless noted. Background on the build system, dependency versions, and the model set is in [build.md](./build.md); how to read test/log output and the replay tooling workflows are in [debugging.md](./debugging.md).
+Handy commands for working in the MikanTrack repo, all run from the repo root unless noted. Background on the build system, dependency versions, and the model set is in [build.md](./build.md). How to read test/log output and the replay tooling workflows are in [debugging.md](./debugging.md), and what each test asserts, plus the command that runs the whole self-test batch, is in [testing.md](./testing.md).
 
 ---
 

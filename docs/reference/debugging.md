@@ -31,6 +31,8 @@ Registrations land in a function-local static (`getMutableRegistry()` inside `Te
 
 `src/Tests` has one command per file: `TestFusion.cpp` (`--test-fusion`), `TestBodyPose.cpp` (`--test-bodypose`), `TestReplay.cpp` (`--test-replay`), `TestDump.cpp` (`--test-dump`), `TestFrameRecorder.cpp` (`--test-framerecorder`), `ToolReplayVerify.cpp` (`--replay-verify`), `ToolReplayDump.cpp` (`--replay-dump`), `ToolReplayBodyPose.cpp` (`--replay-bodypose`), `ToolReplayExtrinsics.cpp` (`--replay-extrinsics`), `ToolCalibrateBones.cpp` (`--calibrate-bones`), and more than twenty others. All of them share `src/Tests/TestCommon.h`, one deliberately generous include block covering most of the app, so each file stays a function plus a registration line. The full flag list is in [commands.md](./commands.md).
 
+What each registered command verifies, and how to run every self-test in one pass, is in [testing.md](./testing.md).
+
 `main.cpp` checks `--list-tests` first (prints every registered command grouped by category via `TestRegistry::printAvailable()`) and otherwise falls through to `TestRegistry::tryRun`, which owns the per-command logger setup/teardown described above and returns the process exit code.
 
 Adding a test means adding one file under `src/Tests` plus a CMake re-run: the target's sources come from `file(GLOB TESTS_SRC src/Tests/*.h src/Tests/*.cpp)` in the top-level `CMakeLists.txt`, and a plain (non `CONFIGURE_DEPENDS`) glob does not pick up a new file until CMake reconfigures.

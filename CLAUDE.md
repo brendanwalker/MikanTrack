@@ -31,12 +31,13 @@ Read these for context, and keep them current as part of doing work:
 - **[imu.md](./docs/reference/imu.md)**: the wrist IMU system, the orientation filter and its observability structure, and the vendor-neutral device seam. Keep it current as backends or the filter change.
 - **[wire-protocol.md](./docs/reference/wire-protocol.md)**: the OSC contract (Mikan and VMC formats), delivery rules, and known consumers. Read it before touching anything client-facing.
 - **[debugging.md](./docs/reference/debugging.md)**: logging, the test registry, the diagnostic dump, record/replay, and the diagnostic rules of thumb. Keep it current as diagnostic facilities evolve.
+- **[testing.md](./docs/reference/testing.md)**: how to run every test, what each one verifies, the batch command, the coverage gaps, and the known flake. Keep it current as tests are added or their assertions change.
 
 ## Working agreements
 
 ### Verification
 
-- Verification is objective: run the SelfTest commands rather than assuming behavior. `MikanTrack.exe --list-tests` enumerates them; each logs to `<flag>.log` next to the exe and exits nonzero on failure.
+- Verification is objective: run the SelfTest commands rather than assuming behavior. `MikanTrack.exe --list-tests` enumerates them; each logs to `<flag>.log` next to the exe and exits nonzero on failure. What each one covers, and the command that runs the whole batch, are in testing.md.
 - Read the log, not just the exit status. Shell pipelines can mask a tool's exit code, and a replay tool that failed to load its input looks identical to a clean pass from the exit code alone.
 - A change to fusion or any replayed stage is checked against recordings with `--replay-verify`. Checksum divergence on recordings made before the change is the diff of the change, not corruption; say so explicitly when reporting results.
 

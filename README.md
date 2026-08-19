@@ -152,6 +152,7 @@ Developer reference lives in [docs/reference/](docs/reference/):
 - [imu.md](docs/reference/imu.md): the wrist IMU system
 - [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
 - [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
+- [testing.md](docs/reference/testing.md): running the tests, what each verifies, coverage gaps
 
 [docs/plan.md](docs/plan.md) is the living plan, [LEARNINGS.md](LEARNINGS.md) the experiment history, and [CLAUDE.md](CLAUDE.md) the guide for AI-assisted sessions.
 
