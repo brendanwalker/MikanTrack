@@ -9,19 +9,16 @@
 class App;
 class CalibrationPanel;
 class DevicePanel;
-class ExtrinsicsWizard;
-class IntrinsicsWizard;
 class MainMenuScreen;
-class MountingWizard;
-class BodyCalibrationWizard;
-class HandCalibrationWizard;
 class Scene3dPanel;
 class SetupFlow;
 class TimelinePanel;
 class VideoPreviewPanel;
+class WizardHost;
+enum class eWizardKind;
 
-// Owns the ImGui layout: dockspace, menu bar, all panels and the calibration
-// wizards. Created after ImGui/GL are initialized.
+// Owns the ImGui layout: dockspace, menu bar, all panels and the wizard host.
+// Created after ImGui/GL are initialized.
 class MainWindow
 {
 public:
@@ -44,7 +41,9 @@ private:
 	// actions to App
 	void drawMainMenu();
 	void drawDockspaceAndMenuBar();
-	bool isAnyWizardActive() const;
+	// Manual wizard launches (menu, panels). Refused while a wizard or the
+	// guided setup flow is running.
+	void launchWizard(eWizardKind kind, int cameraIndex= 0);
 	// Global hotkeys, active anywhere in the tracking UI: fires the action
 	// bound to any key pressed this frame (the table is in the source file)
 	void handleHotkeys();
@@ -60,14 +59,10 @@ private:
 	std::unique_ptr<Scene3dPanel> m_scene3dPanel;
 	std::unique_ptr<DevicePanel> m_devicePanel;
 	std::unique_ptr<CalibrationPanel> m_calibrationPanel;
-	std::unique_ptr<IntrinsicsWizard> m_intrinsicsWizard;
-	std::unique_ptr<ExtrinsicsWizard> m_extrinsicsWizard;
-	std::unique_ptr<MountingWizard> m_mountingWizard;
-	std::unique_ptr<BodyCalibrationWizard> m_bodyCalibrationWizard;
-	std::unique_ptr<HandCalibrationWizard> m_handCalibrationWizard;
+	std::unique_ptr<WizardHost> m_wizardHost;
 	std::unique_ptr<TimelinePanel> m_timelinePanel;
-	// Guided new-project setup chain; needs the wizard pointers above, so it
-	// is constructed last (in the constructor body)
+	// Guided new-project setup chain; needs the wizards above, so it is
+	// constructed last (in the constructor body)
 	std::unique_ptr<SetupFlow> m_setupFlow;
 
 	// Latest per-camera previews + the fused result (kept between updates so
@@ -76,10 +71,6 @@ private:
 	TrackingFrameResult m_latestFused;
 
 	TrackingPanelState m_trackingPanelState;
-
-	// Rising-edge tracker for focusing the Video Preview tab when a camera
-	// calibration wizard starts
-	bool m_bCameraWizardWasActive= false;
 
 	bool m_bShowLogPanel= true;
 	bool m_bShowSettingsPanel= true;

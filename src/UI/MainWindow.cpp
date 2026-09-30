@@ -9,11 +9,6 @@
 #include "AppConfig.h"
 #include "CalibrationPanel.h"
 #include "DevicePanel.h"
-#include "ExtrinsicsWizard.h"
-#include "IntrinsicsWizard.h"
-#include "BodyCalibrationWizard.h"
-#include "HandCalibrationWizard.h"
-#include "MountingWizard.h"
 #include "GlobalSettings.h"
 #include "HandOverlay.h"
 #include "LocText.h"
@@ -29,6 +24,7 @@
 #include "VideoModeUtils.h"
 #include "VideoCaptureSystem.h"
 #include "VideoPreviewPanel.h"
+#include "WizardHost.h"
 
 #include "tinyfiledialogs.h"
 
@@ -39,21 +35,15 @@ MainWindow::MainWindow(App* app)
 	, m_scene3dPanel(std::make_unique<Scene3dPanel>())
 	, m_devicePanel(std::make_unique<DevicePanel>(app, app->getVideoCapture(), app->getConfig()))
 	, m_calibrationPanel(std::make_unique<CalibrationPanel>(app->getConfig()))
-	, m_intrinsicsWizard(std::make_unique<IntrinsicsWizard>(app->getConfig(), app->getVisionThread()))
-	, m_extrinsicsWizard(std::make_unique<ExtrinsicsWizard>(app->getConfig(), app->getVisionThread()))
-	, m_mountingWizard(std::make_unique<MountingWizard>(app->getConfig(), app->getVisionThread()))
-	, m_bodyCalibrationWizard(
-		  std::make_unique<BodyCalibrationWizard>(app->getConfig(), app->getVisionThread()))
-	, m_handCalibrationWizard(
-		  std::make_unique<HandCalibrationWizard>(app->getConfig(), app->getVisionThread()))
+	, m_wizardHost(std::make_unique<WizardHost>(app->getConfig(), app->getVisionThread()))
 	, m_timelinePanel(std::make_unique<TimelinePanel>())
 {
 	SetupFlow::WizardSet wizards;
-	wizards.intrinsics= m_intrinsicsWizard.get();
-	wizards.extrinsics= m_extrinsicsWizard.get();
-	wizards.hand= m_handCalibrationWizard.get();
-	wizards.mounting= m_mountingWizard.get();
-	wizards.body= m_bodyCalibrationWizard.get();
+	wizards.intrinsics= m_wizardHost->getIntrinsicsWizard();
+	wizards.extrinsics= m_wizardHost->getExtrinsicsWizard();
+	wizards.hand= m_wizardHost->getHandCalibrationWizard();
+	wizards.mounting= m_wizardHost->getMountingWizard();
+	wizards.body= m_wizardHost->getBodyCalibrationWizard();
 	m_setupFlow= std::make_unique<SetupFlow>(app, this, m_videoPreviewPanel.get(), wizards);
 
 	// Hotplug / disconnect notifications refresh the device panel
@@ -131,11 +121,12 @@ void MainWindow::refreshDevicePanelState()
 		m_devicePanel->refreshModeOptions(cameraIndex);
 }
 
-bool MainWindow::isAnyWizardActive() const
+void MainWindow::launchWizard(eWizardKind kind, int cameraIndex)
 {
-	return m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive() ||
-		   m_mountingWizard->isActive() || m_bodyCalibrationWizard->isActive() ||
-		   m_handCalibrationWizard->isActive();
+	// The host refuses while one of its wizards runs; the flow launches its
+	// own wizards and must not be interrupted by a manual one
+	if (!m_setupFlow->isActive())
+		m_wizardHost->launch(kind, cameraIndex);
 }
 
 void MainWindow::drawMainMenu()
@@ -224,7 +215,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 	{
 		if (ImGui::BeginMenu(locLabel("mainWindow.fileMenu")))
 		{
-			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
+			const bool bWizardActive= m_wizardHost->isAnyActive() || m_setupFlow->isActive();
 			if (ImGui::MenuItem(locLabel("mainWindow.saveProject")))
 				m_app->getConfig()->save();
 			if (ImGui::MenuItem(locLabel("mainWindow.loadProject"), nullptr, false, !bWizardActive))
@@ -247,7 +238,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 		}
 		if (ImGui::BeginMenu(locLabel("mainWindow.calibrationMenu")))
 		{
-			const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
+			const bool bWizardActive= m_wizardHost->isAnyActive() || m_setupFlow->isActive();
 			AppConfig* config= m_app->getConfig();
 
 			for (int cameraIndex= 0; cameraIndex < (int)config->cameraCount(); ++cameraIndex)
@@ -255,7 +246,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 				ImGui::PushID(cameraIndex);
 				const std::string label= locFormat("mainWindow.cameraIntrinsicsFmt", cameraIndex + 1);
 				if (ImGui::MenuItem(label.c_str(), nullptr, false, !bWizardActive))
-					m_intrinsicsWizard->enter(cameraIndex);
+					launchWizard(eWizardKind::Intrinsics, cameraIndex);
 				ImGui::PopID();
 			}
 
@@ -266,7 +257,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 				bAllIntrinsics&= config->camera(i).intrinsics.present;
 			if (ImGui::MenuItem(locLabel("mainWindow.extrinsicsAllCameras"), nullptr, false,
 								!bWizardActive && bAllIntrinsics))
-				m_extrinsicsWizard->enter();
+				launchWizard(eWizardKind::Extrinsics);
 			ImGui::EndMenu();
 		}
 		if (ImGui::BeginMenu(locLabel("mainWindow.viewMenu")))
@@ -359,7 +350,7 @@ void MainWindow::update(float deltaSeconds)
 
 	drawDockspaceAndMenuBar();
 
-	const bool bWizardActive= isAnyWizardActive() || m_setupFlow->isActive();
+	const bool bWizardActive= m_wizardHost->isAnyActive() || m_setupFlow->isActive();
 
 	// Panels
 	m_devicePanel->draw();
@@ -371,32 +362,22 @@ void MainWindow::update(float deltaSeconds)
 		SettingsPanels::drawAppSettingsPanel();
 	m_timelinePanel->draw(config, visionThread);
 
+	// Launch requests raised by the panels this frame
 	if (m_trackingPanelState.bLaunchMountingWizard)
-	{
-		m_trackingPanelState.bLaunchMountingWizard= false;
-		if (!bWizardActive)
-			m_mountingWizard->enter();
-	}
-
+		launchWizard(eWizardKind::Mounting);
 	if (m_trackingPanelState.bLaunchBodyCalibrationWizard)
-	{
-		m_trackingPanelState.bLaunchBodyCalibrationWizard= false;
-		if (!bWizardActive)
-			m_bodyCalibrationWizard->enter();
-	}
-
+		launchWizard(eWizardKind::Body);
 	if (m_trackingPanelState.bLaunchHandCalibrationWizard)
-	{
-		m_trackingPanelState.bLaunchHandCalibrationWizard= false;
-		if (!bWizardActive)
-			m_handCalibrationWizard->enter();
-	}
+		launchWizard(eWizardKind::Hand);
+	m_trackingPanelState.bLaunchMountingWizard= false;
+	m_trackingPanelState.bLaunchBodyCalibrationWizard= false;
+	m_trackingPanelState.bLaunchHandCalibrationWizard= false;
 
 	const CalibrationPanel::DrawResult calibrationAction= m_calibrationPanel->draw(bWizardActive);
 	if (calibrationAction.bLaunchIntrinsicsWizard)
-		m_intrinsicsWizard->enter(calibrationAction.cameraIndex);
+		launchWizard(eWizardKind::Intrinsics, calibrationAction.cameraIndex);
 	if (calibrationAction.bLaunchExtrinsicsWizard)
-		m_extrinsicsWizard->enter();
+		launchWizard(eWizardKind::Extrinsics);
 
 	// Guided setup chain: draws its prompt modals on top of the panels, and
 	// launches/watches the wizards updated below
@@ -405,15 +386,14 @@ void MainWindow::update(float deltaSeconds)
 	// Bring the Video Preview tab forward when a camera calibration wizard
 	// starts: the pattern feed is the wizard's whole UI, and the 3D Scene tab
 	// may be the selected one in the shared center dock
-	const bool bCameraWizardActive= m_intrinsicsWizard->isActive() || m_extrinsicsWizard->isActive();
-	if (bCameraWizardActive && !m_bCameraWizardWasActive)
+	if (m_wizardHost->consumeCameraWizardStarted())
 		ImGui::SetWindowFocus(locWindowTitle("windows.videoPreview"));
-	m_bCameraWizardWasActive= bCameraWizardActive;
 
-	// Pin the preview highlight to the wizard's camera while one is active
-	// (the extrinsics wizard uses ALL cameras, so no pinning there)
-	if (m_intrinsicsWizard->isActive())
-		m_videoPreviewPanel->setActiveCamera(m_intrinsicsWizard->getCameraIndex());
+	// Pin the preview highlight to the intrinsics wizard's camera while it is
+	// active (the extrinsics wizard uses ALL cameras, so no pinning there)
+	const int intrinsicsCamera= m_wizardHost->getIntrinsicsCameraIndex();
+	if (intrinsicsCamera >= 0)
+		m_videoPreviewPanel->setActiveCamera(intrinsicsCamera);
 
 	// Newest per-camera results, for the preview overlays and the 3D scene
 	std::vector<const TrackingFrameResult*> perCameraResults;
@@ -453,46 +433,8 @@ void MainWindow::update(float deltaSeconds)
 		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults);
 	}
 
-	// Wizards (drawn last, on top). They consume THEIR camera's per-camera
-	// preview + result, not the fused output.
-	static const VisionPreviewFrame s_emptyPreview{};
-	if (m_intrinsicsWizard->isActive())
-	{
-		const int wizardCamera= m_intrinsicsWizard->getCameraIndex();
-		const VisionPreviewFrame& preview=
-			wizardCamera < cameraCount ? m_latestPreviews[wizardCamera] : s_emptyPreview;
-		if (!m_intrinsicsWizard->update(deltaSeconds, preview.bgr,
-										m_videoPreviewPanel->getLastDrawList(),
-										m_videoPreviewPanel->getImageToScreenMapping(wizardCamera)))
-		{
-			m_intrinsicsWizard->exit();
-		}
-	}
-	else if (m_extrinsicsWizard->isActive())
-	{
-		if (!m_extrinsicsWizard->update(deltaSeconds, m_latestPreviews, m_videoPreviewPanel.get()))
-			m_extrinsicsWizard->exit();
-	}
-	else if (m_mountingWizard->isActive())
-	{
-		// Unlike the calibration wizards this one leaves tracking running - it
-		// needs live tracked hands for the straight-wrist pose
-		if (!m_mountingWizard->update(deltaSeconds, m_latestFused))
-			m_mountingWizard->exit();
-	}
-	else if (m_bodyCalibrationWizard->isActive())
-	{
-		// Also leaves tracking running: the fused wrists ARE the measurement's
-		// ruler, so they have to keep arriving
-		if (!m_bodyCalibrationWizard->update(deltaSeconds, m_latestPreviews, m_latestFused))
-			m_bodyCalibrationWizard->exit();
-	}
-	else if (m_handCalibrationWizard->isActive())
-	{
-		// Also leaves tracking running: both stages measure the tracked hands
-		if (!m_handCalibrationWizard->update(deltaSeconds, m_latestFused))
-			m_handCalibrationWizard->exit();
-	}
+	// The active wizard, drawn last, on top
+	m_wizardHost->update(deltaSeconds, m_latestPreviews, m_latestFused, m_videoPreviewPanel.get());
 
 	if (m_bShowLogPanel)
 		LogPanel::getInstance().draw(&m_bShowLogPanel);
