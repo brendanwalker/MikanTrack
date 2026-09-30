@@ -1,7 +1,7 @@
 # AI Token Usage
 
 <!-- AI_USAGE_BADGES:BEGIN -->
-![AI tokens](https://img.shields.io/badge/AI_tokens-5.3M_out_%2F_1.8B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~93_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~279_L-blue)
+![AI tokens](https://img.shields.io/badge/AI_tokens-7.4M_out_%2F_2.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~123_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~369_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
@@ -32,7 +32,7 @@ Anthropic publishes no per-token energy figures, so the estimate chains public r
 **For scale:** the central estimate (~70 kWh) is about two and a half days of average US household electricity, or roughly 140 hours of the RTX 3090 dev machine at full load. The central water estimate (~200 L) is about one bathtub.
 
 <!-- TOKEN_STATS:BEGIN -->
-Last regenerated 2026-08-16 09:14 UTC by `tools/token_stats.py`.
+Last regenerated 2026-09-30 06:06 UTC by `tools/token_stats.py`.
 
 ## Per-session usage
 
@@ -50,22 +50,36 @@ Last regenerated 2026-08-16 09:14 UTC by `tools/token_stats.py`.
 | Dedicated linux/macos tracking machine consideration (Aug 12) | claude-fable-5 | 14 | 13,324 | 1,013,749 | 70,154 |
 | BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-fable-5 | 151 | 176,162 | 34,416,298 | 379,915 |
 | BlazePose revival: opt-in per-camera body pose, shoulders + head OSC (Aug 12) | claude-opus-5 | 785 | 882,945 | 373,642,254 | 3,352,535 |
-| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-fable-5 | 196 | 253,473 | 68,628,999 | 505,500 |
-| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-opus-5 | 7 | 10,969 | 438,888 | 70,819 |
+| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-fable-5 | 429 | 443,619 | 245,581,671 | 1,549,360 |
+| Hand state estimator + biomechanical priors: joint fit, limits, fitted angle prior (Aug 15 - Aug 16) | claude-opus-5 | 95 | 99,784 | 53,053,665 | 707,108 |
+| VMC OSC output mode for VMC4UE and VSeeFace comparison (Aug 16) | claude-opus-5 | 181 | 169,468 | 47,773,144 | 508,165 |
+| Left elbow stuck in a non-anatomic pose: recorded-replay diagnosis (Aug 16) | claude-opus-5 | 146 | 113,124 | 33,808,344 | 322,776 |
+| OSC forearm position, wrist rotation removal, UE plugin update (Aug 16 - Aug 17) | claude-opus-5 | 92 | 52,147 | 16,392,624 | 217,274 |
+| Open-sourcing docs pass: CLAUDE.md, docs/reference, rename to MikanTrack (Aug 17) | claude-fable-5 | 127 | 159,017 | 17,666,658 | 770,851 |
+| Open-sourcing docs pass: CLAUDE.md, docs/reference, rename to MikanTrack (Aug 17) | claude-opus-5 | 59 | 53,593 | 15,022,036 | 473,308 |
+| Open-sourcing docs pass: CLAUDE.md, docs/reference, rename to MikanTrack (Aug 17) | claude-sonnet-5 | 85 | 72,133 | 8,571,544 | 386,751 |
+| Project files, guided setup flow, tracking configurations (Aug 17 - Aug 18) | claude-fable-5 | 273 | 314,321 | 83,780,411 | 1,071,121 |
+| Project files, guided setup flow, tracking configurations (Aug 17 - Aug 18) | claude-opus-5 | 113 | 93,677 | 9,050,492 | 601,205 |
+| Project files, guided setup flow, tracking configurations (Aug 17 - Aug 18) | claude-sonnet-5 | 360 | 455,086 | 36,320,823 | 938,224 |
+| Single-camera removal and SystemAnimatorOnline transfer consideration (Aug 18 - Aug 19) | claude-opus-5 | 56 | 77,596 | 8,637,133 | 342,360 |
+| testing.md reference doc (Aug 19) | claude-opus-5 | 38 | 24,631 | 3,748,073 | 111,058 |
+| Cleanup pass: flicker tracker, ImuService split, CameraContext, capture timing, MainWindow split, loop stages (Sep 29) | claude-fable-5-1 | 102 | 242,525 | 34,360,308 | 502,477 |
 
 ## Totals per model
 
 | Model | API calls | Input | Cache write | Cache read | Output | Weighted |
 |---|---|---|---|---|---|---|
-| claude-fable-5 | 1,958 | 14,557 | 9,512,119 | 663,619,323 | 2,530,101 | 18,183,428 |
-| claude-opus-5 | 2,529 | 22,260 | 12,359,039 | 1,125,371,133 | 2,797,982 | 28,399,616 |
-| **total** | 4,487 | 36,817 | 21,871,158 | 1,788,990,456 | 5,328,083 | **46,583,045** |
+| claude-fable-5 | 2,591 | 21,074 | 12,397,951 | 942,019,064 | 3,193,585 | 25,137,668 |
+| claude-fable-5-1 | 102 | 2,754 | 502,477 | 34,360,308 | 242,525 | 1,055,901 |
+| claude-opus-5 | 3,302 | 45,258 | 15,571,474 | 1,312,417,756 | 3,471,033 | 33,621,308 |
+| claude-sonnet-5 | 445 | 13,920 | 1,324,975 | 44,892,367 | 527,219 | 1,759,094 |
+| **total** | 6,440 | 83,006 | 29,796,877 | 2,333,689,495 | 7,434,362 | **61,573,972** |
 
 ## Energy and water estimate
 
 | Scenario | Wh per 1k weighted tokens | Energy | Water (onsite cooling) | Water (incl. generation) |
 |---|---|---|---|---|
-| low | 0.5 | 23 kWh | 26 L | 70 L |
-| central | 2.0 | 93 kWh | 102 L | 279 L |
-| high | 6.0 | 279 kWh | 307 L | 838 L |
+| low | 0.5 | 31 kWh | 34 L | 92 L |
+| central | 2.0 | 123 kWh | 135 L | 369 L |
+| high | 6.0 | 369 kWh | 406 L | 1,108 L |
 <!-- TOKEN_STATS:END -->

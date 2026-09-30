@@ -1,7 +1,7 @@
 # MikanTrack
 
 <!-- AI_USAGE_BADGES:BEGIN -->
-![AI tokens](https://img.shields.io/badge/AI_tokens-5.3M_out_%2F_1.8B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~93_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~279_L-blue)
+![AI tokens](https://img.shields.io/badge/AI_tokens-7.4M_out_%2F_2.3B_read-blueviolet) ![est. energy](https://img.shields.io/badge/est._energy-~123_kWh-yellow) ![est. water](https://img.shields.io/badge/est._water-~369_L-blue)
 (estimates, see [TOKEN_STATS.md](TOKEN_STATS.md))
 <!-- AI_USAGE_BADGES:END -->
 
