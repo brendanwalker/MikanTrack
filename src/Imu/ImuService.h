@@ -3,7 +3,6 @@
 #include <array>
 #include <condition_variable>
 #include <cstdint>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -13,12 +12,15 @@
 #include "glm/ext/quaternion_float.hpp"
 
 #include "IImuDevice.h"
+#include "ImuDeviceTracker.h"
+#include "ImuMountingCalibrator.h"
 #include "ImuMountingMath.h"
 #include "ImuOrientationFilter.h"
 #include "TrackingTypes.h" // eHandSide
 
-// Owns the IMU devices, one orientation filter per device, and the mounting
-// calibration that turns a sensor orientation into a FOREARM orientation.
+// Owns one ImuDeviceTracker per discovered device (the device, its orientation
+// filter, and its calibrators), the discovery worker, and the side mapping
+// that turns a sensor orientation into a FOREARM orientation.
 //
 // FRAME CONVENTION
 // The forearm frame is defined so that it EQUALS the palm frame when the
@@ -27,14 +29,13 @@
 // OSC schema promises, and it makes calibration a single natural pose:
 // hold the hand in line with the forearm and capture.
 //
-// Calibration math: with q_sw = sensor->world (from the filter) and
-// q_fs = forearm->sensor (the constant mounting rotation we want),
+// With q_sw = sensor->world (from the filter) and q_fs = forearm->sensor (the
+// constant mounting rotation, solved from recorded twist and curl motions),
 //   q_fw = q_sw * q_fs
-// At capture time q_fw must equal the vision-measured palm orientation, so
-//   q_fs = inverse(q_sw) * q_palm
-// This absorbs everything physical - the L/R sensor mounting difference,
-// how the strap sits, which way the controller faces - so nothing about
-// sensor axes is hardcoded anywhere.
+// is the published forearm orientation. The mounting absorbs everything
+// physical - the L/R sensor mounting difference, how the strap sits, which
+// way the controller faces - so nothing about sensor axes is hardcoded
+// anywhere.
 struct ImuServiceConfig
 {
 	bool enabled= true;
@@ -132,14 +133,6 @@ struct ImuSideStatus
 	// a reset can tell an already-refreshed status from a stale one, instead
 	// of latching a twist measurement made before the reset landed.
 	uint32_t motionEpoch= 0;
-};
-
-// Which calibration motion is being recorded, if any
-enum class eMountingMotion
-{
-	None,
-	Twist,
-	Curl,
 };
 
 class ImuService
@@ -266,75 +259,9 @@ public:
 	void getRawSampleHistory(eHandSide side, std::vector<ImuSample>& outSamples) const;
 
 private:
-	struct DeviceEntry
-	{
-		// Shared with the device manager: discovery runs on its own thread and
-		// must never free a device this entry is still draining
-		std::shared_ptr<IImuDevice> device;
-		ImuOrientationFilter filter;
-		double lastSampleTimestampMs= -1.0;
-		int reopenCooldownFrames= 0;
-		// The discovery worker is close()/open()ing this device right now, so
-		// nothing here touches it until the worker reports back. The filter
-		// state stays put, so a reconnect keeps its converged orientation.
-		bool bAwaitingReopen= false;
-
-		// Mounting-quality tracking (see ImuSideStatus::forearmAxisConsistency)
-		glm::quat lastPublishedForearm{1.f, 0.f, 0.f, 0.f};
-		bool bHasLastPublishedForearm= false;
-		float axisConsistencyEma= -1.f;
-		int axisConsistencySamples= 0;
-
-		// Decaying scatter of sensor-frame angular velocity, sum(w w^T). Its
-		// dominant eigenvector is the axis the arm has been rotating about -
-		// i.e. the forearm's long axis, if the user has been twisting.
-		glm::mat3 rotationScatter{0.f};
-		float rotationScatterWeight= 0.f;
-		// Total rotation travelled, sum(|w| dt) - "how much twisting happened"
-		float rotationPathRadians= 0.f;
-		// Net rotation, sum(w dt). Back-and-forth twisting cancels out here
-		// while the path keeps growing; a one-way turn or a constant rate
-		// offset makes the two equal.
-		glm::vec3 rotationNet{0.f};
-
-		// Running mean of inverse(q_sensor) * q_palm over the calibration
-		// window, hemisphere-aligned. Replaces the single held pose.
-		glm::vec4 poseMountingSum{0.f};
-		int poseMountingSamples= 0;
-		float poseSpreadSumDegrees= 0.f;
-
-		// Rolling window of raw samples for the axis-convention diagnostic.
-		// ~30 seconds at the Joy-Con's 200 Hz.
-		std::deque<ImuSample> rawHistory;
-
-		// The two calibration motions, recorded in full while the wizard asks
-		// for them. Separate from the decaying scatter above, which stays the
-		// LIVE readout the progress bars watch: a recording must not fade out
-		// from under a user who is still performing it.
-		std::vector<MotionSample> twistRecording;
-		std::vector<MotionSample> curlRecording;
-
-		// Rolling mean of the wrist's axial residual (see
-		// updateWristAxialResidual) - a mounting-roll health check, not a
-		// correction
-		float twistResidualDegreesEma= 0.f;
-		int twistSamples= 0;
-
-		// Static bias calibration in progress
-		bool bCalibratingBias= false;
-		bool bBiasDisturbed= false;
-		glm::dvec3 biasSum{0.0};
-		int biasSampleCount= 0;
-		double biasSeconds= 0.0;
-	};
-
-	// Feeds one sample into a device's static bias measurement, restarting it
-	// if the controller was disturbed
-	void accumulateBiasCalibration(DeviceEntry& entry, const ImuSample& sample, float dtSeconds);
-
-
-	// Index into m_devices for a wrist, honoring swapSides; -1 when none
-	int findDeviceIndexForSide(eHandSide side) const;
+	// The tracker driving a wrist, honoring swapSides; null when none
+	ImuDeviceTracker* findTrackerForSide(eHandSide side);
+	const ImuDeviceTracker* findTrackerForSide(eHandSide side) const;
 
 	// -- Discovery worker ---------------------------------------------------
 	// HID enumeration and the Bluetooth open handshake both block for
@@ -350,7 +277,7 @@ private:
 	// worker starts, destroyed after it joins)
 	std::unique_ptr<class JoyconDeviceManager> m_deviceManager;
 	// Vision-thread state
-	std::vector<std::unique_ptr<DeviceEntry>> m_devices;
+	std::vector<std::unique_ptr<ImuDeviceTracker>> m_trackers;
 	std::vector<ImuSample> m_sampleScratch;
 	bool m_bStarted= false;
 	eMountingMotion m_motionRecording= eMountingMotion::None;
