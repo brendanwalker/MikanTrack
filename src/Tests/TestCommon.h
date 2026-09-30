@@ -43,6 +43,7 @@
 #include "HandRoiQuality.h"
 #include "LumaFlickerTracker.h"
 #include "HandTrackingPipeline.h"
+#include "ImuMountingMath.h"
 #include "ImuOrientationFilter.h"
 #include "ImuService.h"
 #include "JoyconDevice.h"

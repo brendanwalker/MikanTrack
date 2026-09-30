@@ -5,7 +5,7 @@
 
 #include "glm/ext/quaternion_float.hpp"
 
-#include "ImuService.h" // MountingCaptureResult
+#include "ImuService.h" // eMountingMotion, ImuSideStatus, MountingCaptureResult
 #include "WizardResult.h"
 
 class AppConfig;
