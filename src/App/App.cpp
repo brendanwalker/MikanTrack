@@ -13,6 +13,7 @@
 #include "AppConfig.h"
 #include "FrameTimer.h"
 #include "GlobalSettings.h"
+#include "ImuService.h"
 #include "ImGuiTheme.h"
 #include "LocalizationManager.h"
 #include "Logger.h"
@@ -152,8 +153,10 @@ bool App::startup()
 	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
 
 	// Constructed but not started: the app boots into the main menu, and the
-	// vision thread and cameras only spin up when a project is activated
-	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_config.get());
+	// vision thread, cameras, and IMU service only spin up when a project is
+	// activated
+	m_imuService= std::make_unique<ImuService>();
+	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_imuService.get(), m_config.get());
 
 	m_mainWindow= std::make_unique<MainWindow>(this);
 
@@ -169,11 +172,13 @@ bool App::activateProject(const std::filesystem::path& projectFile)
 
 	if (!m_projectManager->loadProject(projectFile))
 	{
+		m_imuService->shutdown();
 		m_appState= eAppState::MainMenu;
 		return false;
 	}
 
 	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
+	m_imuService->startup();
 	m_visionThread->start();
 	m_mainWindow->tryRestoreVideoDeviceFromConfig();
 	m_appState= eAppState::Project;
@@ -205,6 +210,7 @@ void App::returnToMainMenu()
 {
 	m_config->save();
 	m_visionThread->stop();
+	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
 		m_videoCapture->closeDevice(cameraIndex);
 	m_appState= eAppState::MainMenu;
@@ -215,6 +221,7 @@ void App::discardNewProjectAndReturnToMenu()
 	const std::filesystem::path projectFile= m_config->getProjectFilePath();
 
 	m_visionThread->stop();
+	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
 		m_videoCapture->closeDevice(cameraIndex);
 
@@ -270,6 +277,12 @@ void App::shutdown()
 	{
 		m_visionThread->stop();
 		m_visionThread= nullptr;
+	}
+
+	if (m_imuService != nullptr)
+	{
+		m_imuService->shutdown();
+		m_imuService= nullptr;
 	}
 
 	if (m_videoCapture != nullptr)

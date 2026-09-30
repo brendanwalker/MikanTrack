@@ -74,8 +74,9 @@ void VisionThread::reportHitchIfSlow(double totalMs, const double* phaseMs)
 		<< (int)phaseMs[(int)eVisionPhase::Diagnostics] << "]";
 }
 
-VisionThread::VisionThread(VideoCaptureSystem* videoCapture, AppConfig* config)
+VisionThread::VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, AppConfig* config)
 	: m_videoCapture(videoCapture)
+	, m_imuService(imuService)
 	, m_config(config)
 {
 }
@@ -334,7 +335,7 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		std::vector<ImuSample> samples;
-		m_imuService.getRawSampleHistory((eHandSide)sideIndex, samples);
+		m_imuService->getRawSampleHistory((eHandSide)sideIndex, samples);
 		rawImu[sideIndex].reserve(samples.size());
 		for (const ImuSample& sample : samples)
 		{
@@ -349,7 +350,7 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 	DiagImuCapture lastCapture[2];
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		const MountingCaptureResult& capture= m_imuService.getLastCapture((eHandSide)sideIndex);
+		const MountingCaptureResult& capture= m_imuService->getLastCapture((eHandSide)sideIndex);
 		DiagImuCapture& out= lastCapture[sideIndex];
 		out.present= capture.bCaptured;
 		out.forearmToSensor= capture.forearmToSensor;
@@ -545,7 +546,7 @@ void VisionThread::refreshConfigOnThread()
 			imuConfig.mountingPresent[sideIndex]= m_config->imu.mountingPresent[sideIndex];
 			imuConfig.forearmToSensor[sideIndex]= m_config->imu.forearmToSensor[sideIndex];
 		}
-		m_imuService.setConfig(imuConfig);
+		m_imuService->setConfig(imuConfig);
 	}
 
 	// OSC
@@ -863,9 +864,6 @@ void VisionThread::threadLoop()
 {
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread started";
 
-	// Wrist IMU devices live on this thread (HID handles + read threads)
-	m_imuService.startup();
-
 	std::vector<const CameraFrameResult*> fusionCandidates;
 
 	// Previous iteration's fused world result, used to seed cross-camera
@@ -976,40 +974,40 @@ void VisionThread::threadLoop()
 			{
 				const eMountingMotion motion= (eMountingMotion)m_requestedImuMotionRecording.load();
 				if (motion == eMountingMotion::None)
-					m_imuService.endMotionRecording();
+					m_imuService->endMotionRecording();
 				else
-					m_imuService.beginMotionRecording(motion);
+					m_imuService->beginMotionRecording(motion);
 			}
 			if (m_bImuBiasCalibrationRequested.exchange(false))
-				m_imuService.beginBiasCalibration();
+				m_imuService->beginBiasCalibration();
 			if (m_bImuBiasCancelRequested.exchange(false))
-				m_imuService.cancelBiasCalibration();
-			m_imuService.update();
+				m_imuService->cancelBiasCalibration();
+			m_imuService->update();
 
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
 				const HandPose& pose= outputResult.poses[sideIndex];
 				if (pose.tracked && pose.hasWorldPose)
 				{
-					m_imuService.applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
+					m_imuService->applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
 
 					// Feeds the mounting average. Runs every tracked frame
 					// rather than only during the wizard, so a capture always
 					// has a populated window behind it.
-					m_imuService.accumulatePoseMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
+					m_imuService->accumulatePoseMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
 													   pose.confidence);
 
 					// Health check on the mounting's roll: the wrist cannot
 					// rotate about the forearm's long axis, so any axial
 					// component of the measured joint is calibration error
-					m_imuService.updateWristAxialResidual((eHandSide)sideIndex,
+					m_imuService->updateWristAxialResidual((eHandSide)sideIndex,
 														  pose.palmOrientationWorld, pose.confidence);
 				}
 			}
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
 				glm::quat forearmToWorld(1.f, 0.f, 0.f, 0.f);
-				if (m_imuService.getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
+				if (m_imuService->getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
 				{
 					// The EKF owns this orientation outright - deliberately no
 					// additional smoothing, which would cascade two filters
@@ -1022,7 +1020,7 @@ void VisionThread::threadLoop()
 					// of the two. Mounting quality is the one a consumer
 					// cannot see for itself: a bad mounting leaves the hand
 					// looking perfect while the elbow sweeps a cone.
-					const ImuSideStatus status= m_imuService.getSideStatus((eHandSide)sideIndex);
+					const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
 					const float mountingQuality= status.forearmAxisConsistency < 0.f
 						// Not enough motion to score it yet. Treated as good
 						// because the calibration wizard refuses a mounting
@@ -1056,7 +1054,7 @@ void VisionThread::threadLoop()
 				// matters is what was seen during the twist, not this instant
 				ImuMountingCapture capture;
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-					m_imuService.captureMounting((eHandSide)sideIndex, capture.sides[sideIndex]);
+					m_imuService->captureMounting((eHandSide)sideIndex, capture.sides[sideIndex]);
 
 				std::lock_guard<std::mutex> lock(m_imuMutex);
 				m_capturedImuMounting= capture;
@@ -1066,7 +1064,7 @@ void VisionThread::threadLoop()
 			{
 				std::lock_guard<std::mutex> lock(m_imuMutex);
 				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-					m_imuStatus[sideIndex]= m_imuService.getSideStatus((eHandSide)sideIndex);
+					m_imuStatus[sideIndex]= m_imuService->getSideStatus((eHandSide)sideIndex);
 			}
 
 			phaseMs[(int)eVisionPhase::Imu]= steadyNowMs() - phaseMarkMs;
@@ -1237,7 +1235,7 @@ void VisionThread::threadLoop()
 			DiagImuState imuStates[2];
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 			{
-				const ImuSideStatus status= m_imuService.getSideStatus((eHandSide)sideIndex);
+				const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
 				DiagImuState& imuState= imuStates[sideIndex];
 				imuState.deviceConnected= status.deviceConnected;
 				imuState.streaming= status.streaming;
@@ -1295,7 +1293,6 @@ void VisionThread::threadLoop()
 	// ORT sessions must be destroyed on this thread
 	m_cameras.clear();
 	m_oscStreamer= nullptr;
-	m_imuService.shutdown();
 
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread stopped";
 }

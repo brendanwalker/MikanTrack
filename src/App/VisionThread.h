@@ -47,7 +47,7 @@ struct VisionPreviewFrame
 class VisionThread
 {
 public:
-	VisionThread(VideoCaptureSystem* videoCapture, AppConfig* config);
+	VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, AppConfig* config);
 	~VisionThread();
 
 	// Sizes the per-camera contexts from the config's camera count and spawns
@@ -300,9 +300,10 @@ private:
 	HandFusion m_fusion;
 	BodyPoseSolver m_bodyPoseSolver;
 
-	// Wrist IMU service (devices + per-device orientation filters). Lives on
-	// the vision thread; the UI reads snapshots through a mutex.
-	ImuService m_imuService;
+	// Wrist IMU service (devices + per-device orientation filters). Owned by
+	// App; this thread is its only caller while running, and the UI reads
+	// snapshots through m_imuMutex below.
+	ImuService* m_imuService= nullptr;
 	std::atomic_bool m_bImuMountingCaptureRequested{false};
 	std::atomic_bool m_bImuMotionRecordingRequested{false};
 	std::atomic_int m_requestedImuMotionRecording{(int)eMountingMotion::None};

@@ -22,7 +22,7 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 
 - `src/Calibration`: OpenCV calibration math. `MonoLensDistortionCalibrator` (intrinsics), `CalibrationPatternFinder` and its `_Charuco`/`_Aruco` variants, `PatternPoseSampler` and `ExtrinsicsValidation` (extrinsics), `AnglePriorCalibrator` and `BodyDimensionCalibrator`, plus `CameraMath`, `MathOpenCV`, and `CVVideoFrameProcessor` (undistortion), several copied from MikanXR's editor calibration tree. See [calibration.md](./calibration.md).
 
-- `src/Imu`: wrist inertial trackers. `ImuService` owns the devices, one `ImuOrientationFilter` per device, and the mounting calibration that turns a sensor orientation into a forearm orientation. `src/Imu/Joycon/` is the HID backend (`JoyconDevice`, `JoyconDeviceManager`). See [imu.md](./imu.md).
+- `src/Imu`: wrist inertial trackers. `ImuService` owns the devices, one `ImuOrientationFilter` per device, and the mounting calibration that turns a sensor orientation into a forearm orientation, with `ImuMountingMath` as the pure mounting solve behind it. `App` owns the service and `VisionThread` drives it. `src/Imu/Joycon/` is the HID backend (`JoyconDevice`, `JoyconDeviceManager`). See [imu.md](./imu.md).
 
 - `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`. See [wire-protocol.md](./wire-protocol.md).
 

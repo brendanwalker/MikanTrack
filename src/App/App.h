@@ -9,6 +9,7 @@ typedef void* SDL_GLContext;
 
 class AppConfig;
 class GlobalSettings;
+class ImuService;
 class LocalizationManager;
 class ProjectManager;
 class VideoCaptureSystem;
@@ -60,6 +61,7 @@ public:
 	LocalizationManager* getLocalization() { return m_localization.get(); }
 	ProjectManager* getProjectManager() { return m_projectManager.get(); }
 	VideoCaptureSystem* getVideoCapture() { return m_videoCapture.get(); }
+	ImuService* getImuService() { return m_imuService.get(); }
 	VisionThread* getVisionThread() { return m_visionThread.get(); }
 	SDL_Window* getSdlWindow() { return m_sdlWindow; }
 
@@ -76,6 +78,9 @@ private:
 	std::unique_ptr<LocalizationManager> m_localization;
 	std::unique_ptr<ProjectManager> m_projectManager;
 	std::unique_ptr<VideoCaptureSystem> m_videoCapture;
+	// Started with a project and stopped with it; the vision thread is its
+	// only caller while running, so it survives a vision thread restart
+	std::unique_ptr<ImuService> m_imuService;
 	std::unique_ptr<VisionThread> m_visionThread;
 	std::unique_ptr<MainWindow> m_mainWindow;
 
