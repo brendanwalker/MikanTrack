@@ -45,6 +45,11 @@ private:
 	void drawMainMenu();
 	void drawDockspaceAndMenuBar();
 	bool isAnyWizardActive() const;
+	// Global hotkeys, active anywhere in the tracking UI: fires the action
+	// bound to any key pressed this frame (the table is in the source file)
+	void handleHotkeys();
+	void dumpDiagnostics();
+	void toggleRecording();
 	// Restores one camera's persisted device by path, then by friendly name
 	bool restoreCameraDevice(int cameraIndex);
 

@@ -14,7 +14,6 @@ The living plan: what is in flight now, what comes next, and the open questions.
 Code cleanup pass, one concern per commit.
 
 - [ ] `MainWindow::update` decoupling. It interleaves deferred project-state transitions, the vision-thread data pull, the F9/F10 hotkeys, dockspace and menu drawing, panel drawing, wizard launch requests, focus management, the forearm overlay projection, scene camera construction, and the wizard update chain. Split along those seams:
-	- [ ] Pull the F9/F10 hotkeys into one table-driven handler
 	- [ ] Extract the forearm overlay projection and the scene camera view construction into free functions of the config and the fused result
 	- [ ] Replace the wizard update chain with one active-wizard host owning the launch-request flags, the mutual exclusion, and the Video Preview focus rising edge
 	- [ ] Let `DevicePanel` register the capture-system hotplug callbacks itself instead of `MainWindow` relaying them

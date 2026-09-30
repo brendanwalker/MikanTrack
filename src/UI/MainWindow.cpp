@@ -280,6 +280,48 @@ void MainWindow::drawDockspaceAndMenuBar()
 	ImGui::End();
 }
 
+// -- Global hotkeys ----------------------------------------------------------
+
+void MainWindow::handleHotkeys()
+{
+	// Every key the tracking UI binds, in one place. Repeat is off: each
+	// press fires once.
+	struct HotkeyBinding
+	{
+		ImGuiKey key;
+		void (MainWindow::*action)();
+	};
+	static const HotkeyBinding k_hotkeys[]= {
+		{ImGuiKey_F9, &MainWindow::dumpDiagnostics},
+		{ImGuiKey_F10, &MainWindow::toggleRecording},
+	};
+
+	for (const HotkeyBinding& binding : k_hotkeys)
+	{
+		if (ImGui::IsKeyPressed(binding.key, false))
+			(this->*binding.action)();
+	}
+}
+
+// Diagnostic dump: state history + camera frames + config
+void MainWindow::dumpDiagnostics()
+{
+	m_app->getVisionThread()->requestDiagnosticDump(m_app->getConfig()->makeDumpDirectoryPath());
+}
+
+// Toggles the tracking recording (deterministic replay input capture;
+// starting resets transient tracking state - brief blip)
+void MainWindow::toggleRecording()
+{
+	VisionThread* visionThread= m_app->getVisionThread();
+	if (visionThread->isRecording())
+		visionThread->requestRecordingStop();
+	else
+		visionThread->requestRecordingStart(m_app->getConfig()->makeRecordingFilePath());
+}
+
+// -- Frame ------------------------------------------------------------------
+
 void MainWindow::update(float deltaSeconds)
 {
 	if (m_app->getAppState() == App::eAppState::MainMenu)
@@ -312,19 +354,7 @@ void MainWindow::update(float deltaSeconds)
 	}
 	visionThread->fetchFusedResult(m_latestFused);
 
-	// F9 anywhere: diagnostic dump (state history + camera frames + config)
-	if (ImGui::IsKeyPressed(ImGuiKey_F9, false))
-		visionThread->requestDiagnosticDump(config->makeDumpDirectoryPath());
-
-	// F10 anywhere: toggle the tracking recording (deterministic replay input
-	// capture; starting resets transient tracking state - brief blip)
-	if (ImGui::IsKeyPressed(ImGuiKey_F10, false))
-	{
-		if (visionThread->isRecording())
-			visionThread->requestRecordingStop();
-		else
-			visionThread->requestRecordingStart(config->makeRecordingFilePath());
-	}
+	handleHotkeys();
 
 	drawDockspaceAndMenuBar();
 
