@@ -136,6 +136,7 @@ void DiagnosticDump::record(const std::vector<const CameraFrameResult*>& cameraR
 			cameraState.inferenceMs= cameraResult->result.inferenceMs;
 			cameraState.lumaInstability= cameraResult->result.lumaInstability;
 			cameraState.lumaFlickerHz= cameraResult->result.lumaFlickerHz;
+			cameraState.captureTimings= cameraResult->result.captureTimings;
 			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 				fillDiagHandFromResult(cameraResult->result, sideIndex, cameraState.sides[sideIndex]);
 
@@ -318,6 +319,21 @@ static json poseSnapshotToJson(const HandPose& pose)
 	return out;
 }
 
+static json captureTimingsToJson(const TrackingFrameResult::CaptureTimings& timings)
+{
+	return {
+		{"queueAgeMs", timings.queueAgeMs},
+		{"convertMs", timings.convertMs},
+		{"undistortMs", timings.undistortMs},
+		{"flickerMs", timings.flickerMs},
+		{"bodyPoseMs", timings.bodyPoseMs},
+		{"roiQualityMs", timings.roiQualityMs},
+		{"liftMs", timings.liftMs},
+		{"publishMs", timings.publishMs},
+		{"totalMs", timings.totalMs},
+	};
+}
+
 static json resultSnapshotToJson(const TrackingFrameResult& result)
 {
 	json out= {
@@ -328,6 +344,7 @@ static json resultSnapshotToJson(const TrackingFrameResult& result)
 		{"inferenceMs", result.inferenceMs},
 		{"lumaInstability", result.lumaInstability},
 		{"lumaFlickerHz", result.lumaFlickerHz},
+		{"captureTimings", captureTimingsToJson(result.captureTimings)},
 		{"hands", json::array({handSnapshotToJson(result.hands[0]), handSnapshotToJson(result.hands[1])})},
 		{"poses", json::array({poseSnapshotToJson(result.poses[0]), poseSnapshotToJson(result.poses[1])})},
 	};
@@ -384,6 +401,8 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 			{"activeEp", camera.activeEp},
 			{"deviceFps", camera.deviceFps},
 			{"droppedFrames", camera.droppedFrames},
+			{"callbackCopyMs", camera.callbackCopyMs},
+			{"queuedFrames", camera.queuedFrames},
 		};
 
 		// Cross-camera seeding cannot be replayed (it runs before the stages a
@@ -455,6 +474,7 @@ bool DiagnosticDump::write(const std::string& dumpDir,
 				{"inferenceMs", cameraState.inferenceMs},
 				{"lumaInstability", cameraState.lumaInstability},
 				{"lumaFlickerHz", cameraState.lumaFlickerHz},
+				{"captureTimings", captureTimingsToJson(cameraState.captureTimings)},
 				{"left", diagHandToJson(cameraState.sides[0])},
 				{"right", diagHandToJson(cameraState.sides[1])},
 			};

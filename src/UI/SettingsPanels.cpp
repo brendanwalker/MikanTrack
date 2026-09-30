@@ -13,6 +13,7 @@
 #include "LocalizationManager.h"
 #include "LocText.h"
 #include "Scene3dPanel.h"
+#include "VideoCaptureSystem.h"
 #include "VideoPreviewPanel.h"
 #include "VisionThread.h"
 
@@ -214,8 +215,142 @@ static void drawImageQualitySection(AppConfig* config, TrackingPanelState& panel
 	ImGui::EndTable();
 }
 
+// -- Capture timing readout --------------------------------------------------
+
+// One row of the capture-timing table: a per-step value out of the newest
+// per-camera result, or (extract null) a capture-system counter
+struct TimingRowDesc
+{
+	const char* labelKey;
+	const char* tooltipKey;
+	const char* format;
+	float (*extract)(const TrackingFrameResult&);
+};
+
+static const TimingRowDesc k_timingRows[]= {
+	{"trackingPanel.timingQueueAgeLabel", "trackingPanel.timingQueueAgeTooltip", "%.1f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.queueAgeMs; }},
+	{"trackingPanel.timingConvertLabel", "trackingPanel.timingConvertTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.convertMs; }},
+	{"trackingPanel.timingUndistortLabel", "trackingPanel.timingUndistortTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.undistortMs; }},
+	{"trackingPanel.timingFlickerLabel", "trackingPanel.timingFlickerTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.flickerMs; }},
+	{"trackingPanel.timingHandInferenceLabel", "trackingPanel.timingHandInferenceTooltip", "%.1f ms",
+	 [](const TrackingFrameResult& r) { return r.inferenceMs; }},
+	{"trackingPanel.timingBodyPoseLabel", "trackingPanel.timingBodyPoseTooltip", "%.1f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.bodyPoseMs; }},
+	{"trackingPanel.timingRoiQualityLabel", "trackingPanel.timingRoiQualityTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.roiQualityMs; }},
+	{"trackingPanel.timingLiftLabel", "trackingPanel.timingLiftTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.liftMs; }},
+	{"trackingPanel.timingPublishLabel", "trackingPanel.timingPublishTooltip", "%.2f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.publishMs; }},
+	{"trackingPanel.timingTotalLabel", "trackingPanel.timingTotalTooltip", "%.1f ms",
+	 [](const TrackingFrameResult& r) { return r.captureTimings.totalMs; }},
+	{"trackingPanel.timingCallbackCopyLabel", "trackingPanel.timingCallbackCopyTooltip", "%.2f ms", nullptr},
+	{"trackingPanel.timingQueuedFramesLabel", "trackingPanel.timingQueuedFramesTooltip", "%.0f", nullptr},
+	{"trackingPanel.timingDroppedFramesLabel", "trackingPanel.timingDroppedFramesTooltip", "%.0f", nullptr},
+};
+static_assert(IM_ARRAYSIZE(k_timingRows) == TrackingPanelState::kTimingRowCount,
+			  "timing EMA slots out of step with the rows");
+// The capture-system rows, after the per-frame ones
+static constexpr int k_timingCallbackCopyRow= 10;
+static constexpr int k_timingQueuedFramesRow= 11;
+
+static void drawCaptureTimingSection(AppConfig* config, VideoCaptureSystem* videoCapture,
+									 TrackingPanelState& panelState,
+									 const std::vector<VisionPreviewFrame>& latestPreviews)
+{
+	const int cameraCount= std::min((int)config->cameraCount(),
+									(int)TrackingPanelState::kQualityMaxCameras);
+	if (cameraCount <= 0)
+		return;
+
+	ImGui::SeparatorText(locText("trackingPanel.captureTimingSection"));
+	ImGui::SetItemTooltip("%s", locText("trackingPanel.captureTimingTooltip"));
+
+	if (!ImGui::BeginTable("captureTiming", 1 + cameraCount,
+						   ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg))
+		return;
+
+	ImGui::TableSetupColumn(locText("trackingPanel.stepColumn"));
+	for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+	{
+		const std::string header= locFormat("trackingPanel.cameraFmt", cameraIndex + 1);
+		ImGui::TableSetupColumn(header.c_str());
+	}
+	ImGui::TableHeadersRow();
+
+	// ~1s EMA, as for the image-quality readout: the per-frame values are
+	// twitchy at camera rate
+	const float emaAlpha= std::min(1.f, ImGui::GetIO().DeltaTime);
+
+	for (int rowIndex= 0; rowIndex < (int)IM_ARRAYSIZE(k_timingRows); ++rowIndex)
+	{
+		const TimingRowDesc& row= k_timingRows[rowIndex];
+		ImGui::TableNextRow();
+		ImGui::TableNextColumn();
+		ImGui::Text("%s", locText(row.labelKey));
+		ImGui::SetItemTooltip("%s", locText(row.tooltipKey));
+
+		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+		{
+			ImGui::TableNextColumn();
+
+			float rawValue= 0.f;
+			bool bHaveValue= false;
+			bool bSmoothed= true;
+			if (row.extract != nullptr)
+			{
+				if (cameraIndex < (int)latestPreviews.size() && latestPreviews[cameraIndex].valid)
+				{
+					rawValue= row.extract(latestPreviews[cameraIndex].result);
+					bHaveValue= true;
+				}
+			}
+			else if (rowIndex == k_timingCallbackCopyRow)
+			{
+				rawValue= videoCapture->getCallbackCopyMs(cameraIndex);
+				bHaveValue= rawValue > 0.f;
+			}
+			else
+			{
+				// Counters are shown as they are: a queue depth is already an
+				// instantaneous fact and a drop count only ever grows
+				rawValue= rowIndex == k_timingQueuedFramesRow
+					? (float)videoCapture->getQueuedFrameCount(cameraIndex)
+					: (float)videoCapture->getDroppedFrameCount(cameraIndex);
+				bHaveValue= true;
+				bSmoothed= false;
+			}
+
+			float& ema= panelState.timingEma[cameraIndex][rowIndex];
+			bool& bEmaValid= panelState.bTimingEmaValid[cameraIndex][rowIndex];
+			if (!bHaveValue)
+			{
+				bEmaValid= false;
+				ImGui::TextDisabled("-");
+				continue;
+			}
+			if (bSmoothed)
+			{
+				ema= bEmaValid ? ema + (rawValue - ema) * emaAlpha : rawValue;
+				bEmaValid= true;
+			}
+			else
+			{
+				ema= rawValue;
+			}
+			ImGui::Text(row.format, ema);
+		}
+	}
+	ImGui::EndTable();
+}
+
 void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionThread,
-									   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel,
+									   VideoCaptureSystem* videoCapture, VideoPreviewPanel* previewPanel,
+									   Scene3dPanel* scene3dPanel,
 									   TrackingPanelState& panelState,
 									   const std::vector<VisionPreviewFrame>& latestPreviews,
 									   const TrackingFrameResult& fusedResult)
@@ -506,6 +641,8 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		}
 		ImGui::SetItemTooltip("%s", locText("trackingPanel.frameLoopHitchesTooltip"));
 	}
+
+	drawCaptureTimingSection(config, videoCapture, panelState, latestPreviews);
 
 	ImGui::SeparatorText(locText("trackingPanel.diagnosticsSection"));
 	if (ImGui::Button(locLabel("trackingPanel.dumpTrackingState")))

@@ -296,6 +296,25 @@ struct TrackingFrameResult
 	float captureFps= 0.f;
 	float inferenceMs= 0.f;
 
+	// Wall time of each step of the capture and inference stage for this
+	// frame, ms. Per-camera results only (zero on the fused result); the hand
+	// pipeline's own time is inferenceMs above.
+	struct CaptureTimings
+	{
+		// From the capture callback's arrival stamp to the pop on the vision
+		// thread: how long the frame waited for its turn
+		float queueAgeMs= 0.f;
+		float convertMs= 0.f; // raw frame to BGR
+		float undistortMs= 0.f;
+		float flickerMs= 0.f;
+		float bodyPoseMs= 0.f;
+		float roiQualityMs= 0.f;
+		float liftMs= 0.f;    // 2D landmarks to camera space and world space
+		float publishMs= 0.f; // preview frame copy for the main thread
+		float totalMs= 0.f;   // the whole process() call, pop to publish
+	};
+	CaptureTimings captureTimings;
+
 	// Whole-frame temporal luminance stability (decimated frame mean tracked
 	// over the last few seconds): detrended AC RMS as a fraction of the mean
 	// level. High = light flicker beating against the shutter, or auto-exposure

@@ -112,6 +112,26 @@ Rule this watchdog enforces: anything that can block for hundreds of millisecond
 
 ---
 
+## Capture timing
+
+The hitch watchdog only speaks when an iteration overruns; the steady-state cost of each capture step is measured on every frame. `CameraContext::process` (`src/App/CameraContext.cpp`) laps the steady clock between its steps and publishes them on the per-camera result as `TrackingFrameResult::captureTimings`:
+
+- `queueAgeMs`: the capture callback's arrival stamp to the pop on the vision thread, which is how long the frame waited for its turn
+- `convertMs`: the raw driver format to BGR
+- `undistortMs`: the calibrated lens correction over the full frame (zero without intrinsics)
+- `flickerMs`: the whole-frame luminance tracker
+- `bodyPoseMs`: the opt-in body-pose stage
+- `roiQualityMs`: the per-hand image-quality statistics
+- `liftMs`: the 2D landmarks into camera space and world space
+- `publishMs`: the preview frame copy for the main thread
+- `totalMs`: the whole call, pop to publish
+
+The hand pipeline's own `inferenceMs` sits alongside. The capture side adds two counters per camera on `VideoCaptureSystem`: `getCallbackCopyMs` (an EMA of the time the driver's callback spends copying a frame out of the driver buffer, during which the driver thread is blocked) and `getQueuedFrameCount` (frames waiting for the vision thread right now), next to the existing dropped-frame count.
+
+The Tracking panel's Capture Timing table shows all of it per camera as a ~1 s EMA, with the two counters shown raw. The dump records the raw per-frame series as `captureTimings` in every history record and in each camera's snapshot, plus `callbackCopyMs` and `queuedFrames` in the camera's dump-time entry. Everything before ONNX Runtime runs on the CPU, so this table is the evidence any GPU pre-processing decision waits on.
+
+---
+
 ## Image-quality metrics (`HandRoiQuality`)
 
 `HandRoiQuality::analyzeHand` (`src/Vision/HandRoiQuality.*`) runs on the vision thread against the exact frame the model consumed (after undistortion), for every tracked hand, every frame, at about 0.2 ms per camera.

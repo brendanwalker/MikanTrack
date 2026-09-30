@@ -88,6 +88,11 @@ public:
 	// Frame rate the DEVICE is delivering (measured at the MF callback,
 	// before any queueing/drops)
 	float getDeviceFrameRate(int cameraIndex) const;
+	// Milliseconds the capture callback spends copying each frame out of the
+	// driver's buffer (EMA)
+	float getCallbackCopyMs(int cameraIndex) const;
+	// Frames waiting in the queue for the inference thread right now
+	size_t getQueuedFrameCount(int cameraIndex) const;
 
 	// -- Inference thread API -----
 	// Returns the newest available frame for the camera, recycling any stale
@@ -129,6 +134,9 @@ private:
 		// pipeline drops frames"
 		double lastArrivalMs= 0.0; // MF worker thread only
 		std::atomic<float> deviceFps{0.f};
+		// Time the callback spends copying each frame out of the driver's
+		// buffer (EMA); the driver thread is blocked for this long per frame
+		std::atomic<float> callbackCopyMs{0.f};
 
 		// Set on device removal, consumed on the main thread in update()
 		std::atomic<bool> bDeviceDisconnected{false};

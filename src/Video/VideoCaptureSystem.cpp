@@ -1,5 +1,6 @@
 #include "VideoCaptureSystem.h"
 #include "Logger.h"
+#include "SteadyClock.h"
 #include "MikanWMFVideoDeviceManager.h"
 #include "VideoModeUtils.h"
 
@@ -77,8 +78,7 @@ void VideoCaptureSystem::CameraSlot::notifyVideoFrameReceived(const UsbVideoFram
 {
 	// Runs on this device's Media Foundation worker thread -
 	// keep this lock-free and allocation-light
-	const double timestampMs=
-		std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	const double timestampMs= steadyNowMs();
 
 	// Device delivery rate (EMA over inter-arrival times), measured before
 	// any queueing so pipeline drops can't hide a slow camera
@@ -93,7 +93,12 @@ void VideoCaptureSystem::CameraSlot::notifyVideoFrameReceived(const UsbVideoFram
 	VideoFrameBlock* block= nullptr;
 	if (frameFreelist.try_dequeue(block))
 	{
+		const double copyStartMs= steadyNowMs();
 		block->copyFrom(bufferInfo, nextFrameIndex++, timestampMs);
+		const float copyMs= (float)(steadyNowMs() - copyStartMs);
+		const float previousCopyMs= callbackCopyMs.load(std::memory_order_relaxed);
+		callbackCopyMs.store(previousCopyMs > 0.f ? previousCopyMs * 0.9f + copyMs * 0.1f : copyMs,
+							 std::memory_order_relaxed);
 		frameQueue.enqueue(block);
 	}
 	else
@@ -462,6 +467,18 @@ float VideoCaptureSystem::getDeviceFrameRate(int cameraIndex) const
 {
 	const CameraSlot* slot= getSlot(cameraIndex);
 	return slot != nullptr ? slot->deviceFps.load(std::memory_order_relaxed) : 0.f;
+}
+
+float VideoCaptureSystem::getCallbackCopyMs(int cameraIndex) const
+{
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr ? slot->callbackCopyMs.load(std::memory_order_relaxed) : 0.f;
+}
+
+size_t VideoCaptureSystem::getQueuedFrameCount(int cameraIndex) const
+{
+	const CameraSlot* slot= getSlot(cameraIndex);
+	return slot != nullptr ? slot->frameQueue.size_approx() : 0;
 }
 
 // -- Inference thread API -----

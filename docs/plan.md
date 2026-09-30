@@ -11,7 +11,7 @@ The living plan: what is in flight now, what comes next, and the open questions.
 
 ## Next
 
-Code cleanup pass, one concern per commit. Measure before converting anything: the frame loop's hitch watchdog only reports iterations over 50 ms, so the steady-state cost of each capture-phase step has never been measured.
+Code cleanup pass, one concern per commit.
 
 - [ ] `MainWindow::update` decoupling. It interleaves deferred project-state transitions, the vision-thread data pull, the F9/F10 hotkeys, dockspace and menu drawing, panel drawing, wizard launch requests, focus management, the forearm overlay projection, scene camera construction, and the wizard update chain. Split along those seams:
 	- [ ] Move the deferred project actions (load, close, discard) into `App` as queued requests applied at the top of `App::tick`, so `MainWindow` never drives the state machine mid-frame
@@ -20,7 +20,6 @@ Code cleanup pass, one concern per commit. Measure before converting anything: t
 	- [ ] Replace the wizard update chain with one active-wizard host owning the launch-request flags, the mutual exclusion, and the Video Preview focus rising edge
 	- [ ] Let `DevicePanel` register the capture-system hotplug callbacks itself instead of `MainWindow` relaying them
 - [ ] `VisionThread` decomposition. `threadLoop` becomes a sequence of stage classes alongside the `CameraContext` capture and inference stage (fusion, IMU forearm fill, body solve, output, calibration captures, diagnostics and recording). Stages are stateless over `VisionThread`: the handoff state (mutexes, atomics, fetch accessors) stays on `VisionThread` and each stage receives what it needs by reference. The recording taps are the constraint: the checksum point stays immediately after `fuse`, and `--replay-verify` on the existing recordings is the acceptance test.
-- [ ] Capture-phase profiling, in-app rather than easy_profiler. Add always-on per-step steady-state timing to the capture phase (raw to BGR, undistort, flicker, inference, ROI quality, 3D lift), the queue age of each popped frame (pop time minus block timestamp), and the callback-thread copy time, surfaced in the tracking panel and the diagnostic dump. Everything before ONNX Runtime runs on the CPU today (the raw-to-BGR `cvtColor`, the `cv::remap` undistortion, the crop, warp, resize, and float conversion), and the input tensor is a CPU tensor DirectML uploads. A GPU raw-to-BGR conversion alone would force a readback for the CPU steps behind it, so the GPU decision waits for the numbers.
 
 ## Later
 

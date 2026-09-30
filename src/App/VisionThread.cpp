@@ -3,6 +3,7 @@
 #include "AppConfig.h"
 #include "Logger.h"
 #include "OscStreamer.h"
+#include "SteadyClock.h"
 #include "ThreadUtils.h"
 #include "VideoCaptureSystem.h"
 
@@ -10,13 +11,6 @@
 // arriving, find no free block, and are dropped). Well above a healthy
 // iteration - two cameras of inference plus fusion runs in the low tens of ms.
 static constexpr double k_hitchThresholdMs= 50.0;
-
-static double steadyNowMs()
-{
-	return std::chrono::duration<double, std::milli>(
-			   std::chrono::steady_clock::now().time_since_epoch())
-		.count();
-}
 
 const char* VisionThread::getPhaseName(eVisionPhase phase)
 {
@@ -295,6 +289,8 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 		snapshot.frame= context.getLastActiveFrame();
 		snapshot.deviceFps= m_videoCapture->getDeviceFrameRate(context.getCameraIndex());
 		snapshot.droppedFrames= m_videoCapture->getDroppedFrameCount(context.getCameraIndex());
+		snapshot.callbackCopyMs= m_videoCapture->getCallbackCopyMs(context.getCameraIndex());
+		snapshot.queuedFrames= m_videoCapture->getQueuedFrameCount(context.getCameraIndex());
 		snapshot.activeEp= context.getActiveExecutionProvider();
 		snapshot.trackingEnabled= context.isTrackingEnabled();
 		snapshot.seedStats= context.getSeedStats();

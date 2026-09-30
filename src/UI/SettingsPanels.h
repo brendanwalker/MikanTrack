@@ -9,6 +9,7 @@
 
 class AppConfig;
 class VisionThread;
+class VideoCaptureSystem;
 class VideoPreviewPanel;
 class Scene3dPanel;
 struct VisionPreviewFrame;
@@ -32,6 +33,11 @@ struct TrackingPanelState
 	float qualityEma[kQualityMaxCameras][kQualityMetricCount]= {};
 	bool bQualityEmaValid[kQualityMaxCameras][kQualityMetricCount]= {};
 
+	// The same EMA for the capture-timing readout. Indexed [camera][row].
+	static constexpr int kTimingRowCount= 13;
+	float timingEma[kQualityMaxCameras][kTimingRowCount]= {};
+	bool bTimingEmaValid[kQualityMaxCameras][kTimingRowCount]= {};
+
 	// Hold-still jitter test: countdown, then a sampling window over the
 	// fused output. The result is THE number for A/B-ing camera settings and
 	// lighting changes - one repeatable measurement per configuration.
@@ -54,10 +60,10 @@ struct TrackingPanelState
 // Config edits mark the config dirty and request a vision-thread refresh.
 namespace SettingsPanels
 {
-// latestPreviews: newest per-camera results (image-quality readout);
+// latestPreviews: newest per-camera results (image-quality and timing readouts);
 // fusedResult: the latest fused tracking output (hold-still jitter test)
-void drawTrackingPanel(AppConfig* config, VisionThread* visionThread, VideoPreviewPanel* previewPanel,
-					   Scene3dPanel* scene3dPanel, TrackingPanelState& panelState,
+void drawTrackingPanel(AppConfig* config, VisionThread* visionThread, VideoCaptureSystem* videoCapture,
+					   VideoPreviewPanel* previewPanel, Scene3dPanel* scene3dPanel, TrackingPanelState& panelState,
 					   const std::vector<VisionPreviewFrame>& latestPreviews,
 					   const TrackingFrameResult& fusedResult);
 // fusedResult: the latest fused tracking output (for the live angle readout)

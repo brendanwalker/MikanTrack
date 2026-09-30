@@ -102,6 +102,8 @@ struct DiagCameraState
 	// Whole-frame luminance oscillation (flicker beat / AE hunting)
 	float lumaInstability= 0.f;
 	float lumaFlickerHz= 0.f;
+	// Per-step wall time of the capture and inference stage
+	TrackingFrameResult::CaptureTimings captureTimings;
 	DiagHandState sides[2];
 	// Compact body-pose observation summary (full landmarks are in the
 	// dump-time snapshot, not the history ring)
@@ -171,6 +173,8 @@ struct DiagCameraSnapshot
 	const cv::Mat* frame= nullptr; // last processed BGR frame (may be null/empty)
 	float deviceFps= 0.f;
 	uint64_t droppedFrames= 0;
+	float callbackCopyMs= 0.f; // driver-thread frame copy, EMA
+	size_t queuedFrames= 0;    // waiting for the vision thread at dump time
 	const char* activeEp= "none";
 	bool trackingEnabled= false;
 	// Cross-camera seed accounting (cumulative, so it belongs in the snapshot

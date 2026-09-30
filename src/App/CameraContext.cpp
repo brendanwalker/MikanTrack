@@ -12,6 +12,7 @@
 #include "LandmarkTo3D.h"
 #include "Logger.h"
 #include "SpaceTransforms.h"
+#include "SteadyClock.h"
 #include "VideoCaptureSystem.h"
 #include "VideoFrame.h"
 
@@ -262,6 +263,20 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 	if (block == nullptr)
 		return false;
 
+	// Per-step wall time, published with the result so a slow step names
+	// itself in the tracking panel and the dump instead of only tripping the
+	// vision thread's hitch watchdog
+	TrackingFrameResult::CaptureTimings timings;
+	const double popMs= steadyNowMs();
+	double stepMarkMs= popMs;
+	auto lapMs= [&stepMarkMs]() {
+		const double nowMs= steadyNowMs();
+		const float elapsedMs= (float)(nowMs - stepMarkMs);
+		stepMarkMs= nowMs;
+		return elapsedMs;
+	};
+	timings.queueAgeMs= (float)(popMs - block->timestampMs);
+
 	// FPS estimate from frame timestamps
 	if (m_lastFrameTimestampMs > 0.0 && block->timestampMs > m_lastFrameTimestampMs)
 	{
@@ -275,6 +290,7 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 	const int64_t frameIndex= block->frameIndex;
 	const double timestampMs= block->timestampMs;
 	videoCapture->releaseFrame(m_cameraIndex, block);
+	timings.convertMs= lapMs();
 
 	if (m_bgrScratch.empty())
 		return false;
@@ -292,6 +308,7 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 		activeFrame= &m_undistortedScratch;
 	}
 	m_lastActiveFrame= activeFrame;
+	timings.undistortMs= lapMs();
 
 	TrackingFrameResult result;
 	result.frameIndex= frameIndex;
@@ -305,6 +322,7 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 	m_flickerTracker.addFrame(*activeFrame, timestampMs);
 	result.lumaInstability= m_flickerTracker.getInstability();
 	result.lumaFlickerHz= m_flickerTracker.getDominantHz();
+	timings.flickerMs= lapMs();
 
 	bool bProducedTracking= false;
 	if (m_bTrackingEnabled && m_pipeline != nullptr)
@@ -325,6 +343,10 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 		if (frameRecorder != nullptr)
 			frameRecorder->enqueueFrame(m_cameraIndex, result.frameIndex, *activeFrame);
 
+		// The hand pipeline reports its own inferenceMs; restart the lap so
+		// the body-pose stage below is measured on its own
+		lapMs();
+
 		// Opt-in body-pose stage, same undistorted frame the hand pipeline
 		// consumed (so its imagePoints share the undistorted camera matrix)
 		if (bRecordingInputs)
@@ -341,10 +363,12 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 				m_pendingRecordInput.body= result.body;
 			}
 		}
+		timings.bodyPoseMs= lapMs();
 
 		// Lighting/exposure diagnostics on the exact image the model consumed
 		for (TrackedHand& hand : result.hands)
 			HandRoiQuality::analyzeHand(*activeFrame, hand);
+		timings.roiQualityMs= lapMs();
 
 		// Recording tap, part 1: the pipeline-output hands, exactly as the
 		// LandmarkTo3D call below consumes them
@@ -388,6 +412,7 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 			if (profile.extrinsics.present)
 				applyWorldTransform(result, profile.extrinsics.markerFromCamera);
 		}
+		timings.liftMs= lapMs();
 
 		bProducedTracking= true;
 	}
@@ -413,7 +438,8 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 		m_bPendingRecordFresh= true;
 	}
 
-	// Store the fusion input
+	// Store the fusion input (the result itself follows once its timings are
+	// complete)
 	m_lastResult.cameraIndex= m_cameraIndex;
 	m_lastResult.valid= bProducedTracking;
 	m_lastResult.timestampMs= timestampMs;
@@ -429,16 +455,21 @@ bool CameraContext::process(VideoCaptureSystem* videoCapture, const TrackingFram
 		m_lastResult.cx= (float)cameraMatrix.z0;
 		m_lastResult.cy= (float)cameraMatrix.z1;
 	}
-	m_lastResult.result= result;
 
 	// Publish this camera's preview (latest-wins)
 	{
 		std::lock_guard<std::mutex> lock(m_previewMutex);
 		activeFrame->copyTo(m_previewFrame.bgr);
+		// Timed inside the lock so the published copy carries its own cost;
+		// the result copy that follows is small next to the frame
+		timings.publishMs= lapMs();
+		timings.totalMs= (float)(stepMarkMs - popMs);
+		result.captureTimings= timings;
 		m_previewFrame.result= result;
 		m_previewFrame.valid= true;
 		m_bPreviewFresh= true;
 	}
+	m_lastResult.result= result;
 
 	return bProducedTracking;
 }

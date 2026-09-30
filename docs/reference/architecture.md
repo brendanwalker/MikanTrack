@@ -56,7 +56,7 @@ Where a frame goes, one `VisionThread::threadLoop` iteration (`src/App/VisionThr
 12. `OscStreamer::sendFrame` streams the frame, then the fused result is published latest-wins for the main thread.
 13. The tail of the loop services calibration captures (bone calibration window, rest pose), records the diagnostics history ring, assembles the recording frame and hands it to the writer thread, and services dump requests.
 
-The loop watches itself: `eVisionPhase` names the phases (`ConfigRefresh`, `Capture`, `Imu`, `Fusion`, `Osc`, `Diagnostics`), and any iteration exceeding `k_hitchThresholdMs` (50 ms, `VisionThread.cpp`) logs a per-phase millisecond breakdown attributing the hitch to the worst phase (`reportHitchIfSlow`). A hitch starves every camera at once, so the symptom downstream is a synchronized multi-camera tracking gap that would otherwise look like a USB fault.
+The loop watches itself: `eVisionPhase` names the phases (`ConfigRefresh`, `Capture`, `Imu`, `Fusion`, `Osc`, `Diagnostics`), and any iteration exceeding `k_hitchThresholdMs` (50 ms, `VisionThread.cpp`) logs a per-phase millisecond breakdown attributing the hitch to the worst phase (`reportHitchIfSlow`). A hitch starves every camera at once, so the symptom downstream is a synchronized multi-camera tracking gap that would otherwise look like a USB fault. Inside the capture phase, `CameraContext::process` also times each of its steps on every frame and publishes them on the result as `captureTimings` (see [debugging.md](./debugging.md)).
 
 ---
 
