@@ -11,7 +11,9 @@ class VideoCaptureSystem;
 
 // Camera selection panel: one section per configured camera (device combo,
 // resolution/frame-rate/format combos with best-match mode selection, stream
-// start/stop), plus add/remove camera controls.
+// start/stop), plus add/remove camera controls. Subscribes to the capture
+// system's hotplug, mode-change, and disconnect notifications so its cached
+// lists follow the devices.
 class DevicePanel
 {
 public:

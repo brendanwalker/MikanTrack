@@ -45,15 +45,6 @@ MainWindow::MainWindow(App* app)
 	wizards.mounting= m_wizardHost->getMountingWizard();
 	wizards.body= m_wizardHost->getBodyCalibrationWizard();
 	m_setupFlow= std::make_unique<SetupFlow>(app, this, m_videoPreviewPanel.get(), wizards);
-
-	// Hotplug / disconnect notifications refresh the device panel
-	VideoCaptureSystem* videoCapture= m_app->getVideoCapture();
-	videoCapture->setDeviceListChangedCallback([this]() { m_devicePanel->refreshDeviceList(); });
-	videoCapture->setVideoModeChangedCallback([this](int cameraIndex) { m_devicePanel->refreshModeOptions(cameraIndex); });
-	videoCapture->setDeviceDisconnectedCallback([this](int cameraIndex) {
-		MIKAN_LOG_WARNING("MainWindow") << "Video device for camera " << cameraIndex << " disconnected";
-		m_devicePanel->refreshDeviceList();
-	});
 }
 
 MainWindow::~MainWindow()= default;

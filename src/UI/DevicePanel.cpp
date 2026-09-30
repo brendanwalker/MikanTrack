@@ -18,6 +18,15 @@ DevicePanel::DevicePanel(App* app, VideoCaptureSystem* videoCapture, AppConfig* 
 	, m_config(config)
 {
 	refreshDeviceList();
+
+	// Hotplug / disconnect notifications arrive on the main thread from the
+	// capture system's update pump
+	m_videoCapture->setDeviceListChangedCallback([this]() { refreshDeviceList(); });
+	m_videoCapture->setVideoModeChangedCallback([this](int cameraIndex) { refreshModeOptions(cameraIndex); });
+	m_videoCapture->setDeviceDisconnectedCallback([this](int cameraIndex) {
+		MIKAN_LOG_WARNING("DevicePanel") << "Video device for camera " << cameraIndex << " disconnected";
+		refreshDeviceList();
+	});
 }
 
 void DevicePanel::syncCameraStateCount()
