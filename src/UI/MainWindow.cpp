@@ -15,6 +15,7 @@
 #include "HandCalibrationWizard.h"
 #include "MountingWizard.h"
 #include "GlobalSettings.h"
+#include "HandOverlay.h"
 #include "LocText.h"
 #include "LogPanel.h"
 #include "Logger.h"
@@ -414,84 +415,42 @@ void MainWindow::update(float deltaSeconds)
 	if (m_intrinsicsWizard->isActive())
 		m_videoPreviewPanel->setActiveCamera(m_intrinsicsWizard->getCameraIndex());
 
+	// Newest per-camera results, for the preview overlays and the 3D scene
+	std::vector<const TrackingFrameResult*> perCameraResults;
+	for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
+	{
+		perCameraResults.push_back(
+			m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
+	}
+
 	// Central: side-by-side previews with per-camera overlays
 	{
-		std::vector<const TrackingFrameResult*> previewResults;
 		std::vector<const char*> executionProviders;
 		std::vector<ForearmOverlay> forearmOverlays;
 		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
 		{
-			previewResults.push_back(
-				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
 			executionProviders.push_back(visionThread->getActiveExecutionProvider(cameraIndex));
-
-			// Project the fused (world-space) forearm back into this camera.
-			// Done here rather than on the vision thread because the UI is
-			// what already holds both the fused result and every camera's
-			// calibration.
-			ForearmOverlay overlay;
-			const CameraProfile& profile= config->camera(cameraIndex);
-			if (profile.intrinsics.present && profile.extrinsics.present)
-			{
-				const glm::dmat4 cameraFromWorld= glm::inverse(profile.extrinsics.markerFromCamera);
-				const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
-
-				auto projectToImage= [&](const glm::vec3& worldPoint, ImVec2& outPixel) {
-					const glm::dvec4 cameraPoint= cameraFromWorld * glm::dvec4(glm::dvec3(worldPoint), 1.0);
-					if (cameraPoint.z < 1e-3)
-						return false;
-					outPixel= ImVec2((float)(cameraMatrix.x0 * cameraPoint.x / cameraPoint.z + cameraMatrix.z0),
-									 (float)(cameraMatrix.y1 * cameraPoint.y / cameraPoint.z + cameraMatrix.z1));
-					return true;
-				};
-
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					const HandPose& pose= m_latestFused.poses[sideIndex];
-					if (!pose.tracked || !pose.hasWorldPose || !pose.hasForearmPose)
-						continue;
-
-					const glm::vec3 wristWorld= pose.getWristPositionWorld();
-					const glm::vec3 elbowWorld=
-						pose.getElbowPositionWorld(config->body.forearmLengthMeters);
-					overlay.valid[sideIndex]= projectToImage(wristWorld, overlay.wristPx[sideIndex]) &&
-						projectToImage(elbowWorld, overlay.elbowPx[sideIndex]);
-				}
-			}
-			forearmOverlays.push_back(overlay);
+			// The fused (world-space) forearm projected back into this camera:
+			// the UI is what holds both the fused result and every camera's
+			// calibration
+			forearmOverlays.push_back(HandOverlay::makeForearmOverlay(
+				config->camera(cameraIndex), m_latestFused, config->body.forearmLengthMeters));
 		}
-		m_videoPreviewPanel->draw(previewResults, executionProviders, &forearmOverlays);
+		m_videoPreviewPanel->draw(perCameraResults, executionProviders, &forearmOverlays);
 	}
 
 	// 3D scene: fused skeleton + all calibrated camera frustums. In replay
 	// view the whole feed comes from the timeline's scrub position instead,
 	// with the frustums built from the RECORDING's config snapshot.
+	m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 	if (m_timelinePanel->isReplayViewActive())
 	{
-		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
 							 m_timelinePanel->getPerCameraResults());
 	}
 	else
 	{
-		std::vector<SceneCameraView> sceneCameras;
-		std::vector<const TrackingFrameResult*> perCameraResults;
-		for (int cameraIndex= 0; cameraIndex < cameraCount; ++cameraIndex)
-		{
-			const CameraProfile& profile= config->camera(cameraIndex);
-			SceneCameraView view;
-			// markerFromCamera maps OpenCV-convention camera space -> world
-			// (Scene3dPanel applies the GL flip for the frustum itself)
-			view.cameraToWorld= glm::mat4(profile.extrinsics.markerFromCamera);
-			view.bHasExtrinsics= profile.extrinsics.present;
-			view.intrinsics= profile.intrinsics.present ? &profile.intrinsics.intrinsics : nullptr;
-			sceneCameras.push_back(view);
-
-			perCameraResults.push_back(
-				m_latestPreviews[cameraIndex].valid ? &m_latestPreviews[cameraIndex].result : nullptr);
-		}
-		m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
-		m_scene3dPanel->draw(m_latestFused, sceneCameras, perCameraResults);
+		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults);
 	}
 
 	// Wizards (drawn last, on top). They consume THEIR camera's per-camera

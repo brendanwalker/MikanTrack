@@ -517,18 +517,7 @@ void TimelinePanel::rebuildDisplayFrame()
 
 std::vector<SceneCameraView> TimelinePanel::getSceneCameras() const
 {
-	std::vector<SceneCameraView> cameras;
-	const AppConfig& config= m_replay.getRecordedConfig();
-	for (size_t cameraIndex= 0; cameraIndex < config.cameraCount(); ++cameraIndex)
-	{
-		const CameraProfile& profile= config.camera(cameraIndex);
-		SceneCameraView view;
-		view.cameraToWorld= glm::mat4(profile.extrinsics.markerFromCamera);
-		view.bHasExtrinsics= profile.extrinsics.present;
-		view.intrinsics= profile.intrinsics.present ? &profile.intrinsics.intrinsics : nullptr;
-		cameras.push_back(view);
-	}
-	return cameras;
+	return makeSceneCameraViews(m_replay.getRecordedConfig());
 }
 
 std::vector<const TrackingFrameResult*> TimelinePanel::getPerCameraResults() const

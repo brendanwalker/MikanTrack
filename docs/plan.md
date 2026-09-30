@@ -14,7 +14,6 @@ The living plan: what is in flight now, what comes next, and the open questions.
 Code cleanup pass, one concern per commit.
 
 - [ ] `MainWindow::update` decoupling. It interleaves deferred project-state transitions, the vision-thread data pull, the F9/F10 hotkeys, dockspace and menu drawing, panel drawing, wizard launch requests, focus management, the forearm overlay projection, scene camera construction, and the wizard update chain. Split along those seams:
-	- [ ] Extract the forearm overlay projection and the scene camera view construction into free functions of the config and the fused result
 	- [ ] Replace the wizard update chain with one active-wizard host owning the launch-request flags, the mutual exclusion, and the Video Preview focus rising edge
 	- [ ] Let `DevicePanel` register the capture-system hotplug callbacks itself instead of `MainWindow` relaying them
 - [ ] `VisionThread` decomposition. `threadLoop` becomes a sequence of stage classes alongside the `CameraContext` capture and inference stage (fusion, IMU forearm fill, body solve, output, calibration captures, diagnostics and recording). Stages are stateless over `VisionThread`: the handoff state (mutexes, atomics, fetch accessors) stays on `VisionThread` and each stage receives what it needs by reference. The recording taps are the constraint: the checksum point stays immediately after `fuse`, and `--replay-verify` on the existing recordings is the acceptance test.

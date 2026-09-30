@@ -9,6 +9,7 @@
 #include "glm/ext/matrix_transform.hpp"
 #include "glm/gtc/constants.hpp"
 
+#include "AppConfig.h"
 #include "Colors.h"
 #include "DebugDraw.h"
 #include "GlFrameBuffer.h"
@@ -240,4 +241,19 @@ void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std
 	m_lineRenderer->render3d(m_camera->getViewProjection());
 
 	m_frameBuffer->unbindFrameBuffer();
+}
+
+std::vector<SceneCameraView> makeSceneCameraViews(const AppConfig& config)
+{
+	std::vector<SceneCameraView> cameras;
+	for (size_t cameraIndex= 0; cameraIndex < config.cameraCount(); ++cameraIndex)
+	{
+		const CameraProfile& profile= config.camera(cameraIndex);
+		SceneCameraView view;
+		view.cameraToWorld= glm::mat4(profile.extrinsics.markerFromCamera);
+		view.bHasExtrinsics= profile.extrinsics.present;
+		view.intrinsics= profile.intrinsics.present ? &profile.intrinsics.intrinsics : nullptr;
+		cameras.push_back(view);
+	}
+	return cameras;
 }

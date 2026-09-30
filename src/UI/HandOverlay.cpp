@@ -1,5 +1,10 @@
 #include "HandOverlay.h"
 
+#include "glm/ext/matrix_double4x4.hpp"
+#include "glm/matrix.hpp"
+
+#include "AppConfig.h"
+
 static const ImU32 k_leftHandColor= IM_COL32(80, 160, 255, 255);   // blue
 static const ImU32 k_rightHandColor= IM_COL32(255, 96, 96, 255);   // red
 static const ImU32 k_jointColor= IM_COL32(255, 255, 255, 220);
@@ -157,4 +162,37 @@ void HandOverlay::drawForearmOverlay(ImDrawList* drawList, const ForearmOverlay&
 		drawList->AddCircle(elbow, 7.f, color, 12, 2.f);
 		drawList->AddCircleFilled(elbow, 2.5f, color);
 	}
+}
+
+ForearmOverlay HandOverlay::makeForearmOverlay(const CameraProfile& profile, const TrackingFrameResult& fused,
+											   float forearmLengthMeters)
+{
+	ForearmOverlay overlay;
+	if (!profile.intrinsics.present || !profile.extrinsics.present)
+		return overlay;
+
+	const glm::dmat4 cameraFromWorld= glm::inverse(profile.extrinsics.markerFromCamera);
+	const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
+
+	auto projectToImage= [&](const glm::vec3& worldPoint, ImVec2& outPixel) {
+		const glm::dvec4 cameraPoint= cameraFromWorld * glm::dvec4(glm::dvec3(worldPoint), 1.0);
+		if (cameraPoint.z < 1e-3)
+			return false;
+		outPixel= ImVec2((float)(cameraMatrix.x0 * cameraPoint.x / cameraPoint.z + cameraMatrix.z0),
+						 (float)(cameraMatrix.y1 * cameraPoint.y / cameraPoint.z + cameraMatrix.z1));
+		return true;
+	};
+
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const HandPose& pose= fused.poses[sideIndex];
+		if (!pose.tracked || !pose.hasWorldPose || !pose.hasForearmPose)
+			continue;
+
+		const glm::vec3 wristWorld= pose.getWristPositionWorld();
+		const glm::vec3 elbowWorld= pose.getElbowPositionWorld(forearmLengthMeters);
+		overlay.valid[sideIndex]= projectToImage(wristWorld, overlay.wristPx[sideIndex]) &&
+			projectToImage(elbowWorld, overlay.elbowPx[sideIndex]);
+	}
+	return overlay;
 }

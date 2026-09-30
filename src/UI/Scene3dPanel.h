@@ -7,6 +7,7 @@
 
 #include "TrackingTypes.h"
 
+class AppConfig;
 class GlFrameBuffer;
 class GlLineRenderer;
 class OrbitCamera;
@@ -21,6 +22,11 @@ struct SceneCameraView
 	bool bHasExtrinsics= false;
 	const MikanMonoIntrinsics* intrinsics= nullptr;
 };
+
+// One view per configured camera, from the profiles' calibration.
+// markerFromCamera maps OpenCV-convention camera space to world; the panel
+// applies the GL flip for the frustum itself.
+std::vector<SceneCameraView> makeSceneCameraViews(const AppConfig& config);
 
 // Alternate 3D view: renders the marker-plane grid, marker axes, one frustum
 // per calibrated camera, the FUSED hand/arm skeletons (full brightness) and

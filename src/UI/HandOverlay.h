@@ -4,6 +4,8 @@
 
 #include "TrackingTypes.h"
 
+struct CameraProfile;
+
 // Draws the tracked-hand wireframes, forearm lines and detection debug boxes
 // over the video image using an ImGui draw list.
 //
@@ -33,6 +35,13 @@ struct ForearmOverlay
 
 namespace HandOverlay
 {
+// Projects the fused world-space forearm (wrist and elbow) into one camera's
+// undistorted image. A side stays invalid unless its pose is tracked with a
+// world pose and a forearm pose, and everything stays invalid when the
+// camera lacks intrinsics or extrinsics.
+ForearmOverlay makeForearmOverlay(const CameraProfile& profile, const TrackingFrameResult& fused,
+								  float forearmLengthMeters);
+
 void drawTrackingResult(ImDrawList* drawList, const TrackingFrameResult& result, const ImageToScreenMapping& mapping,
 						bool bShowDetectionBoxes);
 
