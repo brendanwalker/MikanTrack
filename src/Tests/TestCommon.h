@@ -41,6 +41,7 @@
 #include "HandFusion.h"
 #include "HandPoseModel.h"
 #include "HandRoiQuality.h"
+#include "LumaFlickerTracker.h"
 #include "HandTrackingPipeline.h"
 #include "ImuOrientationFilter.h"
 #include "ImuService.h"

@@ -15,7 +15,7 @@
 #include "HandBoneCalibrator.h"
 #include "HandPoseModel.h"
 #include "HandFusion.h" // CameraFrameResult
-#include "HandRoiQuality.h" // LumaFlickerTracker
+#include "LumaFlickerTracker.h"
 #include "TrackingRecorder.h"
 #include "TrackingTypes.h"
 

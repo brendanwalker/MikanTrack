@@ -8,6 +8,7 @@
 #include "AppConfig.h"
 #include "BodyPoseTracker.h"
 #include "CVVideoFrameProcessor.h"
+#include "HandRoiQuality.h"
 #include "HandTrackingPipeline.h"
 #include "LandmarkTo3D.h"
 #include "Logger.h"
