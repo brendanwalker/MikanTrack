@@ -457,19 +457,18 @@ void VisionThread::refreshConfigOnThread()
 	}
 }
 
+// -- The frame loop ---------------------------------------------------------
+//
+// One iteration is a fixed sequence of stages. The stages are methods rather
+// than objects: every handoff to the main thread (mutexes, atomics, fetch
+// accessors) stays on VisionThread, and a stage reads and writes the
+// iteration's scratch through IterationState. The recording taps are pinned:
+// the fused checksum is taken immediately after fuse(), before the IMU fill,
+// which is the point replay checksums at.
+
 void VisionThread::threadLoop()
 {
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread started";
-
-	std::vector<const CameraFrameResult*> fusionCandidates;
-
-	// Previous iteration's fused world result, used to seed cross-camera
-	// search hints (vision-thread-local; the published copy is mutex-guarded)
-	TrackingFrameResult lastFusedForHints;
-	// Previous fuse timestamp, for the anatomical roll trim's step size
-
-	// Latest published output (world OR camera space) for diagnostic dumps
-	TrackingFrameResult lastOutputResult;
 
 	// Per-phase timing for the hitch watchdog, reset each iteration
 	double phaseMs[(int)eVisionPhase::Count]= {};
@@ -480,54 +479,26 @@ void VisionThread::threadLoop()
 		for (double& phase : phaseMs)
 			phase= 0.0;
 		double phaseMarkMs= iterationStartMs;
+		auto lapPhase= [&](eVisionPhase phase) {
+			const double nowMs= steadyNowMs();
+			phaseMs[(int)phase]+= nowMs - phaseMarkMs;
+			phaseMarkMs= nowMs;
+		};
 
-		if (m_bConfigRefreshRequested.exchange(false))
-		{
-			// A refresh wipes fusion inputs and resets fusion state - a hard
-			// discontinuity the recording's header snapshot cannot describe
-			finalizeRecordingOnThread(false, "config changed");
-			refreshConfigOnThread();
-		}
-		if (m_bRecordingStopRequested.exchange(false))
-			finalizeRecordingOnThread(false, "");
-		// Start AFTER any refresh so the header snapshot reflects it
-		if (m_bRecordingStartRequested.exchange(false))
-			handleRecordingStartOnThread();
+		IterationState iteration;
 
-		phaseMs[(int)eVisionPhase::ConfigRefresh]= steadyNowMs() - phaseMarkMs;
-		phaseMarkMs= steadyNowMs();
+		servicePendingRequests();
+		lapPhase(eVisionPhase::ConfigRefresh);
 
-		// Process whichever cameras have a new frame (sequential; DirectML
-		// serializes on one GPU queue anyway)
-		// The recording taps inside process() are live only while a recording
-		// is active; both recorders can only change state above this point
-		const bool bRecordingInputs= m_recorder != nullptr && m_recorder->isRecording();
-		FrameRecorder* frameRecorder=
-			m_frameRecorder != nullptr && m_frameRecorder->isRecording() ? m_frameRecorder.get() : nullptr;
+		runCaptureStage(iteration);
+		lapPhase(eVisionPhase::Capture);
 
-		bool bAnyNewResult= false;
-		float inferenceMsSum= 0.f;
-		double newestTimestampMs= 0.0;
-		for (std::unique_ptr<CameraContext>& context : m_cameras)
-		{
-			if (context->process(m_videoCapture, m_cameras.size() > 1 ? &lastFusedForHints : nullptr,
-								 m_autoScaleFactor.load(), bRecordingInputs, frameRecorder))
-			{
-				bAnyNewResult= true;
-				inferenceMsSum+= context->getLastResult().result.inferenceMs;
-			}
-			newestTimestampMs= std::max(newestTimestampMs, context->getLastResult().timestampMs);
-		}
-
-		phaseMs[(int)eVisionPhase::Capture]= steadyNowMs() - phaseMarkMs;
-		phaseMarkMs= steadyNowMs();
-
-		if (!bAnyNewResult)
+		if (!iteration.bAnyNewResult)
 		{
 			// Still service dump requests while idle (cameras may be stopped)
 			if (m_bDumpRequested.exchange(false))
-				performDiagnosticDump(lastOutputResult);
-			phaseMs[(int)eVisionPhase::Diagnostics]= steadyNowMs() - phaseMarkMs;
+				performDiagnosticDump(m_lastOutputResult);
+			lapPhase(eVisionPhase::Diagnostics);
 
 			// The idle sleep below is not a hitch, but a slow config refresh or
 			// dump write on this path still starves the cameras
@@ -537,355 +508,27 @@ void VisionThread::threadLoop()
 			continue;
 		}
 
-		m_lastInferenceMs= inferenceMsSum;
+		runFusionStage(iteration);
+		lapPhase(eVisionPhase::Fusion);
 
-		// Fuse the cameras' world-space results (single fresh candidate
-		// passes through exactly; stale/uncalibrated cameras are excluded)
-		fusionCandidates.clear();
-		bool bAnyWorldCandidate= false;
-		for (const std::unique_ptr<CameraContext>& context : m_cameras)
+		if (iteration.bAnyWorldCandidate)
 		{
-			const CameraFrameResult& lastResult= context->getLastResult();
-			fusionCandidates.push_back(&lastResult);
-			bAnyWorldCandidate|= lastResult.valid && lastResult.hasExtrinsics;
+			runImuStage(iteration);
+			lapPhase(eVisionPhase::Imu);
+
+			// The body solve and the fusion bookkeeping belong to the fusion
+			// phase
+			runBodySolveStage(iteration);
+			lapPhase(eVisionPhase::Fusion);
 		}
 
-		RecordedFrame recordFrame;
-		const bool bRecordingThisFrame= m_recorder != nullptr && m_recorder->isRecording();
+		runOutputStage(iteration);
+		lapPhase(eVisionPhase::Osc);
 
-		TrackingFrameResult outputResult;
-		if (bAnyWorldCandidate)
-		{
-			m_fusion.fuse(fusionCandidates, newestTimestampMs, outputResult);
+		runCalibrationCaptures();
+		runDiagnosticsStage(iteration);
+		lapPhase(eVisionPhase::Diagnostics);
 
-			// Recording: fused output + checksum, PRE-IMU (the forearm fill
-			// below mutates the poses; replay checksums at this same point)
-			if (bRecordingThisFrame)
-			{
-				recordFrame.bFused= true;
-				TrackingRecording::snapshotFusedOutput(outputResult, recordFrame.outPoses);
-				recordFrame.checksum= TrackingRecording::computeFusedChecksum(outputResult);
-			}
-
-			phaseMs[(int)eVisionPhase::Fusion]= steadyNowMs() - phaseMarkMs;
-			phaseMarkMs= steadyNowMs();
-
-			// -- Wrist IMU ---------------------------------------------
-			// Integrate every buffered inertial sample (they carry their own
-			// timestamps, so running at camera rate loses no information),
-			// then let the fused palm orientation anchor yaw, then publish
-			// the forearm orientation onto the pose.
-			if (m_bImuMotionRecordingRequested.exchange(false))
-			{
-				const eMountingMotion motion= (eMountingMotion)m_requestedImuMotionRecording.load();
-				if (motion == eMountingMotion::None)
-					m_imuService->endMotionRecording();
-				else
-					m_imuService->beginMotionRecording(motion);
-			}
-			if (m_bImuBiasCalibrationRequested.exchange(false))
-				m_imuService->beginBiasCalibration();
-			if (m_bImuBiasCancelRequested.exchange(false))
-				m_imuService->cancelBiasCalibration();
-			m_imuService->update();
-
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				const HandPose& pose= outputResult.poses[sideIndex];
-				if (pose.tracked && pose.hasWorldPose)
-				{
-					m_imuService->applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
-
-					// Feeds the mounting average. Runs every tracked frame
-					// rather than only during the wizard, so a capture always
-					// has a populated window behind it.
-					m_imuService->accumulatePoseMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
-													   pose.confidence);
-
-					// Health check on the mounting's roll: the wrist cannot
-					// rotate about the forearm's long axis, so any axial
-					// component of the measured joint is calibration error
-					m_imuService->updateWristAxialResidual((eHandSide)sideIndex,
-														  pose.palmOrientationWorld, pose.confidence);
-				}
-			}
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				glm::quat forearmToWorld(1.f, 0.f, 0.f, 0.f);
-				if (m_imuService->getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
-				{
-					// The EKF owns this orientation outright - deliberately no
-					// additional smoothing, which would cascade two filters
-					// onto one signal
-					outputResult.poses[sideIndex].hasForearmPose= true;
-					outputResult.poses[sideIndex].forearmOrientationWorld= forearmToWorld;
-
-					// The elbow rides on both the palm position and the
-					// forearm direction, so it is only as good as the weaker
-					// of the two. Mounting quality is the one a consumer
-					// cannot see for itself: a bad mounting leaves the hand
-					// looking perfect while the elbow sweeps a cone.
-					const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
-					const float mountingQuality= status.forearmAxisConsistency < 0.f
-						// Not enough motion to score it yet. Treated as good
-						// because the calibration wizard refuses a mounting
-						// whose arm axis was not measurable in the first place.
-						? 1.f
-						: std::clamp(status.forearmAxisConsistency, 0.f, 1.f);
-					outputResult.poses[sideIndex].forearmConfidence=
-						outputResult.poses[sideIndex].confidence * mountingQuality;
-				}
-			}
-
-			// Recording: the published forearm output. The IMU EKF is not
-			// replayed (fusion never reads it); replay overlays these onto the
-			// replayed poses for display.
-			if (bRecordingThisFrame)
-			{
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					const HandPose& pose= outputResult.poses[sideIndex];
-					recordFrame.imu[sideIndex].hasForearmPose= pose.hasForearmPose;
-					recordFrame.imu[sideIndex].forearmOrientationWorld= pose.forearmOrientationWorld;
-					recordFrame.imu[sideIndex].forearmConfidence= pose.forearmConfidence;
-				}
-			}
-
-			// Mounting capture: needs a tracked palm AND a converged filter
-			if (m_bImuMountingCaptureRequested.exchange(false))
-			{
-				// No pose argument and no "is the hand tracked right now"
-				// test: the capture consumes the averaged window, so what
-				// matters is what was seen during the twist, not this instant
-				ImuMountingCapture capture;
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-					m_imuService->captureMounting((eHandSide)sideIndex, capture.sides[sideIndex]);
-
-				std::lock_guard<std::mutex> lock(m_imuMutex);
-				m_capturedImuMounting= capture;
-				m_bImuMountingReady= true;
-			}
-
-			{
-				std::lock_guard<std::mutex> lock(m_imuMutex);
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-					m_imuStatus[sideIndex]= m_imuService->getSideStatus((eHandSide)sideIndex);
-			}
-
-			phaseMs[(int)eVisionPhase::Imu]= steadyNowMs() - phaseMarkMs;
-			phaseMarkMs= steadyNowMs();
-
-			// Vision body pose: elbows for sides the IMU didn't claim, plus
-			// shoulders and head. Runs AFTER the IMU forearm fill (IMU wins)
-			// and after the IMU recording tap (so recordings keep pure IMU
-			// output and replay can re-run this solver for what-if A/Bs).
-			m_bodyPoseSolver.solve(fusionCandidates, makeBodyDimensions(*m_config), outputResult);
-
-			lastFusedForHints= outputResult;
-			m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
-			m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
-
-			// Publish per-camera observation confidence for the UI readout
-			for (std::atomic<float>& slot : m_observationConfidence)
-				slot= -1.f;
-			for (const FusionDiagnostics::Cluster& cluster : m_fusion.getLastDiagnostics().clusters)
-			{
-				if (cluster.assignedSide < 0)
-					continue;
-				for (const FusionDiagnostics::Observation& observation : cluster.observations)
-				{
-					if (observation.cameraIndex >= 0 && observation.cameraIndex < k_maxReportedCameras)
-						m_observationConfidence[observation.cameraIndex * 2 + cluster.assignedSide]=
-							observation.confidence;
-				}
-			}
-
-			// Stereo auto hand-scale: slow EMA over the triangulated
-			// correction, applied live to every camera's 3D projection.
-			// A calibrated skeleton supersedes it - that measurement IS the
-			// hand's geometry, and two mechanisms setting scale at once would
-			// only fight. The EMA stays for hands with no calibration.
-			const bool bBothSidesCalibrated=
-				m_config->handSkeleton.present[0] && m_config->handSkeleton.present[1];
-			float scaleSample= 1.f;
-			if (!bBothSidesCalibrated && m_fusion.getStereoScaleSample(scaleSample))
-			{
-				constexpr float kScaleEmaAlpha= 0.02f;
-				const float ema= m_autoScaleFactor.load() * (1.f - kScaleEmaAlpha) + scaleSample * kScaleEmaAlpha;
-				m_autoScaleFactor= ema;
-
-				const float effectiveRefLength= (float)m_config->handScale.refLengthMeters * ema;
-				for (const std::unique_ptr<CameraContext>& context : m_cameras)
-				{
-					context->setRefLengthMeters(effectiveRefLength);
-				}
-			}
-		}
-		else
-		{
-			// No calibrated camera: preserve the single-camera camera-space
-			// behavior (OSC announces space=camera) using camera 0's result
-			outputResult= m_cameras.empty() ? TrackingFrameResult() : m_cameras[0]->getLastResult().result;
-			lastFusedForHints= TrackingFrameResult(); // camera-space - can't project
-			m_dominantCamera[0]= -1;
-			m_dominantCamera[1]= -1;
-
-			// Recording: passthrough frames checksum too (replay reconstructs
-			// them from its own camera-0 mirror, so this still verifies the
-			// LandmarkTo3D stage)
-			if (bRecordingThisFrame)
-			{
-				recordFrame.bFused= false;
-				TrackingRecording::snapshotFusedOutput(outputResult, recordFrame.outPoses);
-				recordFrame.checksum= TrackingRecording::computeFusedChecksum(outputResult);
-			}
-		}
-
-		// Fusion bookkeeping after the IMU section (dominant camera, per-camera
-		// confidence publish, auto hand-scale) belongs to the fusion phase
-		phaseMs[(int)eVisionPhase::Fusion]+= steadyNowMs() - phaseMarkMs;
-		phaseMarkMs= steadyNowMs();
-
-		if (m_oscStreamer != nullptr)
-			m_oscStreamer->sendFrame(outputResult);
-
-		phaseMs[(int)eVisionPhase::Osc]= steadyNowMs() - phaseMarkMs;
-		phaseMarkMs= steadyNowMs();
-
-		// Publish the fused result (latest-wins)
-		{
-			std::lock_guard<std::mutex> lock(m_fusedMutex);
-			m_fusedResult= outputResult;
-			m_bFusedFresh= true;
-		}
-		lastOutputResult= outputResult;
-
-		// Bone calibration: accumulate the stereo-triangulated landmarks over
-		// an open window. Only triangulated frames carry measured geometry -
-		// a monocular pose is the landmark model's shape wearing a pose, which
-		// is exactly what this calibration exists to stop trusting.
-		if (m_bBoneCalibrationRequested.exchange(false))
-		{
-			m_boneCalibrator.reset();
-			m_boneCalibrationSamples[0]= 0;
-			m_boneCalibrationSamples[1]= 0;
-			m_boneCalibrationEndMs= steadyNowMs() + 1000.0 * (double)m_boneCalibrationSeconds.load();
-			m_bBoneCalibrationActive= true;
-		}
-		if (m_bBoneCalibrationCancelRequested.exchange(false) && m_bBoneCalibrationActive.load())
-		{
-			m_boneCalibrator.reset();
-			m_boneCalibrationSamples[0]= 0;
-			m_boneCalibrationSamples[1]= 0;
-			m_bBoneCalibrationActive= false;
-		}
-		if (m_bBoneCalibrationActive.load())
-		{
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				// Bones are measured from the TRIANGULATED landmarks, asked
-				// for explicitly: the streamed pose is built on a skeleton,
-				// so calibrating from it would re-measure the skeleton the
-				// estimator was already given rather than the user's hand.
-				std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
-				if (!m_fusion.getLastTriangulatedPoints((eHandSide)sideIndex, triPoints))
-					continue;
-
-				m_boneCalibrator.addSample((eHandSide)sideIndex, triPoints);
-				m_boneCalibrationSamples[sideIndex]= m_boneCalibrator.getSampleCount((eHandSide)sideIndex);
-			}
-
-			if (steadyNowMs() >= m_boneCalibrationEndMs)
-			{
-				BoneCalibrationCapture capture;
-				for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-				{
-					capture.bCaptured[sideIndex]= m_boneCalibrator.finish(
-						(eHandSide)sideIndex, capture.skeleton[sideIndex], capture.quality[sideIndex]);
-				}
-
-				{
-					std::lock_guard<std::mutex> lock(m_boneCalibrationMutex);
-					m_capturedBones= capture;
-					m_bBoneCalibrationReady= true;
-				}
-				m_bBoneCalibrationActive= false;
-			}
-		}
-
-		// Rest-pose capture: the zero reference is the RAW multi-view angles
-		// of the fuse that just ran (stereo-quality only - a monocular pose
-		// carries the model's view-dependent bias, which is exactly what a
-		// zero reference must not bake in)
-		if (m_bRestPoseCaptureRequested.exchange(false))
-		{
-			RestPoseCapture fusedCapture;
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				fusedCapture.bCaptured[sideIndex]=
-					m_fusion.getLastRawTriangulatedAngles((eHandSide)sideIndex,
-														  fusedCapture.angles[sideIndex]);
-			}
-
-			std::lock_guard<std::mutex> lock(m_restPoseMutex);
-			m_capturedFusedRest= fusedCapture;
-			m_bRestPoseReady= true;
-		}
-
-		// Diagnostic history (compact copies - cheap enough for every frame)
-		{
-			const int dominant[2]= {m_dominantCamera[0].load(), m_dominantCamera[1].load()};
-
-			DiagImuState imuStates[2];
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
-				DiagImuState& imuState= imuStates[sideIndex];
-				imuState.deviceConnected= status.deviceConnected;
-				imuState.streaming= status.streaming;
-				imuState.calibrated= status.calibrated;
-				imuState.orientationValid= status.orientationValid;
-				imuState.sampleRateHz= status.sampleRateHz;
-				imuState.millisecondsSinceLastSample= status.millisecondsSinceLastSample;
-				imuState.forearmAxisConsistency= status.forearmAxisConsistency;
-				imuState.armAxisDominance= status.armAxisDominance;
-				imuState.twistProgress= status.twistProgress;
-				imuState.twistReversal= status.twistReversal;
-				imuState.wristAxialTwistDegrees= status.wristAxialTwistDegrees;
-				imuState.gyroBiasDegreesPerSecond= status.gyroBiasDegreesPerSecond;
-				imuState.biasSaturated= status.biasSaturated;
-				imuState.yawSigmaRadians= status.yawSigmaRadians;
-				imuState.filterOrientation= status.filterOrientation;
-				imuState.tiltSigmaRadians= status.tiltSigmaRadians;
-				imuState.gravityAcceptRatio= status.gravityAcceptRatio;
-				imuState.visionYawCorrectionDegrees= status.visionYawCorrectionDegrees;
-			}
-
-			m_diagnostics.record(fusionCandidates, outputResult,
-								 bAnyWorldCandidate ? m_fusion.getLastDiagnostics() : FusionDiagnostics(),
-								 dominant, m_autoScaleFactor.load(), imuStates);
-		}
-
-		// Recording: assemble this iteration's record (the fresh cameras'
-		// staged inputs + the fused output taps above) and hand it to the
-		// writer thread
-		if (bRecordingThisFrame)
-		{
-			recordFrame.seq= m_recordingSeq++;
-			recordFrame.nowTimestampMs= newestTimestampMs;
-			for (std::unique_ptr<CameraContext>& context : m_cameras)
-			{
-				RecordedCameraInput input;
-				if (context->consumePendingRecordInput(input))
-					recordFrame.freshCameras.push_back(std::move(input));
-			}
-			m_recorder->enqueueFrame(std::move(recordFrame));
-		}
-
-		if (m_bDumpRequested.exchange(false))
-			performDiagnosticDump(lastOutputResult);
-
-		phaseMs[(int)eVisionPhase::Diagnostics]= steadyNowMs() - phaseMarkMs;
 		reportHitchIfSlow(steadyNowMs() - iterationStartMs, phaseMs);
 	}
 
@@ -897,4 +540,394 @@ void VisionThread::threadLoop()
 	m_oscStreamer= nullptr;
 
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread stopped";
+}
+
+void VisionThread::servicePendingRequests()
+{
+	if (m_bConfigRefreshRequested.exchange(false))
+	{
+		// A refresh wipes fusion inputs and resets fusion state - a hard
+		// discontinuity the recording's header snapshot cannot describe
+		finalizeRecordingOnThread(false, "config changed");
+		refreshConfigOnThread();
+	}
+	if (m_bRecordingStopRequested.exchange(false))
+		finalizeRecordingOnThread(false, "");
+	// Start AFTER any refresh so the header snapshot reflects it
+	if (m_bRecordingStartRequested.exchange(false))
+		handleRecordingStartOnThread();
+}
+
+void VisionThread::runCaptureStage(IterationState& iteration)
+{
+	// Process whichever cameras have a new frame (sequential; DirectML
+	// serializes on one GPU queue anyway)
+	// The recording taps inside process() are live only while a recording
+	// is active; both recorders can only change state in the request stage
+	const bool bRecordingInputs= m_recorder != nullptr && m_recorder->isRecording();
+	FrameRecorder* frameRecorder=
+		m_frameRecorder != nullptr && m_frameRecorder->isRecording() ? m_frameRecorder.get() : nullptr;
+
+	float inferenceMsSum= 0.f;
+	for (std::unique_ptr<CameraContext>& context : m_cameras)
+	{
+		if (context->process(m_videoCapture, m_cameras.size() > 1 ? &m_lastFusedForHints : nullptr,
+							 m_autoScaleFactor.load(), bRecordingInputs, frameRecorder))
+		{
+			iteration.bAnyNewResult= true;
+			inferenceMsSum+= context->getLastResult().result.inferenceMs;
+		}
+		iteration.newestTimestampMs=
+			std::max(iteration.newestTimestampMs, context->getLastResult().timestampMs);
+	}
+
+	if (iteration.bAnyNewResult)
+		m_lastInferenceMs= inferenceMsSum;
+}
+
+void VisionThread::runFusionStage(IterationState& iteration)
+{
+	// Fuse the cameras' world-space results (single fresh candidate passes
+	// through exactly; stale/uncalibrated cameras are excluded)
+	for (const std::unique_ptr<CameraContext>& context : m_cameras)
+	{
+		const CameraFrameResult& lastResult= context->getLastResult();
+		iteration.fusionCandidates.push_back(&lastResult);
+		iteration.bAnyWorldCandidate|= lastResult.valid && lastResult.hasExtrinsics;
+	}
+
+	iteration.bRecordingThisFrame= m_recorder != nullptr && m_recorder->isRecording();
+
+	if (iteration.bAnyWorldCandidate)
+	{
+		m_fusion.fuse(iteration.fusionCandidates, iteration.newestTimestampMs, iteration.outputResult);
+
+		// Recording: fused output + checksum, PRE-IMU (the forearm fill in the
+		// IMU stage mutates the poses; replay checksums at this same point)
+		if (iteration.bRecordingThisFrame)
+		{
+			iteration.recordFrame.bFused= true;
+			TrackingRecording::snapshotFusedOutput(iteration.outputResult, iteration.recordFrame.outPoses);
+			iteration.recordFrame.checksum= TrackingRecording::computeFusedChecksum(iteration.outputResult);
+		}
+	}
+	else
+	{
+		// No calibrated camera: preserve the single-camera camera-space
+		// behavior (OSC announces space=camera) using camera 0's result
+		iteration.outputResult=
+			m_cameras.empty() ? TrackingFrameResult() : m_cameras[0]->getLastResult().result;
+		m_lastFusedForHints= TrackingFrameResult(); // camera-space - can't project
+		m_dominantCamera[0]= -1;
+		m_dominantCamera[1]= -1;
+
+		// Recording: passthrough frames checksum too (replay reconstructs
+		// them from its own camera-0 mirror, so this still verifies the
+		// LandmarkTo3D stage)
+		if (iteration.bRecordingThisFrame)
+		{
+			iteration.recordFrame.bFused= false;
+			TrackingRecording::snapshotFusedOutput(iteration.outputResult, iteration.recordFrame.outPoses);
+			iteration.recordFrame.checksum= TrackingRecording::computeFusedChecksum(iteration.outputResult);
+		}
+	}
+}
+
+void VisionThread::runImuStage(IterationState& iteration)
+{
+	// Integrate every buffered inertial sample (they carry their own
+	// timestamps, so running at camera rate loses no information), then let
+	// the fused palm orientation anchor yaw, then publish the forearm
+	// orientation onto the pose.
+	TrackingFrameResult& outputResult= iteration.outputResult;
+
+	if (m_bImuMotionRecordingRequested.exchange(false))
+	{
+		const eMountingMotion motion= (eMountingMotion)m_requestedImuMotionRecording.load();
+		if (motion == eMountingMotion::None)
+			m_imuService->endMotionRecording();
+		else
+			m_imuService->beginMotionRecording(motion);
+	}
+	if (m_bImuBiasCalibrationRequested.exchange(false))
+		m_imuService->beginBiasCalibration();
+	if (m_bImuBiasCancelRequested.exchange(false))
+		m_imuService->cancelBiasCalibration();
+	m_imuService->update();
+
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const HandPose& pose= outputResult.poses[sideIndex];
+		if (pose.tracked && pose.hasWorldPose)
+		{
+			m_imuService->applyVisionPalmOrientation((eHandSide)sideIndex, pose.palmOrientationWorld);
+
+			// Feeds the mounting average. Runs every tracked frame rather
+			// than only during the wizard, so a capture always has a
+			// populated window behind it.
+			m_imuService->accumulatePoseMounting((eHandSide)sideIndex, pose.palmOrientationWorld,
+												 pose.confidence);
+
+			// Health check on the mounting's roll: the wrist cannot rotate
+			// about the forearm's long axis, so any axial component of the
+			// measured joint is calibration error
+			m_imuService->updateWristAxialResidual((eHandSide)sideIndex, pose.palmOrientationWorld,
+												   pose.confidence);
+		}
+	}
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		glm::quat forearmToWorld(1.f, 0.f, 0.f, 0.f);
+		if (m_imuService->getForearmOrientation((eHandSide)sideIndex, forearmToWorld))
+		{
+			// The EKF owns this orientation outright - deliberately no
+			// additional smoothing, which would cascade two filters onto one
+			// signal
+			outputResult.poses[sideIndex].hasForearmPose= true;
+			outputResult.poses[sideIndex].forearmOrientationWorld= forearmToWorld;
+
+			// The elbow rides on both the palm position and the forearm
+			// direction, so it is only as good as the weaker of the two.
+			// Mounting quality is the one a consumer cannot see for itself: a
+			// bad mounting leaves the hand looking perfect while the elbow
+			// sweeps a cone.
+			const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
+			const float mountingQuality= status.forearmAxisConsistency < 0.f
+				// Not enough motion to score it yet. Treated as good because
+				// the calibration wizard refuses a mounting whose arm axis
+				// was not measurable in the first place.
+				? 1.f
+				: std::clamp(status.forearmAxisConsistency, 0.f, 1.f);
+			outputResult.poses[sideIndex].forearmConfidence=
+				outputResult.poses[sideIndex].confidence * mountingQuality;
+		}
+	}
+
+	// Recording: the published forearm output. The IMU EKF is not replayed
+	// (fusion never reads it); replay overlays these onto the replayed poses
+	// for display.
+	if (iteration.bRecordingThisFrame)
+	{
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const HandPose& pose= outputResult.poses[sideIndex];
+			iteration.recordFrame.imu[sideIndex].hasForearmPose= pose.hasForearmPose;
+			iteration.recordFrame.imu[sideIndex].forearmOrientationWorld= pose.forearmOrientationWorld;
+			iteration.recordFrame.imu[sideIndex].forearmConfidence= pose.forearmConfidence;
+		}
+	}
+
+	// Mounting capture: needs a tracked palm AND a converged filter
+	if (m_bImuMountingCaptureRequested.exchange(false))
+	{
+		// No pose argument and no "is the hand tracked right now" test: the
+		// capture consumes the averaged window, so what matters is what was
+		// seen during the twist, not this instant
+		ImuMountingCapture capture;
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			m_imuService->captureMounting((eHandSide)sideIndex, capture.sides[sideIndex]);
+
+		std::lock_guard<std::mutex> lock(m_imuMutex);
+		m_capturedImuMounting= capture;
+		m_bImuMountingReady= true;
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(m_imuMutex);
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			m_imuStatus[sideIndex]= m_imuService->getSideStatus((eHandSide)sideIndex);
+	}
+}
+
+void VisionThread::runBodySolveStage(IterationState& iteration)
+{
+	// Vision body pose: elbows for sides the IMU didn't claim, plus shoulders
+	// and head. Runs AFTER the IMU forearm fill (IMU wins) and after the IMU
+	// recording tap (so recordings keep pure IMU output and replay can re-run
+	// this solver for what-if A/Bs).
+	m_bodyPoseSolver.solve(iteration.fusionCandidates, makeBodyDimensions(*m_config), iteration.outputResult);
+
+	// Fusion bookkeeping: the seed for the next iteration's search hints, the
+	// dominant camera and per-camera confidence for the UI readout, and the
+	// stereo auto hand-scale
+	m_lastFusedForHints= iteration.outputResult;
+	m_dominantCamera[0]= m_fusion.getDominantCamera(eHandSide::Left);
+	m_dominantCamera[1]= m_fusion.getDominantCamera(eHandSide::Right);
+
+	for (std::atomic<float>& slot : m_observationConfidence)
+		slot= -1.f;
+	for (const FusionDiagnostics::Cluster& cluster : m_fusion.getLastDiagnostics().clusters)
+	{
+		if (cluster.assignedSide < 0)
+			continue;
+		for (const FusionDiagnostics::Observation& observation : cluster.observations)
+		{
+			if (observation.cameraIndex >= 0 && observation.cameraIndex < k_maxReportedCameras)
+				m_observationConfidence[observation.cameraIndex * 2 + cluster.assignedSide]=
+					observation.confidence;
+		}
+	}
+
+	// Stereo auto hand-scale: slow EMA over the triangulated correction,
+	// applied live to every camera's 3D projection. A calibrated skeleton
+	// supersedes it - that measurement IS the hand's geometry, and two
+	// mechanisms setting scale at once would only fight. The EMA stays for
+	// hands with no calibration.
+	const bool bBothSidesCalibrated=
+		m_config->handSkeleton.present[0] && m_config->handSkeleton.present[1];
+	float scaleSample= 1.f;
+	if (!bBothSidesCalibrated && m_fusion.getStereoScaleSample(scaleSample))
+	{
+		constexpr float kScaleEmaAlpha= 0.02f;
+		const float ema= m_autoScaleFactor.load() * (1.f - kScaleEmaAlpha) + scaleSample * kScaleEmaAlpha;
+		m_autoScaleFactor= ema;
+
+		const float effectiveRefLength= (float)m_config->handScale.refLengthMeters * ema;
+		for (const std::unique_ptr<CameraContext>& context : m_cameras)
+			context->setRefLengthMeters(effectiveRefLength);
+	}
+}
+
+void VisionThread::runOutputStage(IterationState& iteration)
+{
+	if (m_oscStreamer != nullptr)
+		m_oscStreamer->sendFrame(iteration.outputResult);
+
+	// Publish the result (latest-wins)
+	{
+		std::lock_guard<std::mutex> lock(m_fusedMutex);
+		m_fusedResult= iteration.outputResult;
+		m_bFusedFresh= true;
+	}
+	m_lastOutputResult= iteration.outputResult;
+}
+
+void VisionThread::runCalibrationCaptures()
+{
+	// Bone calibration: accumulate the stereo-triangulated landmarks over an
+	// open window. Only triangulated frames carry measured geometry - a
+	// monocular pose is the landmark model's shape wearing a pose, which is
+	// exactly what this calibration exists to stop trusting.
+	if (m_bBoneCalibrationRequested.exchange(false))
+	{
+		m_boneCalibrator.reset();
+		m_boneCalibrationSamples[0]= 0;
+		m_boneCalibrationSamples[1]= 0;
+		m_boneCalibrationEndMs= steadyNowMs() + 1000.0 * (double)m_boneCalibrationSeconds.load();
+		m_bBoneCalibrationActive= true;
+	}
+	if (m_bBoneCalibrationCancelRequested.exchange(false) && m_bBoneCalibrationActive.load())
+	{
+		m_boneCalibrator.reset();
+		m_boneCalibrationSamples[0]= 0;
+		m_boneCalibrationSamples[1]= 0;
+		m_bBoneCalibrationActive= false;
+	}
+	if (m_bBoneCalibrationActive.load())
+	{
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			// Bones are measured from the TRIANGULATED landmarks, asked for
+			// explicitly: the streamed pose is built on a skeleton, so
+			// calibrating from it would re-measure the skeleton the estimator
+			// was already given rather than the user's hand.
+			std::array<glm::vec3, HAND_LANDMARK_COUNT> triPoints;
+			if (!m_fusion.getLastTriangulatedPoints((eHandSide)sideIndex, triPoints))
+				continue;
+
+			m_boneCalibrator.addSample((eHandSide)sideIndex, triPoints);
+			m_boneCalibrationSamples[sideIndex]= m_boneCalibrator.getSampleCount((eHandSide)sideIndex);
+		}
+
+		if (steadyNowMs() >= m_boneCalibrationEndMs)
+		{
+			BoneCalibrationCapture capture;
+			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+			{
+				capture.bCaptured[sideIndex]= m_boneCalibrator.finish(
+					(eHandSide)sideIndex, capture.skeleton[sideIndex], capture.quality[sideIndex]);
+			}
+
+			{
+				std::lock_guard<std::mutex> lock(m_boneCalibrationMutex);
+				m_capturedBones= capture;
+				m_bBoneCalibrationReady= true;
+			}
+			m_bBoneCalibrationActive= false;
+		}
+	}
+
+	// Rest-pose capture: the zero reference is the RAW multi-view angles of
+	// the fuse that just ran (stereo-quality only - a monocular pose carries
+	// the model's view-dependent bias, which is exactly what a zero reference
+	// must not bake in)
+	if (m_bRestPoseCaptureRequested.exchange(false))
+	{
+		RestPoseCapture fusedCapture;
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			fusedCapture.bCaptured[sideIndex]=
+				m_fusion.getLastRawTriangulatedAngles((eHandSide)sideIndex, fusedCapture.angles[sideIndex]);
+		}
+
+		std::lock_guard<std::mutex> lock(m_restPoseMutex);
+		m_capturedFusedRest= fusedCapture;
+		m_bRestPoseReady= true;
+	}
+}
+
+void VisionThread::runDiagnosticsStage(IterationState& iteration)
+{
+	// Diagnostic history (compact copies - cheap enough for every frame)
+	{
+		const int dominant[2]= {m_dominantCamera[0].load(), m_dominantCamera[1].load()};
+
+		DiagImuState imuStates[2];
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const ImuSideStatus status= m_imuService->getSideStatus((eHandSide)sideIndex);
+			DiagImuState& imuState= imuStates[sideIndex];
+			imuState.deviceConnected= status.deviceConnected;
+			imuState.streaming= status.streaming;
+			imuState.calibrated= status.calibrated;
+			imuState.orientationValid= status.orientationValid;
+			imuState.sampleRateHz= status.sampleRateHz;
+			imuState.millisecondsSinceLastSample= status.millisecondsSinceLastSample;
+			imuState.forearmAxisConsistency= status.forearmAxisConsistency;
+			imuState.armAxisDominance= status.armAxisDominance;
+			imuState.twistProgress= status.twistProgress;
+			imuState.twistReversal= status.twistReversal;
+			imuState.wristAxialTwistDegrees= status.wristAxialTwistDegrees;
+			imuState.gyroBiasDegreesPerSecond= status.gyroBiasDegreesPerSecond;
+			imuState.biasSaturated= status.biasSaturated;
+			imuState.yawSigmaRadians= status.yawSigmaRadians;
+			imuState.filterOrientation= status.filterOrientation;
+			imuState.tiltSigmaRadians= status.tiltSigmaRadians;
+			imuState.gravityAcceptRatio= status.gravityAcceptRatio;
+			imuState.visionYawCorrectionDegrees= status.visionYawCorrectionDegrees;
+		}
+
+		m_diagnostics.record(iteration.fusionCandidates, iteration.outputResult,
+							 iteration.bAnyWorldCandidate ? m_fusion.getLastDiagnostics() : FusionDiagnostics(),
+							 dominant, m_autoScaleFactor.load(), imuStates);
+	}
+
+	// Recording: assemble this iteration's record (the fresh cameras' staged
+	// inputs + the fused output taps above) and hand it to the writer thread
+	if (iteration.bRecordingThisFrame)
+	{
+		RecordedFrame& recordFrame= iteration.recordFrame;
+		recordFrame.seq= m_recordingSeq++;
+		recordFrame.nowTimestampMs= iteration.newestTimestampMs;
+		for (std::unique_ptr<CameraContext>& context : m_cameras)
+		{
+			RecordedCameraInput input;
+			if (context->consumePendingRecordInput(input))
+				recordFrame.freshCameras.push_back(std::move(input));
+		}
+		m_recorder->enqueueFrame(std::move(recordFrame));
+	}
+
+	if (m_bDumpRequested.exchange(false))
+		performDiagnosticDump(m_lastOutputResult);
 }

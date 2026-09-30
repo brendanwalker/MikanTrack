@@ -40,7 +40,18 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 
 ## Frame anatomy
 
-Where a frame goes, one `VisionThread::threadLoop` iteration (`src/App/VisionThread.cpp`):
+Where a frame goes, one `VisionThread::threadLoop` iteration (`src/App/VisionThread.cpp`). The loop body is a fixed sequence of stage methods on `VisionThread`, each working on the iteration's scratch state while the handoffs to the main thread stay on the thread object:
+
+- `servicePendingRequests`
+- `runCaptureStage`
+- `runFusionStage`
+- `runImuStage`
+- `runBodySolveStage`
+- `runOutputStage`
+- `runCalibrationCaptures`
+- `runDiagnosticsStage`
+
+Step by step:
 
 1. Upstream, each camera's Media Foundation callback thread copies the raw frame into a `VideoFrameBlock` from that slot's freelist and pushes it onto the slot's SPSC `frameQueue` (`VideoCaptureSystem::CameraSlot::notifyVideoFrameReceived`, `moodycamel::ReaderWriterQueue`). No free block means the frame is dropped and counted.
 2. The iteration starts by consuming pending requests: a config refresh (which first finalizes any in-progress recording, then runs `refreshConfigOnThread`), a recording stop, then a recording start, in that order so the recording header snapshot reflects the refresh.

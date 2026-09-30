@@ -214,7 +214,43 @@ public:
 	eVisionPhase getLastHitchPhase() const { return (eVisionPhase)m_lastHitchPhase.load(); }
 
 private:
+	// Scratch for one loop iteration, threaded through the stages below
+	struct IterationState
+	{
+		bool bAnyNewResult= false;
+		double newestTimestampMs= 0.0;
+		std::vector<const CameraFrameResult*> fusionCandidates;
+		bool bAnyWorldCandidate= false;
+		// The frame's output: fused world space, or camera 0's camera-space
+		// passthrough when no calibrated camera contributed
+		TrackingFrameResult outputResult;
+		// The recording record under assembly, live only while recording
+		bool bRecordingThisFrame= false;
+		RecordedFrame recordFrame;
+	};
+
+	// The loop and its stages, in iteration order. Each stage works on the
+	// iteration scratch and the members; the main-thread handoffs stay here.
 	void threadLoop();
+	// Config refresh, recording stop, recording start
+	void servicePendingRequests();
+	// Every camera with a new frame, through its CameraContext
+	void runCaptureStage(IterationState& iteration);
+	// Cross-camera fusion (or the camera-space passthrough) and the fused
+	// checksum tap
+	void runFusionStage(IterationState& iteration);
+	// Wrist IMU: sample drain, yaw anchor, forearm fill, mounting capture
+	void runImuStage(IterationState& iteration);
+	// Vision body solve, then the fusion bookkeeping (search-hint seed,
+	// dominant camera, per-camera confidence, auto hand-scale)
+	void runBodySolveStage(IterationState& iteration);
+	// OSC send and the fused-result publish
+	void runOutputStage(IterationState& iteration);
+	// Bone calibration window and rest-pose capture
+	void runCalibrationCaptures();
+	// History ring, recording assembly, dump requests
+	void runDiagnosticsStage(IterationState& iteration);
+
 	void refreshConfigOnThread();
 	// Services a pending requestDiagnosticDump on the vision thread
 	void performDiagnosticDump(const TrackingFrameResult& latestOutput);
@@ -225,6 +261,12 @@ private:
 	std::vector<std::unique_ptr<CameraContext>> m_cameras;
 	HandFusion m_fusion;
 	BodyPoseSolver m_bodyPoseSolver;
+
+	// Carried between iterations (vision thread only). The previous fused
+	// world result seeds the cross-camera search hints; the latest output
+	// (world OR camera space) feeds diagnostic dumps.
+	TrackingFrameResult m_lastFusedForHints;
+	TrackingFrameResult m_lastOutputResult;
 
 	// Wrist IMU service (devices + per-device orientation filters). Owned by
 	// App; this thread is its only caller while running, and the UI reads

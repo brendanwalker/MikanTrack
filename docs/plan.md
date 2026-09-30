@@ -9,12 +9,6 @@ The living plan: what is in flight now, what comes next, and the open questions.
 - [ ] Finish the MikanTrack rename outside the source tree: rename the repo working directory and the GitHub repository, then re-clone or update the remote. The code, docs, and appdata folder already use the new name.
 - [ ] Live-verify the `/mikan/hand/{s}/forearm` wire change end to end with an OSC consumer (both sides built and self-tested, not yet exercised live).
 
-## Next
-
-Code cleanup pass, one concern per commit.
-
-- [ ] `VisionThread` decomposition. `threadLoop` becomes a sequence of stage classes alongside the `CameraContext` capture and inference stage (fusion, IMU forearm fill, body solve, output, calibration captures, diagnostics and recording). Stages are stateless over `VisionThread`: the handoff state (mutexes, atomics, fetch accessors) stays on `VisionThread` and each stage receives what it needs by reference. The recording taps are the constraint: the checksum point stays immediately after `fuse`, and `--replay-verify` on the existing recordings is the acceptance test.
-
 ## Later
 
 - [ ] Human-review the machine-translated Japanese strings in `resources/localization/ja.json` (translated per key alongside the code conversion; natural phrasing and terminology consistency were not reviewed by a native speaker).
