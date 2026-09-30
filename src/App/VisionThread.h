@@ -6,35 +6,20 @@
 #include <thread>
 #include <vector>
 
-#include "opencv2/core/mat.hpp"
-
 #include "BodyPoseSolver.h"
+#include "CameraContext.h"
 #include "DiagnosticDump.h"
 #include "FrameRecorder.h"
 #include "ImuService.h"
 #include "HandBoneCalibrator.h"
 #include "HandPoseModel.h"
-#include "HandFusion.h" // CameraFrameResult
-#include "LumaFlickerTracker.h"
+#include "HandFusion.h"
 #include "TrackingRecorder.h"
 #include "TrackingTypes.h"
 
 class AppConfig;
 class VideoCaptureSystem;
-class BodyPoseTracker;
-class HandTrackingPipeline;
-class LandmarkTo3D;
 class OscStreamer;
-class CVVideoFrameProcessor;
-
-// Latest processed frame for one camera, published to the main/render thread
-// (latest-wins). result is that camera's own (unfused, unsmoothed) tracking.
-struct VisionPreviewFrame
-{
-	cv::Mat bgr; // undistorted when intrinsics are applied
-	TrackingFrameResult result;
-	bool valid= false;
-};
 
 // Owns the inference thread: drains each camera's frames, converts to BGR,
 // optionally undistorts, runs that camera's ML pipeline and 3D projection,
@@ -229,67 +214,8 @@ public:
 	eVisionPhase getLastHitchPhase() const { return (eVisionPhase)m_lastHitchPhase.load(); }
 
 private:
-	// Everything one camera needs on the vision thread. No shared mutable
-	// state between contexts (the fusion step is the only join point).
-	struct CameraContext
-	{
-		int cameraIndex= -1;
-
-		std::unique_ptr<HandTrackingPipeline> pipeline;
-		std::unique_ptr<LandmarkTo3D> landmarkTo3D; // smoothing always disabled (post-fusion smoothing)
-		std::unique_ptr<CVVideoFrameProcessor> undistorter;
-		// Opt-in body-pose stage; only allocated for cameras whose profile
-		// enables body pose
-		std::unique_ptr<BodyPoseTracker> bodyPoseTracker;
-
-		std::atomic_bool bTrackingEnabled{true};
-		std::atomic_bool bUndistortEnabled{true};
-
-		// Read by the main thread; written by the vision thread after pipeline
-		// startup (never dereference the pipeline from the main thread)
-		std::atomic<const char*> activeEp{"none"};
-
-		// Fusion input: this camera's latest processed result
-		CameraFrameResult lastResult;
-
-		// Preview handoff (mutex-guarded, latest-wins)
-		std::mutex previewMutex;
-		VisionPreviewFrame previewFrame;
-		bool bPreviewFresh= false;
-
-		// Whole-frame luminance oscillation (flicker / AE hunting) diagnostics
-		LumaFlickerTracker flickerTracker;
-
-		cv::Mat bgrScratch;
-		cv::Mat undistortedScratch;
-		// Points at whichever scratch mat the last processed frame ended up in
-		// (vision thread only; stable between iterations for diagnostic dumps)
-		const cv::Mat* lastActiveFrame= nullptr;
-		double lastFrameTimestampMs= 0.0;
-		float captureFps= 0.f;
-
-		// Cross-camera seeding retry throttle (a failed speculative landmark
-		// pass costs a few ms - don't pay it every frame)
-		int hintCooldownFrames= 0;
-
-		// Recording staging: this camera's inputs for the current iteration,
-		// gathered in processCameraFrame and consumed when the frame record
-		// is assembled after fusion
-		RecordedCameraInput pendingRecordInput;
-		bool bPendingRecordFresh= false;
-	};
-
 	void threadLoop();
 	void refreshConfigOnThread();
-	// Processes one newly popped frame for a context; returns true if a new
-	// result was produced
-	// lastFused: the previous iteration's fused output, used to seed this
-	// camera's search hints (see seedSearchHints) immediately before the
-	// pipeline runs, which is the only point at which hints are consumed
-	bool processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused);
-	// Cross-camera search seeding: hands the fused result tracks but this
-	// camera lost get projected into its image as pipeline search hints
-	void seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused);
 	// Services a pending requestDiagnosticDump on the vision thread
 	void performDiagnosticDump(const TrackingFrameResult& latestOutput);
 

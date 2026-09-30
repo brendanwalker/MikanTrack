@@ -1,22 +1,10 @@
 #include "VisionThread.h"
 
-#include "glm/ext/matrix_double4x4.hpp"
-#include "glm/matrix.hpp"
-
-#include "opencv2/imgproc.hpp"
-
 #include "AppConfig.h"
-#include "BodyPoseTracker.h"
-#include "CVVideoFrameProcessor.h"
-#include "HandRoiQuality.h"
-#include "HandTrackingPipeline.h"
-#include "LandmarkTo3D.h"
 #include "Logger.h"
 #include "OscStreamer.h"
-#include "SpaceTransforms.h"
 #include "ThreadUtils.h"
 #include "VideoCaptureSystem.h"
-#include "VideoFrame.h"
 
 // A loop iteration longer than this starves every camera at once (frames keep
 // arriving, find no free block, and are dropped). Well above a healthy
@@ -98,9 +86,7 @@ void VisionThread::start()
 	m_cameras.clear();
 	for (size_t i= 0; i < m_config->cameraCount(); ++i)
 	{
-		auto context= std::make_unique<CameraContext>();
-		context->cameraIndex= (int)i;
-		m_cameras.push_back(std::move(context));
+		m_cameras.push_back(std::make_unique<CameraContext>((int)i, m_config));
 	}
 
 	m_bConfigRefreshRequested= true;
@@ -121,23 +107,23 @@ void VisionThread::stop()
 void VisionThread::setTrackingEnabled(int cameraIndex, bool bEnabled)
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
-		m_cameras[cameraIndex]->bTrackingEnabled= bEnabled;
+		m_cameras[cameraIndex]->setTrackingEnabled(bEnabled);
 }
 
 bool VisionThread::isTrackingEnabled(int cameraIndex) const
 {
-	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bTrackingEnabled;
+	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->isTrackingEnabled();
 }
 
 void VisionThread::setUndistortEnabled(int cameraIndex, bool bEnabled)
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
-		m_cameras[cameraIndex]->bUndistortEnabled= bEnabled;
+		m_cameras[cameraIndex]->setUndistortEnabled(bEnabled);
 }
 
 bool VisionThread::isUndistortEnabled(int cameraIndex) const
 {
-	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->bUndistortEnabled;
+	return cameraIndex >= 0 && cameraIndex < (int)m_cameras.size() && m_cameras[cameraIndex]->isUndistortEnabled();
 }
 
 bool VisionThread::fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFrame)
@@ -145,16 +131,7 @@ bool VisionThread::fetchPreviewFrame(int cameraIndex, VisionPreviewFrame& outFra
 	if (cameraIndex < 0 || cameraIndex >= (int)m_cameras.size())
 		return false;
 
-	CameraContext& context= *m_cameras[cameraIndex];
-	std::lock_guard<std::mutex> lock(context.previewMutex);
-	if (!context.bPreviewFresh)
-		return false;
-
-	context.previewFrame.bgr.copyTo(outFrame.bgr);
-	outFrame.result= context.previewFrame.result;
-	outFrame.valid= true;
-	context.bPreviewFresh= false;
-	return true;
+	return m_cameras[cameraIndex]->fetchPreviewFrame(outFrame);
 }
 
 bool VisionThread::fetchFusedResult(TrackingFrameResult& outResult)
@@ -247,11 +224,7 @@ void VisionThread::handleRecordingStartOnThread()
 	m_bodyPoseSolver.reset();
 	for (std::unique_ptr<CameraContext>& context : m_cameras)
 	{
-		if (context->landmarkTo3D != nullptr)
-			context->landmarkTo3D->resetTransientState();
-		context->lastResult= CameraFrameResult();
-		context->lastResult.cameraIndex= context->cameraIndex;
-		context->bPendingRecordFresh= false;
+		context->resetTransientState();
 	}
 	m_recordingSeq= 0;
 
@@ -318,14 +291,13 @@ void VisionThread::performDiagnosticDump(const TrackingFrameResult& latestOutput
 		const CameraContext& context= *contextPtr;
 
 		DiagCameraSnapshot snapshot;
-		snapshot.lastResult= &context.lastResult;
-		snapshot.frame= context.lastActiveFrame;
-		snapshot.deviceFps= m_videoCapture->getDeviceFrameRate(context.cameraIndex);
-		snapshot.droppedFrames= m_videoCapture->getDroppedFrameCount(context.cameraIndex);
-		snapshot.activeEp= context.activeEp.load();
-		snapshot.trackingEnabled= context.bTrackingEnabled;
-		if (context.pipeline != nullptr)
-			snapshot.seedStats= &context.pipeline->getSeedStats();
+		snapshot.lastResult= &context.getLastResult();
+		snapshot.frame= context.getLastActiveFrame();
+		snapshot.deviceFps= m_videoCapture->getDeviceFrameRate(context.getCameraIndex());
+		snapshot.droppedFrames= m_videoCapture->getDroppedFrameCount(context.getCameraIndex());
+		snapshot.activeEp= context.getActiveExecutionProvider();
+		snapshot.trackingEnabled= context.isTrackingEnabled();
+		snapshot.seedStats= context.getSeedStats();
 		snapshots.push_back(snapshot);
 	}
 
@@ -397,7 +369,7 @@ float VisionThread::getObservationConfidence(int cameraIndex, eHandSide side) co
 const char* VisionThread::getActiveExecutionProvider(int cameraIndex) const
 {
 	if (cameraIndex >= 0 && cameraIndex < (int)m_cameras.size())
-		return m_cameras[cameraIndex]->activeEp.load();
+		return m_cameras[cameraIndex]->getActiveExecutionProvider();
 
 	return "none";
 }
@@ -421,111 +393,10 @@ void VisionThread::refreshConfigOnThread()
 	if (m_config->handSkeleton.present[0] && m_config->handSkeleton.present[1])
 		m_autoScaleFactor= 1.f;
 
-	for (std::unique_ptr<CameraContext>& contextPtr : m_cameras)
+	for (std::unique_ptr<CameraContext>& context : m_cameras)
 	{
-		CameraContext& context= *contextPtr;
-		if (context.cameraIndex >= (int)m_config->cameraCount())
-			continue;
-		const CameraProfile& profile= m_config->camera(context.cameraIndex);
-
-		// ML pipeline
-		if (context.pipeline == nullptr)
-		{
-			HandTrackingPipelineConfig pipelineConfig;
-			pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
-			pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
-			pipelineConfig.palmScoreThresholdRelaxed= m_config->tracking.palmScoreThresholdRelaxed;
-			pipelineConfig.preferredEp= m_config->tracking.onnxEp;
-
-			context.pipeline= std::make_unique<HandTrackingPipeline>();
-			if (context.pipeline->startup(pipelineConfig))
-			{
-				context.activeEp= context.pipeline->getActiveExecutionProvider();
-			}
-			else
-			{
-				MIKAN_MT_LOG_ERROR("VisionThread")
-					<< "HandTrackingPipeline startup failed for camera " << context.cameraIndex
-					<< " - tracking disabled";
-				context.pipeline= nullptr;
-				context.activeEp= "none";
-			}
-		}
-		else
-		{
-			HandTrackingPipelineConfig pipelineConfig= context.pipeline->getConfig();
-			pipelineConfig.flipHandedness= m_config->tracking.flipHandedness;
-			pipelineConfig.detectorIntervalFrames= m_config->tracking.detectorIntervalFrames;
-			pipelineConfig.palmScoreThresholdRelaxed= m_config->tracking.palmScoreThresholdRelaxed;
-			context.pipeline->setConfig(pipelineConfig);
-		}
-
-			// 3D projection (needs that camera's calibrated intrinsics).
-		// Smoothing is always disabled here - the fused output is smoothed
-		// after fusion instead (avoids double-filtering).
-		if (profile.intrinsics.present)
-		{
-			if (context.landmarkTo3D == nullptr)
-				context.landmarkTo3D= std::make_unique<LandmarkTo3D>();
-			context.landmarkTo3D->configure(
-				profile.intrinsics.intrinsics,
-				m_config->handScale.refLengthMeters);
-
-			// Measured hand geometry, when there is any. Not per camera: bones
-			// are a physical property, so every camera gets the same skeleton.
-			context.landmarkTo3D->clearCalibratedSkeleton();
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				if (m_config->handSkeleton.present[sideIndex])
-				{
-					context.landmarkTo3D->setCalibratedSkeleton(
-						(eHandSide)sideIndex, m_config->handSkeleton.skeleton[sideIndex]);
-				}
-			}
-
-			// Undistortion for the ML input + preview. ALWAYS rebuilt on a
-			// config change: gating on frame dimensions alone kept the OLD
-			// undistortion maps alive after a recalibration at the same
-			// resolution (live symptom: wildly zoomed preview from the
-			// previous bad intrinsics until an app restart).
-			context.undistorter= std::make_unique<CVVideoFrameProcessor>(
-				profile.intrinsics.intrinsics,
-				(int)profile.intrinsics.intrinsics.pixel_width,
-				(int)profile.intrinsics.intrinsics.pixel_height);
-		}
-		else
-		{
-			context.landmarkTo3D= nullptr;
-			context.undistorter= nullptr;
-		}
-
-		// Opt-in body-pose stage. Load failure (missing models) leaves the
-		// tracker allocated but unloaded so a refresh doesn't retry-spam.
-		if (profile.bodyPose.enabled)
-		{
-			BodyPoseTrackerConfig trackerConfig;
-			trackerConfig.frameDivider= profile.bodyPose.poseFrameDivider;
-			trackerConfig.detectorIntervalFrames= profile.bodyPose.detectorIntervalFrames;
-
-			if (context.bodyPoseTracker == nullptr)
-			{
-				context.bodyPoseTracker= std::make_unique<BodyPoseTracker>();
-				context.bodyPoseTracker->load("models", m_config->tracking.onnxEp, trackerConfig);
-			}
-			else
-			{
-				context.bodyPoseTracker->setConfig(trackerConfig);
-			}
-		}
-		else
-		{
-			context.bodyPoseTracker= nullptr;
-		}
-
-		// Invalidate the last result so stale calibration state can't leak
-		// through a config change
-		context.lastResult= CameraFrameResult();
-		context.lastResult.cameraIndex= context.cameraIndex;
+		if (context->getCameraIndex() < (int)m_config->cameraCount())
+			context->configure(*m_config);
 	}
 
 	// Config hand scale is the baseline the stereo correction applies to;
@@ -590,276 +461,6 @@ void VisionThread::refreshConfigOnThread()
 	}
 }
 
-void VisionThread::seedSearchHints(CameraContext& context, const TrackingFrameResult& lastFused)
-{
-	if (context.pipeline == nullptr || !context.bTrackingEnabled)
-		return;
-
-	const CameraProfile& profile= m_config->camera(context.cameraIndex);
-	if (!profile.intrinsics.present || !profile.extrinsics.present)
-		return;
-
-	if (context.hintCooldownFrames > 0)
-	{
-		context.hintCooldownFrames--;
-		return;
-	}
-
-	const glm::dmat4 cameraFromWorld= glm::inverse(profile.extrinsics.markerFromCamera);
-	const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
-	const double fx= cameraMatrix.x0, fy= cameraMatrix.y1;
-	const double cx= cameraMatrix.z0, cy= cameraMatrix.z1;
-	const double width= profile.intrinsics.intrinsics.pixel_width;
-	const double height= profile.intrinsics.intrinsics.pixel_height;
-
-	// Projects a world point into this camera's (undistorted) image; false
-	// when behind or implausibly close to the camera
-	auto projectPoint= [&](const glm::vec3& world, glm::vec2& outPx, double& outDepth) {
-		const glm::dvec4 cameraPt= cameraFromWorld * glm::dvec4(glm::dvec3(world), 1.0);
-		if (cameraPt.z < 0.05)
-			return false;
-		outPx= glm::vec2((float)(fx * cameraPt.x / cameraPt.z + cx), (float)(fy * cameraPt.y / cameraPt.z + cy));
-		outDepth= cameraPt.z;
-		return true;
-	};
-
-	std::vector<HandSearchHint> hints;
-	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-	{
-		const HandPose& fusedPose= lastFused.poses[sideIndex];
-		if (!fusedPose.tracked || !fusedPose.hasWorldPose)
-			continue;
-
-		// Whether this camera already has the hand is decided POSITIONALLY,
-		// downstream in applySearchHints. It used to be decided here by
-		// comparing side LABELS, which fails exactly when it matters: labels
-		// get displaced when hands leave and re-enter, and a camera holding
-		// one hand under the wrong label then had one side skipped here and
-		// the other suppressed there, so neither was seeded and reacquisition
-		// waited a full palm-detector interval.
-		glm::vec2 centerPx;
-		double depth= 0.0;
-		const bool bProjected=
-			projectPoint(fusedPose.palmPositionWorld, centerPx, depth) &&
-			centerPx.x >= 0.f && centerPx.x < (float)width &&
-			centerPx.y >= 0.f && centerPx.y < (float)height;
-		context.pipeline->noteSeedCandidate(bProjected);
-		if (!bProjected)
-			continue;
-
-		// Palm +X points toward the fingers; its projection orients the crop
-		const glm::vec3 fingersDirWorld= fusedPose.palmOrientationWorld * glm::vec3(1.f, 0.f, 0.f);
-		glm::vec2 aheadPx;
-		double unusedDepth= 0.0;
-		if (!projectPoint(fusedPose.palmPositionWorld + fingersDirWorld * 0.05f, aheadPx, unusedDepth))
-			continue;
-		glm::vec2 dirPx= aheadPx - centerPx;
-		const float dirLength= glm::length(dirPx);
-
-		const float refLengthMeters=
-			(float)(m_config->handScale.refLengthMeters * (double)m_autoScaleFactor.load());
-
-		HandSearchHint hint;
-		hint.centerPx= centerPx;
-		hint.dirPx= dirLength > 1e-3f ? dirPx / dirLength : glm::vec2(0.f, -1.f);
-		hint.palmSizePx= (float)(fx * (double)refLengthMeters / depth);
-		hints.push_back(hint);
-	}
-
-	if (!hints.empty())
-	{
-		context.pipeline->setSearchHints(hints);
-		context.hintCooldownFrames= 2; // retry every ~3 frames while unseen
-	}
-}
-
-bool VisionThread::processCameraFrame(CameraContext& context, const TrackingFrameResult& lastFused)
-{
-	VideoFrameBlock* block= m_videoCapture->tryPopFrame(context.cameraIndex);
-	if (block == nullptr)
-		return false;
-
-	// FPS estimate from frame timestamps
-	if (context.lastFrameTimestampMs > 0.0 && block->timestampMs > context.lastFrameTimestampMs)
-	{
-		const float instFps= (float)(1000.0 / (block->timestampMs - context.lastFrameTimestampMs));
-		context.captureFps= context.captureFps > 0.f ? context.captureFps * 0.9f + instFps * 0.1f : instFps;
-	}
-	context.lastFrameTimestampMs= block->timestampMs;
-
-	// Raw -> BGR
-	VideoCaptureSystem::convertFrameToBGR(*block, context.bgrScratch);
-	const int64_t frameIndex= block->frameIndex;
-	const double timestampMs= block->timestampMs;
-	m_videoCapture->releaseFrame(context.cameraIndex, block);
-
-	if (context.bgrScratch.empty())
-		return false;
-
-	const CameraProfile& profile= m_config->camera(context.cameraIndex);
-
-	// Undistort when calibrated (ML + preview both use the undistorted image)
-	cv::Mat* activeFrame= &context.bgrScratch;
-	if (context.bUndistortEnabled &&
-		context.undistorter != nullptr &&
-		context.bgrScratch.cols == context.undistorter->getFrameWidth() &&
-		context.bgrScratch.rows == context.undistorter->getFrameHeight())
-	{
-		context.undistorter->processColorFrame(context.bgrScratch, context.undistortedScratch);
-		activeFrame= &context.undistortedScratch;
-	}
-	context.lastActiveFrame= activeFrame;
-
-	TrackingFrameResult result;
-	result.frameIndex= frameIndex;
-	result.timestampMs= timestampMs;
-	result.frameWidth= activeFrame->cols;
-	result.frameHeight= activeFrame->rows;
-	result.captureFps= context.captureFps;
-
-	// Luminance-oscillation diagnostics run on every processed frame (cheap
-	// decimated mean), so flicker is measurable even before a hand shows up
-	context.flickerTracker.addFrame(*activeFrame, timestampMs);
-	result.lumaInstability= context.flickerTracker.getInstability();
-	result.lumaFlickerHz= context.flickerTracker.getDominantHz();
-
-	bool bProducedTracking= false;
-	if (context.bTrackingEnabled && context.pipeline != nullptr)
-	{
-		// Seed here rather than once per vision-thread iteration: the pipeline
-		// only consumes hints inside process(), and setSearchHints REPLACES the
-		// queue, so hints handed over on an iteration where this camera had no
-		// frame were overwritten unseen. Measured before this moved: 4425
-		// offered against 1659 that ever reached a decision.
-		if (m_cameras.size() > 1)
-			seedSearchHints(context, lastFused);
-
-		context.pipeline->process(*activeFrame, result);
-
-		// Raw frame capture, taken here so what lands on disk is EXACTLY what
-		// the models consumed (undistorted, same pixels), which is what makes
-		// an offline model comparison meaningful
-		if (m_frameRecorder != nullptr && m_frameRecorder->isRecording())
-			m_frameRecorder->enqueueFrame(context.cameraIndex, result.frameIndex, *activeFrame);
-
-		// Opt-in body-pose stage, same undistorted frame the hand pipeline
-		// consumed (so its imagePoints share the undistorted camera matrix)
-		if (m_recorder != nullptr && m_recorder->isRecording())
-			context.pendingRecordInput.bHaveBodyPose= false;
-		if (context.bodyPoseTracker != nullptr && context.bodyPoseTracker->isLoaded())
-		{
-			context.bodyPoseTracker->process(*activeFrame, result.body);
-
-			// Recording tap: the stage's cadence (divider re-emits) is baked
-			// into the observation, so replay never re-runs the pose models
-			if (m_recorder != nullptr && m_recorder->isRecording())
-			{
-				context.pendingRecordInput.bHaveBodyPose= true;
-				context.pendingRecordInput.body= result.body;
-			}
-		}
-
-		// Lighting/exposure diagnostics on the exact image the model consumed
-		for (TrackedHand& hand : result.hands)
-			HandRoiQuality::analyzeHand(*activeFrame, hand);
-
-		// Recording tap, part 1: the pipeline-output hands, exactly as the
-		// LandmarkTo3D call below consumes them
-		if (m_recorder != nullptr && m_recorder->isRecording())
-		{
-			context.pendingRecordInput.refLengthMeters= 0.f;
-			for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
-			{
-				const TrackedHand& hand= result.hands[sideIndex];
-				RecordedHandInput& outHand= context.pendingRecordInput.hands[sideIndex];
-				outHand= RecordedHandInput();
-				outHand.tracked= hand.tracked;
-				if (!hand.tracked)
-					continue;
-				outHand.side= (int)hand.side;
-				outHand.slotId= hand.slotId;
-				outHand.presence= hand.presence;
-				outHand.handednessScore= hand.handednessScore;
-				outHand.rightProb= hand.rightProb;
-				outHand.imagePoints= hand.imagePoints;
-				outHand.modelPoints= hand.modelPoints;
-				outHand.imageQuality= hand.imageQuality;
-			}
-		}
-
-		// Image space -> camera space (needs intrinsics + hand scale)
-		if (context.landmarkTo3D != nullptr)
-		{
-			// Recording tap, part 2: the hand scale in effect for this exact
-			// process() call (the auto-scale EMA feedback loop becomes a
-			// recorded input)
-			if (m_recorder != nullptr && m_recorder->isRecording())
-			{
-				context.pendingRecordInput.refLengthMeters=
-					context.landmarkTo3D->getRefLengthMeters();
-			}
-
-			context.landmarkTo3D->process(result);
-
-			// Camera space -> marker/world space (needs extrinsics)
-			if (profile.extrinsics.present)
-				applyWorldTransform(result, profile.extrinsics.markerFromCamera);
-		}
-
-		bProducedTracking= true;
-	}
-
-	// Recording tap, part 3: frame metadata + the fresh flag. A popped frame
-	// with tracking disabled records as fresh-but-invalid (replay advances
-	// that camera's mirror timestamp without running LandmarkTo3D).
-	if (m_recorder != nullptr && m_recorder->isRecording())
-	{
-		RecordedCameraInput& record= context.pendingRecordInput;
-		if (!bProducedTracking)
-			record= RecordedCameraInput();
-		record.cameraIndex= context.cameraIndex;
-		record.timestampMs= timestampMs;
-		record.valid= bProducedTracking;
-		record.frameIndex= frameIndex;
-		record.frameWidth= result.frameWidth;
-		record.frameHeight= result.frameHeight;
-		record.captureFps= result.captureFps;
-		record.inferenceMs= result.inferenceMs;
-		record.lumaInstability= result.lumaInstability;
-		record.lumaFlickerHz= result.lumaFlickerHz;
-		context.bPendingRecordFresh= true;
-	}
-
-	// Store the fusion input
-	context.lastResult.cameraIndex= context.cameraIndex;
-	context.lastResult.valid= bProducedTracking;
-	context.lastResult.timestampMs= timestampMs;
-	context.lastResult.hasExtrinsics= profile.extrinsics.present;
-	context.lastResult.markerFromCamera= profile.extrinsics.markerFromCamera;
-	// Undistorted pinhole for landmark triangulation (imagePoints space)
-	context.lastResult.hasIntrinsics= profile.intrinsics.present;
-	if (profile.intrinsics.present)
-	{
-		const MikanMatrix3d& cameraMatrix= profile.intrinsics.intrinsics.undistorted_camera_matrix;
-		context.lastResult.fx= (float)cameraMatrix.x0;
-		context.lastResult.fy= (float)cameraMatrix.y1;
-		context.lastResult.cx= (float)cameraMatrix.z0;
-		context.lastResult.cy= (float)cameraMatrix.z1;
-	}
-	context.lastResult.result= result;
-
-	// Publish this camera's preview (latest-wins)
-	{
-		std::lock_guard<std::mutex> lock(context.previewMutex);
-		activeFrame->copyTo(context.previewFrame.bgr);
-		context.previewFrame.result= result;
-		context.previewFrame.valid= true;
-		context.bPreviewFresh= true;
-	}
-
-	return bProducedTracking;
-}
-
 void VisionThread::threadLoop()
 {
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread started";
@@ -902,17 +503,24 @@ void VisionThread::threadLoop()
 
 		// Process whichever cameras have a new frame (sequential; DirectML
 		// serializes on one GPU queue anyway)
+		// The recording taps inside process() are live only while a recording
+		// is active; both recorders can only change state above this point
+		const bool bRecordingInputs= m_recorder != nullptr && m_recorder->isRecording();
+		FrameRecorder* frameRecorder=
+			m_frameRecorder != nullptr && m_frameRecorder->isRecording() ? m_frameRecorder.get() : nullptr;
+
 		bool bAnyNewResult= false;
 		float inferenceMsSum= 0.f;
 		double newestTimestampMs= 0.0;
 		for (std::unique_ptr<CameraContext>& context : m_cameras)
 		{
-			if (processCameraFrame(*context, lastFusedForHints))
+			if (context->process(m_videoCapture, m_cameras.size() > 1 ? &lastFusedForHints : nullptr,
+								 m_autoScaleFactor.load(), bRecordingInputs, frameRecorder))
 			{
 				bAnyNewResult= true;
-				inferenceMsSum+= context->lastResult.result.inferenceMs;
+				inferenceMsSum+= context->getLastResult().result.inferenceMs;
 			}
-			newestTimestampMs= std::max(newestTimestampMs, context->lastResult.timestampMs);
+			newestTimestampMs= std::max(newestTimestampMs, context->getLastResult().timestampMs);
 		}
 
 		phaseMs[(int)eVisionPhase::Capture]= steadyNowMs() - phaseMarkMs;
@@ -941,8 +549,9 @@ void VisionThread::threadLoop()
 		bool bAnyWorldCandidate= false;
 		for (const std::unique_ptr<CameraContext>& context : m_cameras)
 		{
-			fusionCandidates.push_back(&context->lastResult);
-			bAnyWorldCandidate|= context->lastResult.valid && context->lastResult.hasExtrinsics;
+			const CameraFrameResult& lastResult= context->getLastResult();
+			fusionCandidates.push_back(&lastResult);
+			bAnyWorldCandidate|= lastResult.valid && lastResult.hasExtrinsics;
 		}
 
 		RecordedFrame recordFrame;
@@ -1112,8 +721,7 @@ void VisionThread::threadLoop()
 				const float effectiveRefLength= (float)m_config->handScale.refLengthMeters * ema;
 				for (const std::unique_ptr<CameraContext>& context : m_cameras)
 				{
-					if (context->landmarkTo3D != nullptr)
-						context->landmarkTo3D->setRefLengthMeters(effectiveRefLength);
+					context->setRefLengthMeters(effectiveRefLength);
 				}
 			}
 		}
@@ -1121,7 +729,7 @@ void VisionThread::threadLoop()
 		{
 			// No calibrated camera: preserve the single-camera camera-space
 			// behavior (OSC announces space=camera) using camera 0's result
-			outputResult= m_cameras.empty() ? TrackingFrameResult() : m_cameras[0]->lastResult.result;
+			outputResult= m_cameras.empty() ? TrackingFrameResult() : m_cameras[0]->getLastResult().result;
 			lastFusedForHints= TrackingFrameResult(); // camera-space - can't project
 			m_dominantCamera[0]= -1;
 			m_dominantCamera[1]= -1;
@@ -1271,11 +879,9 @@ void VisionThread::threadLoop()
 			recordFrame.nowTimestampMs= newestTimestampMs;
 			for (std::unique_ptr<CameraContext>& context : m_cameras)
 			{
-				if (context->bPendingRecordFresh)
-				{
-					recordFrame.freshCameras.push_back(context->pendingRecordInput);
-					context->bPendingRecordFresh= false;
-				}
+				RecordedCameraInput input;
+				if (context->consumePendingRecordInput(input))
+					recordFrame.freshCameras.push_back(std::move(input));
 			}
 			m_recorder->enqueueFrame(std::move(recordFrame));
 		}
