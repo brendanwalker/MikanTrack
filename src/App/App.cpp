@@ -253,6 +253,44 @@ bool App::consumeStartSetupFlowFlag()
 	return bStart;
 }
 
+void App::requestLoadProject(const std::filesystem::path& projectFile)
+{
+	m_pendingProjectAction= ePendingProjectAction::Load;
+	m_pendingLoadProjectFile= projectFile;
+}
+
+void App::requestCloseProject()
+{
+	m_pendingProjectAction= ePendingProjectAction::Close;
+}
+
+void App::requestDiscardNewProject()
+{
+	m_pendingProjectAction= ePendingProjectAction::Discard;
+}
+
+void App::applyPendingProjectAction()
+{
+	const ePendingProjectAction action= m_pendingProjectAction;
+	m_pendingProjectAction= ePendingProjectAction::None;
+
+	switch (action)
+	{
+		case ePendingProjectAction::Load:
+			activateProject(m_pendingLoadProjectFile);
+			m_pendingLoadProjectFile.clear();
+			break;
+		case ePendingProjectAction::Close:
+			returnToMainMenu();
+			break;
+		case ePendingProjectAction::Discard:
+			discardNewProjectAndReturnToMenu();
+			break;
+		default:
+			break;
+	}
+}
+
 void App::applyCameraCountChange()
 {
 	MIKAN_LOG_INFO("App::applyCameraCountChange")
@@ -320,6 +358,10 @@ void App::shutdown()
 
 void App::tick(float deltaSeconds)
 {
+	// Project switches land here, between frames, never under a UI that is
+	// mid-draw
+	applyPendingProjectAction();
+
 	// SDL events
 	SDL_Event event;
 	while (SDL_PollEvent(&event))

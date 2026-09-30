@@ -1,5 +1,7 @@
 #include "MainWindow.h"
 
+#include <filesystem>
+
 #include "imgui.h"
 #include "imgui_internal.h" // dock builder
 
@@ -233,10 +235,10 @@ void MainWindow::drawDockspaceAndMenuBar()
 					locText("mainWindow.loadProjectDialogTitle"), defaultDir.c_str(), 1, filterPatterns,
 					locText("mainWindow.loadProjectDialogFilterDescription"), 0);
 				if (selectedPath != nullptr)
-					m_pendingLoadProjectFile= PathUtils::utf8ToPath(selectedPath);
+					m_app->requestLoadProject(PathUtils::utf8ToPath(selectedPath));
 			}
 			if (ImGui::MenuItem(locLabel("mainWindow.closeProject"), nullptr, false, !bWizardActive))
-				m_bPendingCloseProject= true;
+				m_app->requestCloseProject();
 			ImGui::Separator();
 			if (ImGui::MenuItem(locLabel("mainWindow.quit"), "Alt+F4"))
 				m_app->requestShutdown();
@@ -284,30 +286,6 @@ void MainWindow::update(float deltaSeconds)
 	{
 		drawMainMenu();
 		return;
-	}
-
-	// Apply deferred project actions from last frame's menu clicks: switching
-	// or closing a project mid-frame would mutate the config under panels
-	// that already sized their per-camera state
-	if (m_bPendingCloseProject)
-	{
-		m_bPendingCloseProject= false;
-		m_app->returnToMainMenu();
-		drawMainMenu();
-		return;
-	}
-	if (m_bPendingDiscardProject)
-	{
-		m_bPendingDiscardProject= false;
-		m_app->discardNewProjectAndReturnToMenu();
-		drawMainMenu();
-		return;
-	}
-	if (!m_pendingLoadProjectFile.empty())
-	{
-		const std::filesystem::path projectFile= m_pendingLoadProjectFile;
-		m_pendingLoadProjectFile.clear();
-		m_app->activateProject(projectFile);
 	}
 
 	// A freshly created project starts the guided setup chain
@@ -392,8 +370,6 @@ void MainWindow::update(float deltaSeconds)
 	// Guided setup chain: draws its prompt modals on top of the panels, and
 	// launches/watches the wizards updated below
 	m_setupFlow->update();
-	if (m_setupFlow->consumeDiscardProjectRequest())
-		m_bPendingDiscardProject= true;
 
 	// Bring the Video Preview tab forward when a camera calibration wizard
 	// starts: the pattern feed is the wizard's whole UI, and the 3D Scene tab

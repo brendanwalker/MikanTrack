@@ -1,6 +1,5 @@
 #pragma once
 
-#include <filesystem>
 #include <memory>
 #include <vector>
 
@@ -72,12 +71,6 @@ private:
 	TrackingFrameResult m_latestFused;
 
 	TrackingPanelState m_trackingPanelState;
-
-	// Project actions clicked in the menu bar (or requested by the setup
-	// flow), applied at the top of the next update (never mid-frame)
-	std::filesystem::path m_pendingLoadProjectFile;
-	bool m_bPendingCloseProject= false;
-	bool m_bPendingDiscardProject= false;
 
 	// Rising-edge tracker for focusing the Video Preview tab when a camera
 	// calibration wizard starts

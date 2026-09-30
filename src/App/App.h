@@ -52,6 +52,15 @@ public:
 	// start the guided setup flow
 	bool consumeStartSetupFlowFlag();
 
+	// Project actions requested from inside the tracking UI. They are applied
+	// at the top of the next tick rather than when clicked: switching or
+	// closing a project mid-frame would mutate the config under panels that
+	// already sized their per-camera state. A later request in the same frame
+	// replaces an earlier one.
+	void requestLoadProject(const std::filesystem::path& projectFile);
+	void requestCloseProject();
+	void requestDiscardNewProject();
+
 	// Applies a config camera-count change: restarts the vision thread (its
 	// context list is fixed while running) and resizes the capture slots
 	void applyCameraCountChange();
@@ -89,6 +98,18 @@ private:
 
 	eAppState m_appState= eAppState::MainMenu;
 	bool m_bStartSetupFlowOnEnter= false;
+
+	enum class ePendingProjectAction
+	{
+		None,
+		Load,
+		Close,
+		Discard,
+	};
+	// Services the pending project action at the top of tick()
+	void applyPendingProjectAction();
+	ePendingProjectAction m_pendingProjectAction= ePendingProjectAction::None;
+	std::filesystem::path m_pendingLoadProjectFile;
 	// The last-project pointer as it was before activateNewProject overwrote
 	// it, so a discarded new project can hand Resume back to its predecessor
 	std::filesystem::path m_lastProjectPathBeforeNew;

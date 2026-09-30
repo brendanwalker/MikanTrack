@@ -44,7 +44,6 @@ SetupFlow::SetupFlow(App* app, MainWindow* mainWindow, VideoPreviewPanel* previe
 
 void SetupFlow::begin()
 {
-	m_bDiscardProjectRequested= false;
 	m_trackingSetup= eTrackingSetup::DualOverhead;
 	transitionTo(eStep::TrackingSetup);
 }
@@ -77,13 +76,6 @@ void SetupFlow::update()
 			updateRunningWizardStep();
 			break;
 	}
-}
-
-bool SetupFlow::consumeDiscardProjectRequest()
-{
-	const bool bRequested= m_bDiscardProjectRequested;
-	m_bDiscardProjectRequested= false;
-	return bRequested;
 }
 
 int SetupFlow::getRequiredCameraCount() const
@@ -146,7 +138,7 @@ void SetupFlow::enterConfirmCancel()
 void SetupFlow::requestDiscardProject()
 {
 	m_step= eStep::Inactive;
-	m_bDiscardProjectRequested= true;
+	m_app->requestDiscardNewProject();
 }
 
 void SetupFlow::updateTrackingSetupPrompt()

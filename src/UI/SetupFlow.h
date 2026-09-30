@@ -71,14 +71,11 @@ public:
 	// before the wizard update dispatch.
 	void update();
 
-	// True once when the flow wants App::discardNewProjectAndReturnToMenu();
-	// MainWindow consumes it and defers the switch to the top of the next
-	// frame
-	bool consumeDiscardProjectRequest();
-
 private:
 	void transitionTo(eStep step);
 	void enterConfirmCancel();
+	// Ends the flow and asks App to delete the project and return to the menu
+	// (applied between frames, so nothing here runs on a torn-down project)
 	void requestDiscardProject();
 
 	void updateTrackingSetupPrompt();
@@ -109,7 +106,6 @@ private:
 
 	bool m_bWizardLaunched= false;
 	int m_intrinsicsCameraIndex= 0;
-	bool m_bDiscardProjectRequested= false;
 
 	// CameraSelection state: chosen enumeration index per camera slot, -1 =
 	// nothing picked yet
