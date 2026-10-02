@@ -30,7 +30,7 @@ Every command follows the same contract:
 
 ### Running every self-test in one pass
 
-The 20 self-tests are deterministic and need no hardware or input files, so they run as a batch. This drives the list from `--list-tests` rather than a hardcoded list, so a newly added test is picked up automatically:
+The 21 self-tests are deterministic and need no hardware or input files, so they run as a batch. This drives the list from `--list-tests` rather than a hardcoded list, so a newly added test is picked up automatically:
 
 ```bash
 cd build/Release && ./MikanTrack.exe --list-tests | awk '/^self-tests:/{f=1;next} /^[a-z]/{f=0} f && $1 ~ /^--/{print $1}' | while read -r flag; do ./MikanTrack.exe "$flag" >/dev/null 2>&1 || echo "FAIL $flag"; done; echo done
@@ -94,6 +94,10 @@ Side effects of a batch run: each test overwrites its own `.log` next to the exe
 
 - `--test-vmc`: the VMC retarget and the streamer's datagram layout, about 45 checks. The world-to-Unity basis change including rotation sense and properness, the rest palm frames being palms-down T-pose hands of the correct chirality, the rest pose emitting only identity rotations, a bent finger breaking that identity without disturbing its neighbours, and a chain round trip that composes the emitted bones the way a receiver does and rebuilds the measured shoulder, elbow, wrist, palm orientation, and FK finger joints. Also degraded cases (no elbow, no arm, invalid side, invalid head), the freeze-on-loss behavior, the OSC bundle decode against the spec, bone name spelling and uniqueness, argument order, and that a steady-state Mikan-mode frame fits one unfragmented datagram.
 
+### Avatar
+
+- `--test-vrm`: the VRM loader and `AvatarSkeleton` on files built in memory, a minimal humanoid in both VRM generations with one skinned triangle and a 2x2 PNG. Refusal of a plain glTF, a truncated file and a file missing its hips; version detection with `VRMC_vrm` winning over `VRM`; the 1.0 thumb rename and the 0.x one-to-one map, unknown names warned and ignored; strided, normalized, sparse and byte/short/int accessor encodings with weight renormalization; a matrix node and a rotated rest node composing to the same world positions as the plain rig; the skin's inverse binds mapping a vertex onto itself at rest and like a CPU reference when a joint turns, with the mesh node's own transform ignored; the avatar-to-world conversion for both generations; the derived lengths, parent resolution past a missing optional bone, world parent offsets under a rotated node, the palm frames matching `VmcRetarget::restPalmFrame` with the tracked chirality sign, phalanx lengths and the avatar rest fingers as neutral directions; PNG decode with alpha, sampler wrap, the default alpha cutoff, the MToon 1.0 fields and the 0.x property migration including render queue ranking; and the two generations producing one world rest skeleton.
+
 ### App plumbing
 
 - `--loc-test`: the localization tables, without a GL context. Load-time validation warnings (key parity both ways, printf specifier mismatches, embedded `##`, `_meta` problems) are hard failures here, window stable IDs must be unique and non-empty because the English text is the ImGui window ID, the unknown-key fallback must pass the key through, and every codepoint of every language must sit inside the glyph ranges the font atlas actually bakes.
@@ -108,6 +112,8 @@ These need a device physically connected to mean anything, so they stay out of t
 
 - `--test-imuaxes`: measures whether the gyro axes are consistent with the accelerometer axes on a live controller, by scoring every signed permutation against `dg/dt = -w x g`. A mounting calibration can absorb a fixed rotation but not an axis permutation or sign flip inside the chip.
 
+- `--test-vrm-samples`: loads the shipped VRoid sample avatars from `models/avatars/` and checks the full humanoid map, valid hand rests, a T-pose with palms down, and bounded skins. Skips with a warning when the files are absent.
+
 - `--test-posemodel`: loads the body-pose ONNX models and cross-checks the decode against keypoints from the Python reference implementation. It needs `models/` and a working execution provider rather than a camera, so it is the one that tells you an inference-stack change is at fault rather than tracking logic.
 
 ---
@@ -120,7 +126,7 @@ The `Tool` category commands take a file argument, so they are not part of any a
 
 - `--replay-popmetrics <recording.jsonl>... [prior-config.json]` reports pop statistics of a recording, baseline against the hand estimator, which measures a smoothing or estimator change rather than only detecting that it changed something.
 
-The remaining tools (`--replay-dump`, `--replay-bodypose`, `--replay-extrinsics`, `--calibrate-bones`, `--fit-angle-prior`, `--test-imupair`) are diagnostics and fitting utilities, not pass/fail checks. `--export-board` and `--export-marker` write a PNG and open it in the system viewer, so keep them out of any batch.
+The remaining tools (`--replay-dump`, `--replay-bodypose`, `--replay-extrinsics`, `--calibrate-bones`, `--fit-angle-prior`, `--test-imupair`, `--vrm-info`) are diagnostics and fitting utilities, not pass/fail checks. `--export-board` and `--export-marker` write a PNG and open it in the system viewer, so keep them out of any batch.
 
 ---
 

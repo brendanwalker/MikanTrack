@@ -150,6 +150,7 @@ Developer reference lives in [docs/reference/](docs/reference/):
 - [hand-tracking.md](docs/reference/hand-tracking.md) and [body-pose.md](docs/reference/body-pose.md): the tracking pipelines
 - [calibration.md](docs/reference/calibration.md): the wizards and where results persist
 - [imu.md](docs/reference/imu.md): the wrist IMU system
+- [avatar.md](docs/reference/avatar.md): the VRM avatar loader, rest skeleton, and MToon renderer
 - [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
 - [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
 - [testing.md](docs/reference/testing.md): running the tests, what each verifies, coverage gaps
@@ -163,7 +164,7 @@ Windows 10/11, Visual Studio 2022, CMake >= 3.15.
 ```bat
 git clone <this repo>
 cd MikanTrack
-InitialSetup_x64.bat            :: downloads deps/ (SDL2, OpenCV, GLEW, ONNX Runtime, DirectML) + models/
+InitialSetup_x64.bat            :: downloads deps/ (SDL2, OpenCV, GLEW, ONNX Runtime, DirectML) + models/ (ONNX models, sample avatars)
 GenerateProjectFiles_X64_VS2022.bat
 cmake --build build --config Release
 build\Release\MikanTrack.exe

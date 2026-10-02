@@ -8,7 +8,7 @@ Architectural map of the MikanTrack source tree: what each `src/` subtree does, 
 
 Everything compiles into one executable. There is no enforced layering: every `src/` directory is on the include path (`target_include_directories` in `CMakeLists.txt`), and includes are bare filenames. The layering below is convention, derived from what each subtree actually includes.
 
-Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrates that flow (the vision thread lives there), `UI` and `Render` read published snapshots on the main thread, and `Math` and `Utility` sit at the bottom with no in-repo dependencies above them.
+Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrates that flow (the vision thread lives there), `UI` and `Render` read published snapshots on the main thread, `Avatar` is a pure data module beside `Tracking` (it reads `HandPoseModel` and nothing above it), and `Math` and `Utility` sit at the bottom with no in-repo dependencies above them.
 
 ## Module map
 
@@ -25,6 +25,8 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 - `src/Imu`: wrist inertial trackers. `ImuService` owns one `ImuDeviceTracker` per device (the device, its `ImuOrientationFilter`, and its `ImuMountingCalibrator` and `ImuBiasCalibrator`) and the side mapping that turns a sensor orientation into a forearm orientation, with `ImuMountingMath` as the pure mounting solve behind it. `App` owns the service and `VisionThread` drives it. `src/Imu/Joycon/` is the HID backend (`JoyconDevice`, `JoyconDeviceManager`). See [imu.md](./imu.md).
 
 - `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`. See [wire-protocol.md](./wire-protocol.md).
+
+- `src/Avatar`: the VRM avatar. `VrmLoader` reads a VRM 0.x or 1.0 file into `AvatarModel` (`AvatarTypes.h`: the glTF scene plus the `eHumanoidBone` map and meta), and `AvatarSkeleton` derives the immutable rest data the renderer poses from and the retarget measures against. Pure CPU, no GL. See [avatar.md](./avatar.md).
 
 - `src/Render`: minimal GL helpers for the 3D scene view: `GlFrameBuffer`, `GlTexture`, `GlLineRenderer`, `DebugDraw`, `OrbitCamera`, `Colors.h`. No scene graph.
 
