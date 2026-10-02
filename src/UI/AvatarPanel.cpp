@@ -127,13 +127,15 @@ void AvatarPanel::drawModelSummary()
 						  .c_str());
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
-		if (!skeleton.getHand((eHandSide)sideIndex).valid)
+		if (!skeleton.getHand((eHandSide)sideIndex).hasAnyFinger())
 		{
 			ImGui::TextColored(ImVec4(1.f, 0.8f, 0.4f, 1.f), "%s",
 							   locText(sideIndex == 0 ? "avatarPanel.leftHandIncompleteText"
 													  : "avatarPanel.rightHandIncompleteText"));
 		}
 	}
+	for (const std::string& warning : skeleton.getWarnings())
+		ImGui::TextWrapped("%s", warning.c_str());
 }
 
 void AvatarPanel::drawPlacement()

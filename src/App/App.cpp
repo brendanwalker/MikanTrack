@@ -274,6 +274,8 @@ bool App::loadAvatar(const std::filesystem::path& path)
 
 	m_avatarModel= result.model;
 	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*result.model);
+	for (const std::string& warning : m_avatarSkeleton->getWarnings())
+		MIKAN_LOG_WARNING("App::loadAvatar") << warning;
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
 	m_visionThread->setAvatarSkeleton(m_avatarSkeleton);

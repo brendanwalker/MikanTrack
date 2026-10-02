@@ -531,8 +531,64 @@ static int runAvatarRetargetTest(const TestArgs&)
 		for (int index= (int)B::LeftThumbProximal; index < HUMANOID_BONE_COUNT; ++index)
 			bNoFingers&= !pose.bones[index].present;
 		check(bNoFingers && !pose.bones[(int)B::LeftShoulder].present && pose.bones[(int)B::LeftUpperArm].present &&
-				  !bareSkeleton.getHand(eHandSide::Left).valid,
-			  "(h) an avatar without fingers or clavicles poses its arms and nothing else");
+				  pose.bones[(int)B::LeftHand].present && !bareSkeleton.getHand(eHandSide::Left).hasAnyFinger(),
+			  "(h) an avatar without fingers or clavicles poses its arms and hands and nothing else");
+		{
+			// The fingerless hand still takes the measured palm orientation
+			// through the T-pose stand-in palm frame
+			const AvatarSkeleton::HandRest& bareHand= bareSkeleton.getHand(eHandSide::Left);
+			const glm::quat bareRestPalm= glm::quat_cast(glm::mat3(bareHand.palmFrameWorld));
+			check(nearlySameRotation(bareRestPalm, glm::quat_cast(VmcRetarget::restPalmFrame(eHandSide::Left)), 1e-3f) &&
+					  nearlySameRotation(pose.bones[(int)B::LeftHand].deltaWorld * bareRestPalm, full.poses[0].palmOrientationWorld, 1e-4f),
+				  "(h) a fingerless hand builds the T-pose palm frame and follows the measured palm");
+		}
+
+		// A rig with two bones per finger mapped into the intermediate and
+		// distal slots and no little finger (a Blender-authored VRM): the hand
+		// poses, each finger poses its two bones, and the bends past the
+		// second bone fold into it
+		AvatarModel twoBone= makeModel(eVrmVersion::Vrm1, false);
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			for (int finger= 0; finger < FINGER_COUNT; ++finger)
+			{
+				twoBone.humanoidNodes[(int)fingerBone((eHandSide)sideIndex, finger, 0)]= -1;
+				if (finger == (int)eFinger::Pinky)
+				{
+					twoBone.humanoidNodes[(int)fingerBone((eHandSide)sideIndex, finger, 1)]= -1;
+					twoBone.humanoidNodes[(int)fingerBone((eHandSide)sideIndex, finger, 2)]= -1;
+				}
+			}
+		}
+		const AvatarSkeleton twoBoneSkeleton(twoBone);
+		const AvatarSkeleton::HandRest& twoBoneHand= twoBoneSkeleton.getHand(eHandSide::Left);
+		check(twoBoneHand.fingerBoneCount[(int)eFinger::Index] == 2 && twoBoneHand.fingerSlots[(int)eFinger::Index][0] == 1 &&
+				  twoBoneHand.fingerSlots[(int)eFinger::Index][1] == 2 && twoBoneHand.fingerBoneCount[(int)eFinger::Pinky] == 0 &&
+				  twoBoneHand.skeleton.baseInPalm[(int)eFinger::Index].y > 0.01f,
+			  "(h) a two-bone finger rig reports its physical bones and slots with the tracked chirality");
+
+		Scenario twoBoneScenario= makeRestScenario(eVrmVersion::Vrm1, false);
+		HandPose& twoBoneLeft= twoBoneScenario.poses[0];
+		twoBoneLeft.fingers[(int)eFinger::Index]= {0.f, 1.0f, 0.5f, 0.3f};
+		const glm::quat palmTurn= glm::angleAxis(0.5f, glm::normalize(glm::vec3(0.2f, 1.f, 0.3f)));
+		placeHand(twoBoneLeft, twoBoneLeft.shoulderPositionWorld + glm::vec3(0.2f, 0.15f, -0.1f), palmTurn);
+		AvatarRetarget twoBoneRetarget;
+		twoBoneRetarget.solve(twoBoneScenario.poses, twoBoneScenario.bSideValid, twoBoneScenario.head, 0.0,
+							  twoBoneScenario.user, twoBoneSkeleton, twoBoneScenario.config, pose);
+		const glm::quat twoBoneRestPalm= glm::quat_cast(glm::mat3(twoBoneHand.palmFrameWorld));
+		check(pose.bones[(int)B::LeftHand].present &&
+				  nearlySameRotation(pose.bones[(int)B::LeftHand].deltaWorld * twoBoneRestPalm, twoBoneLeft.palmOrientationWorld, 1e-4f),
+			  "(h) a two-bone finger rig still takes the measured palm orientation");
+		const int indexFinger= (int)eFinger::Index;
+		const glm::vec3 firstBone=
+			pose.bones[(int)B::LeftIndexIntermediate].deltaWorld * twoBoneHand.restPhalanxDirWorld[indexFinger][0];
+		const glm::vec3 secondBone=
+			pose.bones[(int)B::LeftIndexDistal].deltaWorld * twoBoneHand.restPhalanxDirWorld[indexFinger][1];
+		const float bend= acosf(std::clamp(glm::dot(firstBone, secondBone), -1.f, 1.f));
+		check(!pose.bones[(int)B::LeftIndexProximal].present && pose.bones[(int)B::LeftIndexIntermediate].present &&
+				  pose.bones[(int)B::LeftIndexDistal].present && nearlyEqual(bend, 0.8f, 1e-3f) &&
+				  !pose.bones[(int)B::LeftLittleIntermediate].present,
+			  "(h) the two present finger bones pose, the second folding in the distal bend");
 		VmcRetarget::VmcPose vmc;
 		VmcRetarget::buildPoseFromAvatar(pose, bareSkeleton, vmc);
 		check(vmc.bones[(int)VmcRetarget::eVmcBone::LeftUpperArm].present &&

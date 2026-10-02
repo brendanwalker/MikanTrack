@@ -309,7 +309,6 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 				forearmDirection= upperDirection;
 			chainDelta= swingTo(chainDelta, rest.direction(handBone), forearmDirection);
 
-			if (hand.valid)
 			{
 				const glm::quat measuredForearm= pose.hasForearmPose ? pose.forearmOrientationWorld : pose.palmOrientationWorld;
 				const glm::vec3 measuredPalmNormal=
@@ -329,8 +328,6 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 		const glm::vec3 handPosition= elbow + chainDelta * rest.offset(handBone);
 
 		// Hand: the full measured palm frame against the avatar's rest palm
-		if (!hand.valid)
-			continue;
 		const glm::quat handDelta= pose.palmOrientationWorld * glm::inverse(rest.rotation * restPalmRotation);
 		{
 			AvatarPose::Bone& bone= outPose.bones[(int)handBone];
@@ -348,23 +345,45 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 		glm::mat4 palmTransform= glm::mat4_cast(posedPalmRotation);
 		palmTransform[3]= glm::vec4(handPosition + handDelta * (rest.rotation * (restPalmCenter - restHandPosition)), 1.f);
 
+		// A rig with fewer bones than the measured finger folds the bends
+		// past its last bone into that bone, so a fist still closes on a
+		// two-bone finger
+		std::array<FingerAngles, FINGER_COUNT> angles= pose.fingers;
+		for (int finger= 0; finger < FINGER_COUNT; ++finger)
+		{
+			FingerAngles& fingerAngles= angles[finger];
+			switch (hand.fingerBoneCount[finger])
+			{
+			case 1:
+				fingerAngles.proximal+= fingerAngles.intermediate + fingerAngles.distal;
+				fingerAngles.intermediate= 0.f;
+				fingerAngles.distal= 0.f;
+				break;
+			case 2:
+				fingerAngles.intermediate+= fingerAngles.distal;
+				fingerAngles.distal= 0.f;
+				break;
+			default:
+				break;
+			}
+		}
+
 		std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
-		HandPoseModel::buildFingerJoints(palmTransform, hand.skeleton, pose.fingers, joints);
+		HandPoseModel::buildFingerJoints(palmTransform, hand.skeleton, angles, joints);
 
 		for (int finger= 0; finger < FINGER_COUNT; ++finger)
 		{
-			if (!hand.fingerPresent[finger])
-				continue;
 			glm::quat fingerDelta= handDelta;
-			for (int phalanx= 0; phalanx < 3; ++phalanx)
+			for (int index= 0; index < hand.fingerBoneCount[finger]; ++index)
 			{
-				const glm::vec3 direction= safeNormalize(joints[finger][phalanx + 1] - joints[finger][phalanx]);
+				const glm::vec3 direction= safeNormalize(joints[finger][index + 1] - joints[finger][index]);
 				if (glm::dot(direction, direction) > 0.f)
 				{
 					fingerDelta=
-						swingTo(fingerDelta, rest.rotation * hand.restPhalanxDirWorld[finger][phalanx], direction);
+						swingTo(fingerDelta, rest.rotation * hand.restPhalanxDirWorld[finger][index], direction);
 				}
-				AvatarPose::Bone& bone= outPose.bones[(int)fingerBone(sideIndex, finger, phalanx)];
+				AvatarPose::Bone& bone=
+					outPose.bones[(int)fingerBone(sideIndex, finger, hand.fingerSlots[finger][index])];
 				bone.present= true;
 				bone.deltaWorld= fingerDelta;
 			}

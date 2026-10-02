@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <string>
 #include <vector>
 
 #include "glm/ext/matrix_float4x4.hpp"
@@ -51,16 +52,36 @@ public:
 	// tracked skeleton, neutralDirInPalm here carries the AVATAR's rest
 	// finger directions (zero angles reproduce the avatar's own rest hand);
 	// this skeleton is never put on the wire.
+	//
+	// Fingers are whatever the rig has. A finger's PHYSICAL bones are its
+	// present humanoid slots in order (a rig that maps two bones into the
+	// intermediate and distal slots has physical bones 0 and 1 there), and
+	// the hand skeleton's three phalanges start at physical bone 0, with the
+	// missing joints extrapolated. A finger with no bones gets a stand-in so
+	// the palm frame still builds; a rig with no fingers at all gets the
+	// T-pose palm frame off the hand joint.
 	struct HandRest
 	{
-		bool valid= false;             // index, middle and little present
+		bool valid= false;             // the hand bone exists (always, for a loaded avatar)
 		glm::mat4 palmFrameWorld{1.f}; // columns: palm X, Y, Z axes, palm center
 		HandSkeleton skeleton;
-		std::array<bool, FINGER_COUNT> fingerPresent{};
-		// Rest direction of each phalanx bone in world space, base to tip, the
-		// direction a retarget swings onto a posed one. The distal entry runs
-		// toward the extrapolated fingertip.
+		// Physical bones per finger (0..3) and the humanoid phalanx slot
+		// (0 proximal, 1 intermediate, 2 distal) each physical bone sits in
+		std::array<int, FINGER_COUNT> fingerBoneCount{};
+		std::array<std::array<int, 3>, FINGER_COUNT> fingerSlots{};
+		// Rest direction of each PHYSICAL bone in world space, base to tip,
+		// the direction a retarget swings onto a posed one. Entries past the
+		// bone count run toward the extrapolated joints.
 		std::array<std::array<glm::vec3, 3>, FINGER_COUNT> restPhalanxDirWorld{};
+
+		bool hasFinger(int finger) const { return fingerBoneCount[finger] > 0; }
+		bool hasAnyFinger() const
+		{
+			for (int count : fingerBoneCount)
+				if (count > 0)
+					return true;
+			return false;
+		}
 	};
 
 	eVrmVersion getVersion() const { return m_version; }
@@ -86,6 +107,11 @@ public:
 	// Highest rest joint (the head or an eye) above the hips, for framing
 	float getHeightAboveHips() const { return m_heightAboveHips; }
 
+	// Rig oddities found while building (a hand whose index sits on the
+	// pinky side of its thumb, say). The avatar still loads and poses; these
+	// tell the user what the mapping will do wrong.
+	const std::vector<std::string>& getWarnings() const { return m_warnings; }
+
 private:
 	void buildHand(const AvatarModel& model, eHandSide side);
 
@@ -100,5 +126,6 @@ private:
 	float m_handLength[2]= {0.f, 0.f};
 	float m_shoulderWidth= 0.f;
 	glm::vec3 m_restShoulderMidpointWorld{0.f};
+	std::vector<std::string> m_warnings;
 	float m_heightAboveHips= 0.f;
 };

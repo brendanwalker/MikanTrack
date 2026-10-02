@@ -82,7 +82,9 @@ static int runVrmInfoTool(const TestArgs& args)
 		MIKAN_LOG_INFO("vrm-info") << (sideIndex == 0 ? "left" : "right") << " arm: upper "
 								   << skeleton.getUpperArmLength(side) << " m, forearm "
 								   << skeleton.getForearmLength(side) << " m, hand " << skeleton.getHandLength(side)
-								   << " m, hand rest " << (hand.valid ? "valid" : "INVALID");
+								   << " m, finger bones " << hand.fingerBoneCount[0] << "/" << hand.fingerBoneCount[1]
+								   << "/" << hand.fingerBoneCount[2] << "/" << hand.fingerBoneCount[3] << "/"
+								   << hand.fingerBoneCount[4];
 		if (hand.valid)
 		{
 			const glm::vec3 x(hand.palmFrameWorld[0]);
@@ -101,6 +103,8 @@ static int runVrmInfoTool(const TestArgs& args)
 
 	for (const std::string& warning : result.warnings)
 		MIKAN_LOG_INFO("vrm-info") << "warning: " << warning;
+	for (const std::string& warning : skeleton.getWarnings())
+		MIKAN_LOG_INFO("vrm-info") << "skeleton warning: " << warning;
 	return 0;
 }
 MIKAN_REGISTER_TEST("--vrm-info", "Print what the loader reads from a VRM file and the derived skeleton",

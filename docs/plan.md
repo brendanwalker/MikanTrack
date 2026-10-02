@@ -14,7 +14,7 @@ The living plan: what is in flight now, what comes next, and the open questions.
 
 - [ ] Live-verify the avatar retarget: with an avatar loaded and both cameras tracking, the 3D scene character follows the hands, bends its elbows toward the measured ones, turns its head, and slides onto the measured shoulders when the body-pose stage tracks them; then VMC mode against VSeeFace and VNyan with a VRoid sample and Bonjiri (arms, wrist roll, fingers, and the rest pose on a dropout). The solver and the stream are self-tested; the live feel (root follow time constant, default elbow pole, reach scaling on a real body) is not.
 - [ ] A `/mikan/avatar` bone block on the Mikan wire so the Unreal plugin can drop its animation blueprint retarget, planned separately once the retarget is live.
-- [ ] Avatar mapping UI: per-bone rotation offsets, elbow pole controls, hand rest tweaks, on top of the read-only bone table.
+- [ ] Avatar mapping UI: per-bone rotation offsets, elbow pole controls, hand rest tweaks, and a per-finger remap (the Jasper Mozu VRM maps its index and middle fingers swapped, which the skeleton warning now reports), on top of the read-only bone table.
 
 ## Later
 
