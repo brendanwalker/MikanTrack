@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -8,7 +9,10 @@
 #include "TrackingTypes.h"
 
 class AppConfig;
+struct AvatarModel;
+class AvatarSkeleton;
 class GlFrameBuffer;
+class GlSkinnedMeshRenderer;
 class GlLineRenderer;
 class OrbitCamera;
 struct MikanMonoIntrinsics;
@@ -27,6 +31,11 @@ struct SceneCameraView
 // markerFromCamera maps OpenCV-convention camera space to world; the panel
 // applies the GL flip for the frustum itself.
 std::vector<SceneCameraView> makeSceneCameraViews(const AppConfig& config);
+
+// World is Z-up (marker plane = XY); the renderer and orbit camera are Y-up.
+// The one world-to-display conversion: world +Z becomes display +Y, so
+// (x, y, z) -> (x, z, -y). Shared with the headless avatar render tool.
+const glm::mat4& displayFromWorld();
 
 // Alternate 3D view: renders the marker-plane grid, marker axes, one frustum
 // per calibrated camera, the FUSED hand/arm skeletons (full brightness) and
@@ -50,6 +59,14 @@ public:
 	// direction is measured by the wrist IMU, only the length is assumed
 	void setForearmLength(float meters) { m_forearmLengthMeters= meters; }
 
+	// The avatar to draw (null = none). The generation counter tells the panel
+	// when the model changed and its GPU copy must be rebuilt.
+	void setAvatar(std::shared_ptr<const AvatarModel> model, std::shared_ptr<const AvatarSkeleton> skeleton,
+				   uint32_t generation);
+	// Visibility plus the fixed root placement: origin in the world frame and
+	// yaw about world +Z (degrees, 0 = facing world +X)
+	void setAvatarPlacement(bool bShow, const glm::vec3& rootPositionWorld, float rootYawDegrees);
+
 	bool getShowPerCameraSkeletons() const { return m_bShowPerCameraSkeletons; }
 	void setShowPerCameraSkeletons(bool bShow) { m_bShowPerCameraSkeletons= bShow; }
 
@@ -57,10 +74,22 @@ private:
 	void renderScene(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
 					 const std::vector<const TrackingFrameResult*>& perCameraResults, float aspect);
 	void drawSkeleton(const TrackingFrameResult& result, float brightness, const glm::vec3* colorOverride);
+	// Draws the avatar when one is shown; returns whether anything was drawn
+	bool drawAvatar();
 
 	std::unique_ptr<GlFrameBuffer> m_frameBuffer;
 	std::unique_ptr<GlLineRenderer> m_lineRenderer;
 	std::unique_ptr<OrbitCamera> m_camera;
+	std::unique_ptr<GlSkinnedMeshRenderer> m_meshRenderer;
+	bool m_bMeshRendererInitialized= false;
+
+	std::shared_ptr<const AvatarModel> m_avatarModel;
+	std::shared_ptr<const AvatarSkeleton> m_avatarSkeleton;
+	uint32_t m_avatarGeneration= 0;
+	uint32_t m_uploadedAvatarGeneration= 0;
+	bool m_bShowAvatar= true;
+	glm::vec3 m_avatarRootPositionWorld{0.f};
+	float m_avatarRootYawDegrees= 0.f;
 	bool m_bRenderInitialized= false;
 	bool m_bShowPerCameraSkeletons= false;
 	float m_forearmLengthMeters= 0.25f;

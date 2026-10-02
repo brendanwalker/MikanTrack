@@ -8,6 +8,14 @@ The living plan: what is in flight now, what comes next, and the open questions.
 - [ ] Live-verify the setup-flow usability pass: cancel mid-flow deletes the new project and Resume falls back to the previous one, camera-selection previews appear as devices are picked, the Video Preview tab fronts when intrinsics/extrinsics start, and a Resume pointing at a deleted project is hidden. Remaining from the original walkthrough: the Joy-Con and tri-camera setup variants end to end.
 - [ ] Finish the MikanTrack rename outside the source tree: rename the repo working directory and the GitHub repository, then re-clone or update the remote. The code, docs, and appdata folder already use the new name.
 - [ ] Live-verify the `/mikan/hand/{s}/forearm` wire change end to end with an OSC consumer (both sides built and self-tested, not yet exercised live).
+- [ ] Live-verify the Avatar panel in the app: load `models/avatars/fem_vroid.vrm` and Bonjiri through Browse, check the avatar stands on the marker grid facing +X with arms along +/-Y in the 3D Scene tab, the tracked skeleton lines draw over it, the placement controls move it, project save and reload restore it, and Close Project clears it (the renderer itself is verified by `--render-avatar`, the panel path is not).
+
+## Next
+
+- [ ] Avatar retarget (Milestone B): `AvatarRetarget::solve`, a pure deterministic function from the fused result, the body dimensions and the `AvatarSkeleton` to an `AvatarPose` (root transform plus per-bone world rotation deltas from rest). Root from the measured shoulders through a slow EMA when both are tracked and `followShoulders` is on, else the fixed root. Hand target `avatarShoulder + (userWrist - userShoulder) * (avatarArm / userArm)`, clamped to reach; two-bone IK on the avatar's arm lengths with the measured elbow direction as pole when `hasForearmPose`, else a default pole, mirroring the `VmcRetarget` degradation ladder; forearm roll and hand orientation through the avatar rest palm frame; fingers via `buildFingerJoints` on the avatar `HandSkeleton` then a swing per phalanx; head delta from the measured head. The vision thread receives the skeleton through its own mutex-guarded slot plus a changed flag (not `requestConfigRefresh`, which finalizes recordings) and the main thread runs the same solve on whatever fused result it displays, live or replay, so no new fetch handoff. `--test-avatar-retarget` per the plan.
+- [ ] Avatar-driven VMC: with a skeleton set, `appendVmcMessages` streams `inverse(parentDelta) * boneDelta` through `worldToUnityRotation` and the avatar's humanoid-parent rest world offsets through `worldToUnityPosition`; root stays identity; the measured-length `VmcRetarget` path remains the fallback without an avatar. Verify live against VSeeFace and VNyan with a VRoid sample and Bonjiri.
+- [ ] A `/mikan/avatar` bone block on the Mikan wire so the Unreal plugin can drop its animation blueprint retarget, planned separately once the retarget is live.
+- [ ] Avatar mapping UI: per-bone rotation offsets, elbow pole controls, hand rest tweaks, on top of the read-only bone table.
 
 ## Later
 
@@ -17,6 +25,11 @@ The living plan: what is in flight now, what comes next, and the open questions.
 - [ ] Replace the IMU discovery poll with native device-arrival notifications (Win32 `CM_Register_Notification`, filtered on the Joy-Con VID), keeping a slow poll as the safety net.
 - [ ] Refit the per-user angle prior (`--fit-angle-prior`) as recording coverage grows; the shipped weighting is deliberately weak.
 - [ ] `GenerateProjectFiles_X64_VS2022.bat` passes `-A x64`, which conflicts with a `build/` cache configured without an explicit platform (Visual Studio 2022 defaults to x64 either way). Decide on one invocation so a fresh clone and an existing tree agree.
+- [ ] Human-review the machine-translated Japanese strings for the Avatar panel (`avatarPanel`, `windows.avatar`, `mainWindow.viewAvatarPanel` in `resources/localization/ja.json`).
+- [ ] A redistributable VRM 1.0 sample under `models/avatars/` for live and sample-test coverage of the 1.0 path (the synthetic test is the only 1.0 coverage; both VRoid samples and Bonjiri are 0.x).
+- [ ] MToon features the renderer skips: outline, rim and matcap, UV animation; plus morph targets (expressions) and spring bones (hair and cloth physics), which also need the VRM extension parsing extended.
+- [ ] Avatar load is synchronous on the main thread (well under a second for a VRoid file); move the parse and image decode to a worker if large models stall the UI noticeably.
+- [ ] The avatar shade for non-MToon materials and the single key light are fixed in the renderer; expose light direction and ambient if the preview needs tuning.
 
 ## Open questions
 

@@ -256,6 +256,26 @@ struct RecordingConfig
 	int jpegQuality= 85;
 };
 
+// The VRM avatar shown in the 3D scene and retargeted onto. Only the path
+// and placement persist: the loaded model lives on App, and loading is never
+// a side effect of reading this config (replay reconstructs configs
+// headlessly, with no GL context).
+struct AvatarConfig
+{
+	// UTF-8. Absolute, or relative to the project folder, then to the exe
+	// folder (so "models/avatars/x.vrm" finds a shipped sample). Empty = none.
+	std::string modelPath;
+	bool showInScene= true;
+	// Slide the avatar so its shoulders sit on the measured ones when the
+	// body-pose stage tracks both; otherwise the fixed root below places it
+	bool followShoulders= true;
+	// Where the avatar's origin (between its feet) sits in the world frame
+	// when the shoulders are not followed, meters, plus its yaw about world
+	// +Z in degrees (0 = facing world +X, the rest-pose facing)
+	glm::vec3 rootPositionWorld{0.f, 0.f, 0.f};
+	float rootYawDegrees= 0.f;
+};
+
 struct FusionConfig
 {
 	// A camera's last result older than this is excluded from fusion
@@ -323,6 +343,7 @@ public:
 	ImuConfig imu;
 	BodyConfig body;
 	RecordingConfig recording;
+	AvatarConfig avatar;
 	// Rest-pose zero for the stereo-TRIANGULATED path (one set, not per
 	// camera: triangulated geometry has no per-camera model bias to fold in).
 	// Captured alongside the per-camera rest angles.

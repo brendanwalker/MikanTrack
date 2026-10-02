@@ -49,10 +49,12 @@
 		"logPanel": "Log Panel",
 		"quit": "Quit",
 		"saveProject": "Save Project",
+		"viewAvatarPanel": "Avatar Panel",
 		"viewMenu": "View",
 		"viewSettingsPanel": "Settings Panel"
 	},
 	"windows": {
+		"avatar": "Avatar",
 		"bodyWizard": "Body Measurements",
 		"calibration": "Calibration",
 		"device": "Device",
@@ -113,6 +115,32 @@
 	},
 	"settingsPanel": {
 		"language": "Language"
+	},
+	"avatarPanel": {
+		"armLengthsFmt": "Arm: avatar %.0f + %.0f cm, you %.0f + %.0f cm (upper + forearm)",
+		"authorFmt": "Author: %s",
+		"boneColumn": "Bone",
+		"boneMapHeader": "Humanoid bone map",
+		"boneMissingText": "missing",
+		"bonesPresentFmt": "%d of %d humanoid bones mapped",
+		"browseButton": "Load VRM...",
+		"browseDialogFilterDescription": "VRM avatar (*.vrm)",
+		"browseDialogTitle": "Load VRM Avatar",
+		"contentsFmt": "%d nodes, %d skins, %d triangles, %d images",
+		"fixedRootHeader": "Fixed placement (used while the shoulders are not tracked)",
+		"followShouldersCheckbox": "Follow measured shoulders",
+		"followShouldersTooltip": "When the body-pose stage tracks both shoulders, the avatar\nslides so its shoulders sit on the measured ones.",
+		"leftHandIncompleteText": "Left hand lacks finger bones; its fingers will not be retargeted",
+		"licenseFmt": "License: %s",
+		"modelNameFmt": "%s (%s)",
+		"noModelText": "No avatar loaded",
+		"resetRootButton": "Reset placement",
+		"rightHandIncompleteText": "Right hand lacks finger bones; its fingers will not be retargeted",
+		"rootPositionDrag": "Root position",
+		"rootYawDrag": "Root yaw",
+		"shoulderWidthFmt": "Shoulder width: avatar %.0f cm, you %.0f cm",
+		"showInSceneCheckbox": "Show in 3D scene",
+		"unloadButton": "Unload"
 	},
 	"devicePanel": {
 		"addCameraButton": "Add Camera",

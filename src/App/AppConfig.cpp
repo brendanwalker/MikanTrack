@@ -550,6 +550,18 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.recording.recordRawFrames= rec.value("recordRawFrames", false);
 	config.recording.jpegQuality= rec.value("jpegQuality", 85);
 
+	const json& av= j.value("avatar", json::object());
+	config.avatar.modelPath= av.value("modelPath", "");
+	config.avatar.showInScene= av.value("showInScene", true);
+	config.avatar.followShoulders= av.value("followShoulders", true);
+	config.avatar.rootPositionWorld= glm::vec3(0.f);
+	if (av.contains("rootPosition") && av["rootPosition"].is_array() && av["rootPosition"].size() == 3)
+	{
+		config.avatar.rootPositionWorld=
+			glm::vec3((float)av["rootPosition"][0], (float)av["rootPosition"][1], (float)av["rootPosition"][2]);
+	}
+	config.avatar.rootYawDegrees= av.value("rootYawDegrees", 0.f);
+
 	const json& hs= j.value("handScale", json::object());
 	config.handScale.present= hs.value("present", false);
 	config.handScale.refLengthMeters= hs.value("refLengthMeters", 0.08);
@@ -655,6 +667,14 @@ std::string AppConfig::toJsonString() const
 	j["recording"]= {
 		{"recordRawFrames", recording.recordRawFrames},
 		{"jpegQuality", recording.jpegQuality},
+	};
+
+	j["avatar"]= {
+		{"modelPath", avatar.modelPath},
+		{"showInScene", avatar.showInScene},
+		{"followShoulders", avatar.followShoulders},
+		{"rootPosition", json::array({avatar.rootPositionWorld.x, avatar.rootPositionWorld.y, avatar.rootPositionWorld.z})},
+		{"rootYawDegrees", avatar.rootYawDegrees},
 	};
 
 	j["handScale"]= {

@@ -126,7 +126,7 @@ The `Tool` category commands take a file argument, so they are not part of any a
 
 - `--replay-popmetrics <recording.jsonl>... [prior-config.json]` reports pop statistics of a recording, baseline against the hand estimator, which measures a smoothing or estimator change rather than only detecting that it changed something.
 
-The remaining tools (`--replay-dump`, `--replay-bodypose`, `--replay-extrinsics`, `--calibrate-bones`, `--fit-angle-prior`, `--test-imupair`, `--vrm-info`) are diagnostics and fitting utilities, not pass/fail checks. `--export-board` and `--export-marker` write a PNG and open it in the system viewer, so keep them out of any batch.
+The remaining tools (`--replay-dump`, `--replay-bodypose`, `--replay-extrinsics`, `--calibrate-bones`, `--fit-angle-prior`, `--test-imupair`, `--vrm-info`) are diagnostics and fitting utilities, not pass/fail checks. `--render-avatar <file.vrm> [out.png]` renders an avatar's rest pose through the real scene renderer from a hidden window, the regression instrument for the skinned renderer: compare its PNG before and after a shader or draw-order change. `--export-board` and `--export-marker` write a PNG and open it in the system viewer, so keep them out of any batch.
 
 ---
 

@@ -7,6 +7,7 @@
 #include "VisionThread.h"    // VisionPreviewFrame
 
 class App;
+class AvatarPanel;
 class CalibrationPanel;
 class DevicePanel;
 class MainMenuScreen;
@@ -61,6 +62,7 @@ private:
 	std::unique_ptr<CalibrationPanel> m_calibrationPanel;
 	std::unique_ptr<WizardHost> m_wizardHost;
 	std::unique_ptr<TimelinePanel> m_timelinePanel;
+	std::unique_ptr<AvatarPanel> m_avatarPanel;
 	// Guided new-project setup chain; needs the wizards above, so it is
 	// constructed last (in the constructor body)
 	std::unique_ptr<SetupFlow> m_setupFlow;
@@ -74,5 +76,6 @@ private:
 
 	bool m_bShowLogPanel= true;
 	bool m_bShowSettingsPanel= true;
+	bool m_bShowAvatarPanel= true;
 	bool m_bDockLayoutInitialized= false;
 };

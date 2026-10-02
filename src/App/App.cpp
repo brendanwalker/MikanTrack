@@ -11,6 +11,7 @@
 #include "imgui_impl_sdl2.h"
 
 #include "AppConfig.h"
+#include "AvatarSkeleton.h"
 #include "FrameTimer.h"
 #include "GlobalSettings.h"
 #include "ImuService.h"
@@ -23,6 +24,7 @@
 #include "ProjectManager.h"
 #include "VideoCaptureSystem.h"
 #include "VisionThread.h"
+#include "VrmLoader.h"
 
 App* App::m_instance= nullptr;
 
@@ -181,6 +183,7 @@ bool App::activateProject(const std::filesystem::path& projectFile)
 	m_imuService->startup();
 	m_visionThread->start();
 	m_mainWindow->tryRestoreVideoDeviceFromConfig();
+	loadConfiguredAvatar();
 	m_appState= eAppState::Project;
 	return true;
 }
@@ -209,6 +212,7 @@ bool App::activateNewProject(const std::string& projectName)
 void App::returnToMainMenu()
 {
 	m_config->save();
+	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
@@ -220,6 +224,7 @@ void App::discardNewProjectAndReturnToMenu()
 {
 	const std::filesystem::path projectFile= m_config->getProjectFilePath();
 
+	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
@@ -244,6 +249,52 @@ void App::discardNewProjectAndReturnToMenu()
 	m_globalSettings->save();
 
 	m_appState= eAppState::MainMenu;
+}
+
+std::filesystem::path App::resolveAvatarPath(const std::string& modelPath) const
+{
+	const std::filesystem::path path= PathUtils::utf8ToPath(modelPath);
+	if (path.empty() || path.is_absolute())
+		return path;
+
+	const std::filesystem::path projectDirectory= m_config->getProjectDirectory();
+	if (!projectDirectory.empty() && std::filesystem::is_regular_file(projectDirectory / path))
+		return projectDirectory / path;
+	return PathUtils::getModulePath() / path;
+}
+
+bool App::loadAvatar(const std::filesystem::path& path)
+{
+	const VrmLoader::LoadResult result= VrmLoader::loadFile(path);
+	if (result.model == nullptr)
+	{
+		m_avatarLoadError= result.error;
+		return false;
+	}
+
+	m_avatarModel= result.model;
+	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*result.model);
+	m_avatarLoadError.clear();
+	++m_avatarGeneration;
+	return true;
+}
+
+void App::clearAvatar()
+{
+	if (m_avatarModel == nullptr && m_avatarLoadError.empty())
+		return;
+	m_avatarModel= nullptr;
+	m_avatarSkeleton= nullptr;
+	m_avatarLoadError.clear();
+	++m_avatarGeneration;
+}
+
+void App::loadConfiguredAvatar()
+{
+	clearAvatar();
+	if (m_config->avatar.modelPath.empty())
+		return;
+	loadAvatar(resolveAvatarPath(m_config->avatar.modelPath));
 }
 
 bool App::consumeStartSetupFlowFlag()

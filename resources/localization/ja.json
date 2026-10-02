@@ -49,10 +49,12 @@
 		"logPanel": "ログパネル",
 		"quit": "終了",
 		"saveProject": "プロジェクトを保存",
+		"viewAvatarPanel": "アバターパネル",
 		"viewMenu": "表示",
 		"viewSettingsPanel": "設定パネル"
 	},
 	"windows": {
+		"avatar": "アバター",
 		"bodyWizard": "身体の採寸",
 		"calibration": "キャリブレーション",
 		"device": "デバイス",
@@ -113,6 +115,32 @@
 	},
 	"settingsPanel": {
 		"language": "言語"
+	},
+	"avatarPanel": {
+		"armLengthsFmt": "腕: アバター %.0f + %.0f cm、あなた %.0f + %.0f cm（上腕 + 前腕）",
+		"authorFmt": "作者: %s",
+		"boneColumn": "ボーン",
+		"boneMapHeader": "ヒューマノイドボーン対応表",
+		"boneMissingText": "なし",
+		"bonesPresentFmt": "ヒューマノイドボーン %d / %d を対応付け",
+		"browseButton": "VRMを読み込む...",
+		"browseDialogFilterDescription": "VRMアバター (*.vrm)",
+		"browseDialogTitle": "VRMアバターを読み込む",
+		"contentsFmt": "ノード %d、スキン %d、三角形 %d、画像 %d",
+		"fixedRootHeader": "固定配置（肩が追跡されていない間に使用）",
+		"followShouldersCheckbox": "計測した肩に追従",
+		"followShouldersTooltip": "ボディポーズ段階が両肩を追跡しているとき、アバターの肩が\n計測した肩の位置に合うように移動します。",
+		"leftHandIncompleteText": "左手に指のボーンがないため、指はリターゲットされません",
+		"licenseFmt": "ライセンス: %s",
+		"modelNameFmt": "%s (%s)",
+		"noModelText": "アバターが読み込まれていません",
+		"resetRootButton": "配置をリセット",
+		"rightHandIncompleteText": "右手に指のボーンがないため、指はリターゲットされません",
+		"rootPositionDrag": "ルート位置",
+		"rootYawDrag": "ルートのヨー",
+		"shoulderWidthFmt": "肩幅: アバター %.0f cm、あなた %.0f cm",
+		"showInSceneCheckbox": "3Dシーンに表示",
+		"unloadButton": "アンロード"
 	},
 	"devicePanel": {
 		"addCameraButton": "カメラを追加",

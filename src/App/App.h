@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -8,6 +9,8 @@ struct SDL_Window;
 typedef void* SDL_GLContext;
 
 class AppConfig;
+struct AvatarModel;
+class AvatarSkeleton;
 class GlobalSettings;
 class ImuService;
 class LocalizationManager;
@@ -65,6 +68,20 @@ public:
 	// context list is fixed while running) and resizes the capture slots
 	void applyCameraCountChange();
 
+	// The loaded VRM avatar, if any. Loaded on the main thread (the renderer
+	// builds GL resources from it) when a project activates and from the
+	// Avatar panel; cleared with the project. The generation counter advances
+	// on every change so the renderer knows when to re-upload.
+	bool loadAvatar(const std::filesystem::path& path);
+	void clearAvatar();
+	std::shared_ptr<const AvatarModel> getAvatarModel() const { return m_avatarModel; }
+	std::shared_ptr<const AvatarSkeleton> getAvatarSkeleton() const { return m_avatarSkeleton; }
+	uint32_t getAvatarGeneration() const { return m_avatarGeneration; }
+	const std::string& getAvatarLoadError() const { return m_avatarLoadError; }
+	// Resolves AvatarConfig::modelPath: absolute as is, else the project
+	// folder, else the exe folder
+	std::filesystem::path resolveAvatarPath(const std::string& modelPath) const;
+
 	AppConfig* getConfig() { return m_config.get(); }
 	GlobalSettings* getGlobalSettings() { return m_globalSettings.get(); }
 	LocalizationManager* getLocalization() { return m_localization.get(); }
@@ -92,6 +109,13 @@ private:
 	std::unique_ptr<ImuService> m_imuService;
 	std::unique_ptr<VisionThread> m_visionThread;
 	std::unique_ptr<MainWindow> m_mainWindow;
+
+	// Loads the configured avatar, if any, for the active project
+	void loadConfiguredAvatar();
+	std::shared_ptr<const AvatarModel> m_avatarModel;
+	std::shared_ptr<const AvatarSkeleton> m_avatarSkeleton;
+	uint32_t m_avatarGeneration= 0;
+	std::string m_avatarLoadError;
 
 	SDL_Window* m_sdlWindow= nullptr;
 	SDL_GLContext m_glContext= nullptr;

@@ -10,20 +10,25 @@
 #include "glm/gtc/constants.hpp"
 
 #include "AppConfig.h"
+#include "AvatarSkeleton.h"
 #include "Colors.h"
 #include "DebugDraw.h"
 #include "GlFrameBuffer.h"
 #include "GlLineRenderer.h"
+#include "GlSkinnedMeshRenderer.h"
 #include "HandPoseModel.h"
 #include "MikanVideoSourceTypes.h"
 #include "OrbitCamera.h"
 
 #include "glm/gtc/quaternion.hpp"
 
-// World is Z-up (marker plane = XY); the renderer/orbit camera are Y-up.
-// displayFromWorld rotates world +Z to display +Y: (x,y,z) -> (x, z, -y)
 static const glm::mat4 k_displayFromWorld=
 	glm::rotate(glm::mat4(1.f), -glm::half_pi<float>(), glm::vec3(1.f, 0.f, 0.f));
+
+const glm::mat4& displayFromWorld()
+{
+	return k_displayFromWorld;
+}
 
 // OpenCV camera convention (+Y down, +Z forward) <-> GL camera convention
 // (+Y up, -Z forward): 180-degree rotation about X. Its own inverse.
@@ -45,8 +50,24 @@ Scene3dPanel::Scene3dPanel()
 	: m_frameBuffer(std::make_unique<GlFrameBuffer>())
 	, m_lineRenderer(std::make_unique<GlLineRenderer>())
 	, m_camera(std::make_unique<OrbitCamera>())
+	, m_meshRenderer(std::make_unique<GlSkinnedMeshRenderer>())
 {
 	m_camera->setOrbitLocation(30.f, -40.f, 1.8f);
+}
+
+void Scene3dPanel::setAvatar(std::shared_ptr<const AvatarModel> model, std::shared_ptr<const AvatarSkeleton> skeleton,
+							 uint32_t generation)
+{
+	m_avatarModel= std::move(model);
+	m_avatarSkeleton= std::move(skeleton);
+	m_avatarGeneration= generation;
+}
+
+void Scene3dPanel::setAvatarPlacement(bool bShow, const glm::vec3& rootPositionWorld, float rootYawDegrees)
+{
+	m_bShowAvatar= bShow;
+	m_avatarRootPositionWorld= rootPositionWorld;
+	m_avatarRootYawDegrees= rootYawDegrees;
 }
 
 Scene3dPanel::~Scene3dPanel()= default;
@@ -188,6 +209,47 @@ void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightn
 	}
 }
 
+bool Scene3dPanel::drawAvatar()
+{
+	if (m_avatarModel == nullptr || m_avatarSkeleton == nullptr)
+	{
+		// Unloaded: drop the GPU copy rather than keeping a 12 MB model resident
+		if (m_meshRenderer->hasModel())
+			m_meshRenderer->clear();
+		return false;
+	}
+	if (!m_bShowAvatar)
+		return false;
+
+	if (!m_bMeshRendererInitialized)
+	{
+		m_bMeshRendererInitialized= m_meshRenderer->startup();
+		if (!m_bMeshRendererInitialized)
+			return false;
+	}
+	// Rebuild the GPU copy only when the model changed, not per frame
+	if (m_uploadedAvatarGeneration != m_avatarGeneration || !m_meshRenderer->hasModel())
+	{
+		if (!m_meshRenderer->upload(*m_avatarModel))
+			return false;
+		m_uploadedAvatarGeneration= m_avatarGeneration;
+	}
+
+	// Fixed root placement in the world frame, then the avatar's own axis
+	// convention, then the display rotation every world-space drawing takes
+	const glm::mat4 rootTransform=
+		glm::rotate(glm::translate(glm::mat4(1.f), m_avatarRootPositionWorld),
+					glm::radians(m_avatarRootYawDegrees), glm::vec3(0.f, 0.f, 1.f));
+	const glm::mat4 modelMatrix= k_displayFromWorld * rootTransform * m_avatarSkeleton->getWorldFromAvatar();
+
+	// One key light from above and in front of the avatar (display space:
+	// +Y up, +X the avatar's facing direction)
+	const glm::vec3 lightDirection= glm::normalize(glm::vec3(0.6f, 1.f, 0.4f));
+	m_meshRenderer->draw(m_camera->getViewProjection(), modelMatrix, m_avatarSkeleton->getRestGlobalsAvatar(),
+						 lightDirection);
+	return true;
+}
+
 void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
 							   const std::vector<const TrackingFrameResult*>& perCameraResults, float aspect)
 {
@@ -238,7 +300,10 @@ void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std
 	// Fused skeleton, full brightness
 	drawSkeleton(fusedResult, 1.f, nullptr);
 
-	m_lineRenderer->render3d(m_camera->getViewProjection());
+	// The avatar mesh first, then the lines over it with depth off when it is
+	// shown, so the tracked skeleton stays visible inside the character
+	const bool bAvatarDrawn= drawAvatar();
+	m_lineRenderer->render3d(m_camera->getViewProjection(), bAvatarDrawn);
 
 	m_frameBuffer->unbindFrameBuffer();
 }
