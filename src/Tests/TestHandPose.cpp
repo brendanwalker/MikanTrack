@@ -22,8 +22,10 @@ static int runHandPoseTest(const TestArgs& args)
 	}
 	skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
 	// NOTE on chirality: computePalmFrame derives +Z from the landmark
-	// layout; this skeleton (thumb/index at +Y) matches a RIGHT hand
-	// viewed in its own palm frame.
+	// layout. This skeleton (thumb/index at +Y) is geometrically a LEFT
+	// hand: a real right hand carries its index base at NEGATIVE palm Y.
+	// It is labelled Right because the side label is never used
+	// geometrically, which (c) below relies on.
 
 	// Round-trip helper: FK with the given angles -> landmark set ->
 	// re-extract angles -> max absolute error
@@ -104,7 +106,7 @@ static int runHandPoseTest(const TestArgs& args)
 		}
 
 		// Directional check: flexing the thumb must move its tip toward
-		// the pinky side (-Y in this right-hand skeleton), not stay in
+		// the pinky side (-Y in this skeleton), not stay in
 		// the palmar bend plane
 		std::array<FingerAngles, FINGER_COUNT> anglesStraight{};
 		anglesStraight[(int)eFinger::Thumb].lateral= -0.3f;

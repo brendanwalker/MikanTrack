@@ -33,7 +33,8 @@ glm::vec3 safeNormalize(const glm::vec3& v)
 
 // Thumb flexion hinge: the standard hinge pronated about the (post-bend)
 // thumb metacarpal direction. chiralitySign: +1 when the thumb sits on the
-// palm frame's +Y side (right hand), -1 otherwise.
+// palm frame's +Y side, which is a LEFT hand (palm +Y runs toward the thumb
+// on a left hand and toward the pinky on a right), -1 for a right hand.
 glm::vec3 pronatedThumbHinge(const glm::vec3& standardHinge, const glm::vec3& boneDirection, float chiralitySign)
 {
 	const glm::quat pronation= glm::angleAxis(chiralitySign * kThumbPronationRad, safeNormalize(boneDirection));

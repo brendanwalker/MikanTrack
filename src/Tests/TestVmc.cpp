@@ -29,7 +29,10 @@ VmcBodyLengths makeLengths()
 }
 
 // A plausible metric hand: the four fingers along palm +X, the thumb off to
-// the side, with the flat-hand neutral directions the app defaults to
+// the side, with the flat-hand neutral directions the app defaults to.
+// The thumb side is MIRRORED relative to a real hand (a real right hand has
+// its index base at negative palm Y); the retarget is side-agnostic given
+// the rest palm frame, so every assertion here holds either way.
 HandSkeleton makeSkeleton(eHandSide side)
 {
 	HandSkeleton skeleton;
