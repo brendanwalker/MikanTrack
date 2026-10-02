@@ -329,6 +329,11 @@ BodyDimensions makeBodyDimensions(const class AppConfig& config);
 struct HandFusionConfig;
 HandFusionConfig makeHandFusionConfig(const class AppConfig& config);
 
+// And for the avatar retarget: the OSC streamer and the 3D view both solve
+// from this one mapping of the avatar settings
+struct AvatarRetargetConfig;
+AvatarRetargetConfig makeAvatarRetargetConfig(const class AppConfig& config);
+
 class AppConfig
 {
 public:

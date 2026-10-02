@@ -104,6 +104,8 @@ void OscStreamer::setConfig(const OscStreamerConfig& config)
 							   config.targetIp != m_config.targetIp ||
 							   config.targetPort != m_config.targetPort;
 
+	if (config.avatarSkeleton != m_config.avatarSkeleton)
+		m_avatarRetarget.reset();
 	m_config= config;
 	m_hasSentInfo= false; // re-announce info on config change
 
@@ -292,13 +294,25 @@ void OscStreamer::appendVmcMessages(const TrackingFrameResult& frame, const Cloc
 													m_lastVmcPose[sideIndex], streamedPoses[sideIndex]);
 	}
 
-	VmcRetarget::VmcBodyLengths lengths;
-	lengths.shoulderWidthMeters= m_config.shoulderWidthMeters;
-	lengths.upperArmLengthMeters= m_config.upperArmLengthMeters;
-	lengths.forearmLengthMeters= m_config.forearmLengthMeters;
-	lengths.headOffsetMeters= m_config.vmcHeadOffsetMeters;
+	if (m_config.avatarSkeleton != nullptr)
+	{
+		// The retarget consumes the RESOLVED poses, so the hold and the
+		// freeze above shape what the avatar does on a dropout exactly as
+		// they shape the measured-length stream
+		m_avatarRetarget.solve(streamedPoses, bSideValid, frame.head, frame.timestampMs, m_config.bodyDimensions,
+							   *m_config.avatarSkeleton, m_config.avatarRetarget, m_avatarPose);
+		VmcRetarget::buildPoseFromAvatar(m_avatarPose, *m_config.avatarSkeleton, m_vmcPose);
+	}
+	else
+	{
+		VmcRetarget::VmcBodyLengths lengths;
+		lengths.shoulderWidthMeters= m_config.shoulderWidthMeters;
+		lengths.upperArmLengthMeters= m_config.upperArmLengthMeters;
+		lengths.forearmLengthMeters= m_config.forearmLengthMeters;
+		lengths.headOffsetMeters= m_config.vmcHeadOffsetMeters;
 
-	VmcRetarget::buildPose(streamedPoses, bSideValid, frame.head, lengths, m_vmcPose);
+		VmcRetarget::buildPose(streamedPoses, bSideValid, frame.head, lengths, m_vmcPose);
+	}
 
 	// /VMC/Ext/OK ,iiii -- loaded, calibration state, calibration mode,
 	// tracking status. Calibration always reads as done in normal mode: this

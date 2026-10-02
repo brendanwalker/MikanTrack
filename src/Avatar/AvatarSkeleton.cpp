@@ -116,6 +116,8 @@ AvatarSkeleton::AvatarSkeleton(const AvatarModel& model)
 	}
 	m_shoulderWidth=
 		glm::length(getBone(B::LeftUpperArm).restPositionWorld - getBone(B::RightUpperArm).restPositionWorld);
+	m_restShoulderMidpointWorld=
+		(getBone(B::LeftUpperArm).restPositionWorld + getBone(B::RightUpperArm).restPositionWorld) * 0.5f;
 
 	const float hipsZ= getBone(B::Hips).restPositionWorld.z;
 	m_heightAboveHips= 0.f;
@@ -189,6 +191,8 @@ void AvatarSkeleton::buildHand(const AvatarModel& model, eHandSide side)
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
 	{
 		const int* joints= FINGER_JOINTS[finger];
+		for (int phalanx= 0; phalanx < 3; ++phalanx)
+			hand.restPhalanxDirWorld[finger][phalanx]= safeNormalize(points[joints[phalanx + 1]] - points[joints[phalanx]]);
 		const glm::vec3 restDirection= glm::mat3(palmInverse) * (points[joints[1]] - points[joints[0]]);
 		const glm::vec3 normalized= safeNormalize(restDirection);
 		if (glm::dot(normalized, normalized) > 0.f)

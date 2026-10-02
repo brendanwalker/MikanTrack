@@ -3,6 +3,7 @@
 #include <memory>
 #include <vector>
 
+#include "AvatarRetarget.h"
 #include "SettingsPanels.h" // TrackingPanelState
 #include "VisionThread.h"    // VisionPreviewFrame
 
@@ -73,6 +74,13 @@ private:
 	TrackingFrameResult m_latestFused;
 
 	TrackingPanelState m_trackingPanelState;
+
+	// The display-side avatar retarget, run on whatever fused result the 3D
+	// scene shows (live or replay); the OSC streamer runs its own on the
+	// vision thread over the resolved poses
+	AvatarRetarget m_avatarRetarget;
+	AvatarPose m_avatarPose;
+	bool m_bAvatarPoseFromReplay= false;
 
 	bool m_bShowLogPanel= true;
 	bool m_bShowSettingsPanel= true;

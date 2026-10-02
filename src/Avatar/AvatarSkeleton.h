@@ -57,6 +57,10 @@ public:
 		glm::mat4 palmFrameWorld{1.f}; // columns: palm X, Y, Z axes, palm center
 		HandSkeleton skeleton;
 		std::array<bool, FINGER_COUNT> fingerPresent{};
+		// Rest direction of each phalanx bone in world space, base to tip, the
+		// direction a retarget swings onto a posed one. The distal entry runs
+		// toward the extrapolated fingertip.
+		std::array<std::array<glm::vec3, 3>, FINGER_COUNT> restPhalanxDirWorld{};
 	};
 
 	eVrmVersion getVersion() const { return m_version; }
@@ -74,6 +78,9 @@ public:
 	float getUpperArmLength(eHandSide side) const { return m_upperArmLength[(int)side]; }
 	float getForearmLength(eHandSide side) const { return m_forearmLength[(int)side]; }
 	float getShoulderWidth() const { return m_shoulderWidth; }
+	// Midpoint between the upper-arm joints at rest, the point the measured
+	// shoulder midpoint is matched to when the root follows the shoulders
+	const glm::vec3& getRestShoulderMidpointWorld() const { return m_restShoulderMidpointWorld; }
 	// Hand joint to middle finger base, 0 when the avatar has no middle finger
 	float getHandLength(eHandSide side) const { return m_handLength[(int)side]; }
 	// Highest rest joint (the head or an eye) above the hips, for framing
@@ -92,5 +99,6 @@ private:
 	float m_forearmLength[2]= {0.f, 0.f};
 	float m_handLength[2]= {0.f, 0.f};
 	float m_shoulderWidth= 0.f;
+	glm::vec3 m_restShoulderMidpointWorld{0.f};
 	float m_heightAboveHips= 0.f;
 };

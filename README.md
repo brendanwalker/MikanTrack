@@ -57,8 +57,10 @@ Two-Bone IK from the palm transform.
   projected into the lost camera's image to re-seed its search directly.
   Prefer 720p per camera and separate USB controllers for two streams.
 - **VRM avatar**: load a VRM 0.x or 1.0 avatar (Avatar panel) and see it
-  toon-shaded in the 3D scene at its rest pose, with its humanoid bone map
-  shown read-only. Retargeting the tracked pose onto it is in progress.
+  toon-shaded in the 3D scene, posed from the tracked hands, elbows and head
+  with the avatar's own proportions (reach scaled onto its arms, elbows from a
+  two-bone solve hinted by the measured elbow, fingers on its own hand rig).
+  In VMC mode the stream then carries that avatar's bones.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera

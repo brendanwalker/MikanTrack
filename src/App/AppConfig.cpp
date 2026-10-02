@@ -10,6 +10,7 @@
 
 #include "nlohmann/json.hpp"
 
+#include "AvatarRetarget.h"
 #include "BodyPoseSolver.h" // BodyDimensions
 #include "HandFusion.h" // HandFusionConfig
 #include "HandPoseModel.h"
@@ -291,6 +292,15 @@ static json cameraProfileToJson(const CameraProfile& profile)
 			 {"markerFromCamera", dmat4ToJson(profile.extrinsics.markerFromCamera)},
 		 }},
 	};
+}
+
+AvatarRetargetConfig makeAvatarRetargetConfig(const AppConfig& config)
+{
+	AvatarRetargetConfig retarget;
+	retarget.followShoulders= config.avatar.followShoulders;
+	retarget.fixedRootPositionWorld= config.avatar.rootPositionWorld;
+	retarget.fixedRootYawDegrees= config.avatar.rootYawDegrees;
+	return retarget;
 }
 
 BodyDimensions makeBodyDimensions(const AppConfig& config)

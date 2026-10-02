@@ -18,6 +18,7 @@
 #include "TrackingTypes.h"
 
 class AppConfig;
+class AvatarSkeleton;
 class VideoCaptureSystem;
 class OscStreamer;
 
@@ -78,6 +79,11 @@ public:
 	// Re-reads config (cameras/intrinsics/extrinsics/hand scale/tracking/
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
+
+	// The loaded avatar's skeleton (null = none), for the avatar-driven VMC
+	// output. Applied before the next frame without a config refresh, which
+	// would end a recording. Survives a stop/start.
+	void setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton);
 
 	// Rest-pose calibration: captures what EVERY camera currently reports for
 	// each tracked hand. Per camera because the model landmarks are
@@ -252,6 +258,9 @@ private:
 	void runDiagnosticsStage(IterationState& iteration);
 
 	void refreshConfigOnThread();
+	// (Re)creates the OSC streamer and pushes the current config, body
+	// dimensions and avatar skeleton into it
+	void applyOscConfigOnThread();
 	// Services a pending requestDiagnosticDump on the vision thread
 	void performDiagnosticDump(const TrackingFrameResult& latestOutput);
 
@@ -282,6 +291,12 @@ private:
 	bool m_bImuMountingReady= false;
 	ImuSideStatus m_imuStatus[2];
 	std::unique_ptr<OscStreamer> m_oscStreamer;
+	// Avatar skeleton handoff: the main thread drops the new pointer in the
+	// pending slot, the vision thread adopts it between frames
+	std::mutex m_avatarMutex;
+	std::shared_ptr<const AvatarSkeleton> m_pendingAvatarSkeleton;
+	std::atomic<bool> m_bAvatarSkeletonChanged{false};
+	std::shared_ptr<const AvatarSkeleton> m_avatarSkeleton;
 
 	std::thread m_thread;
 	std::atomic_bool m_bRunning{false};

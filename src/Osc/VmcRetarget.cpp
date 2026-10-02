@@ -2,12 +2,16 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "glm/geometric.hpp"
 #include "glm/gtc/constants.hpp"
 #include "glm/gtc/quaternion.hpp"
 
+#include "AvatarRetarget.h"
+#include "AvatarSkeleton.h"
 #include "HandPoseModel.h"
+#include "MathGLM.h"
 
 namespace
 {
@@ -256,27 +260,7 @@ glm::vec3 restArmDirection(eHandSide side)
 
 glm::quat shortestArc(const glm::vec3& from, const glm::vec3& to)
 {
-	const glm::vec3 a= safeNormalize(from);
-	const glm::vec3 b= safeNormalize(to);
-	if (glm::dot(a, a) <= 0.f || glm::dot(b, b) <= 0.f)
-		return glm::quat(1.f, 0.f, 0.f, 0.f);
-
-	const float cosAngle= std::clamp(glm::dot(a, b), -1.f, 1.f);
-	if (cosAngle > 1.f - 1e-7f)
-		return glm::quat(1.f, 0.f, 0.f, 0.f);
-
-	if (cosAngle < -1.f + 1e-7f)
-	{
-		// Antiparallel: every perpendicular axis is an equally valid half turn,
-		// so pick one deterministically rather than letting a near-zero cross
-		// product choose
-		glm::vec3 axis= glm::cross(a, glm::vec3(1.f, 0.f, 0.f));
-		if (glm::dot(axis, axis) < 1e-6f)
-			axis= glm::cross(a, glm::vec3(0.f, 1.f, 0.f));
-		return glm::angleAxis(glm::pi<float>(), glm::normalize(axis));
-	}
-
-	return glm::angleAxis(std::acos(cosAngle), glm::normalize(glm::cross(a, b)));
+	return glm_shortest_arc(from, to);
 }
 
 void buildPose(
@@ -315,6 +299,74 @@ void buildPose(
 
 		buildSide(poses[sideIndex], (eHandSide)sideIndex, bHasBothShoulders, shoulderMidpoint, lengths,
 				  outPose);
+	}
+}
+eHumanoidBone humanoidBoneForVmc(eVmcBone bone)
+{
+	// Both enums spell Unity's HumanBodyBones, so the table is a one-time
+	// name match rather than a second hand-written list to keep in step
+	static const std::array<eHumanoidBone, VMC_BONE_COUNT> k_table= [] {
+		std::array<eHumanoidBone, VMC_BONE_COUNT> table;
+		table.fill(HUMANOID_BONE_NONE);
+		for (int vmcIndex= 0; vmcIndex < VMC_BONE_COUNT; ++vmcIndex)
+		{
+			for (int humanoidIndex= 0; humanoidIndex < HUMANOID_BONE_COUNT; ++humanoidIndex)
+			{
+				if (std::strcmp(boneName((eVmcBone)vmcIndex), humanoidBoneName((eHumanoidBone)humanoidIndex)) == 0)
+				{
+					table[vmcIndex]= (eHumanoidBone)humanoidIndex;
+					break;
+				}
+			}
+		}
+		return table;
+	}();
+
+	const int index= (int)bone;
+	return (index >= 0 && index < VMC_BONE_COUNT) ? k_table[index] : HUMANOID_BONE_NONE;
+}
+
+void buildPoseFromAvatar(const AvatarPose& pose, const AvatarSkeleton& skeleton, VmcPose& outPose)
+{
+	outPose.clear();
+	if (!pose.valid)
+		return;
+
+	// Which humanoid bones this stream carries, for the ancestor walk
+	std::array<bool, HUMANOID_BONE_COUNT> streamed{};
+	for (int vmcIndex= 0; vmcIndex < VMC_BONE_COUNT; ++vmcIndex)
+	{
+		const eHumanoidBone humanoid= humanoidBoneForVmc((eVmcBone)vmcIndex);
+		if (humanoid != HUMANOID_BONE_NONE)
+			streamed[(int)humanoid]= true;
+	}
+
+	for (int vmcIndex= 0; vmcIndex < VMC_BONE_COUNT; ++vmcIndex)
+	{
+		const eHumanoidBone humanoid= humanoidBoneForVmc((eVmcBone)vmcIndex);
+		if (humanoid == HUMANOID_BONE_NONE)
+			continue;
+		const AvatarSkeleton::Bone& restBone= skeleton.getBone(humanoid);
+		const AvatarPose::Bone& posedBone= pose.bones[(int)humanoid];
+		if (!restBone.present || !posedBone.present)
+			continue;
+
+		// The nearest ancestor that is itself on the wire: a receiver composes
+		// this bone under that one, and under the rest pose for anything
+		// unstreamed in between
+		glm::quat parentDelta(1.f, 0.f, 0.f, 0.f);
+		for (eHumanoidBone ancestor= restBone.parent; ancestor != HUMANOID_BONE_NONE;
+			 ancestor= skeleton.getBone(ancestor).parent)
+		{
+			if (streamed[(int)ancestor] && pose.bones[(int)ancestor].present)
+			{
+				parentDelta= pose.bones[(int)ancestor].deltaWorld;
+				break;
+			}
+		}
+
+		emitBone(outPose, (eVmcBone)vmcIndex, restBone.restOffsetFromParentWorld,
+				 glm::inverse(parentDelta) * posedBone.deltaWorld);
 	}
 }
 } // namespace VmcRetarget

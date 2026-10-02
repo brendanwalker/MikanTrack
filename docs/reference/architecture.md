@@ -24,9 +24,9 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 
 - `src/Imu`: wrist inertial trackers. `ImuService` owns one `ImuDeviceTracker` per device (the device, its `ImuOrientationFilter`, and its `ImuMountingCalibrator` and `ImuBiasCalibrator`) and the side mapping that turns a sensor orientation into a forearm orientation, with `ImuMountingMath` as the pure mounting solve behind it. `App` owns the service and `VisionThread` drives it. `src/Imu/Joycon/` is the HID backend (`JoyconDevice`, `JoyconDeviceManager`). See [imu.md](./imu.md).
 
-- `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`. See [wire-protocol.md](./wire-protocol.md).
+- `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`; with an avatar loaded it runs the avatar retarget over the resolved poses for the VMC bones. See [wire-protocol.md](./wire-protocol.md).
 
-- `src/Avatar`: the VRM avatar. `VrmLoader` reads a VRM 0.x or 1.0 file into `AvatarModel` (`AvatarTypes.h`: the glTF scene plus the `eHumanoidBone` map and meta), and `AvatarSkeleton` derives the immutable rest data the renderer poses from and the retarget measures against. Pure CPU, no GL. See [avatar.md](./avatar.md).
+- `src/Avatar`: the VRM avatar. `VrmLoader` reads a VRM 0.x or 1.0 file into `AvatarModel` (`AvatarTypes.h`: the glTF scene plus the `eHumanoidBone` map and meta), `AvatarSkeleton` derives the immutable rest data the renderer poses from and the retarget measures against, and `AvatarRetarget` poses that skeleton from a tracked frame (`AvatarPose`, plus the posed-globals composition for the renderer). Pure CPU, no GL. See [avatar.md](./avatar.md).
 
 - `src/Render`: minimal GL helpers for the 3D scene view: `GlFrameBuffer`, `GlTexture`, `GlLineRenderer`, `DebugDraw`, `OrbitCamera`, `Colors.h`, plus `GlSkinnedMeshRenderer`, the skinned MToon renderer for the avatar. No scene graph.
 
@@ -66,7 +66,7 @@ Step by step:
 9. `ImuService` drains every buffered inertial sample, takes the fused palm orientation as a yaw anchor, and publishes the forearm orientation onto the poses. The IMU EKF output is recorded separately; it is never replayed.
 10. `BodyPoseSolver::solve` runs after the IMU fill (IMU wins for sides it claims), producing elbows, shoulders, and head.
 11. Fusion bookkeeping: seed state for the next iteration, dominant-camera and per-camera observation-confidence publishes, and the stereo auto hand-scale EMA.
-12. `OscStreamer::sendFrame` streams the frame, then the fused result is published latest-wins for the main thread.
+12. `OscStreamer::sendFrame` streams the frame (in VMC mode with an avatar, retargeting the resolved poses onto its skeleton first), then the fused result is published latest-wins for the main thread.
 13. The tail of the loop services calibration captures (bone calibration window, rest pose), records the diagnostics history ring, assembles the recording frame and hands it to the writer thread, and services dump requests.
 
 The loop watches itself: `eVisionPhase` names the phases (`ConfigRefresh`, `Capture`, `Imu`, `Fusion`, `Osc`, `Diagnostics`), and any iteration exceeding `k_hitchThresholdMs` (50 ms, `VisionThread.cpp`) logs a per-phase millisecond breakdown attributing the hitch to the worst phase (`reportHitchIfSlow`). A hitch starves every camera at once, so the symptom downstream is a synchronized multi-camera tracking gap that would otherwise look like a USB fault. Inside the capture phase, `CameraContext::process` also times each of its steps on every frame and publishes them on the result as `captureTimings` (see [debugging.md](./debugging.md)).
@@ -82,6 +82,7 @@ The main thread runs the SDL/ImGui UI (`App::tick` at a ~90 Hz cap) and pumps `V
 - `fetchPreviewFrame` and `fetchFusedResult` copy the newest frame/result and clear a freshness flag
 - status reads (`getDominantCamera`, `getObservationConfidence`, hitch counters, recording counters) are plain atomics
 - wizard interactions are atomic request flags serviced on the vision thread with mutex-guarded result structs fetched later (`fetchRestPoseCapture`, `fetchBoneCalibration`, `fetchImuMountingCapture`)
+- the avatar skeleton goes the other way through `setAvatarSkeleton`: a mutex-guarded pending pointer plus a changed flag, adopted between frames and pushed into the OSC streamer's config without a config refresh (which would end a recording)
 
 The remaining threads: one Media Foundation callback thread per streaming camera, one HID read thread per Joy-Con (`JoyconDevice`, SPSC sample queue into the vision thread), the `ImuService` discovery worker (HID enumeration and the Bluetooth open handshake block for hundreds of milliseconds, so they never run on the frame loop), and the `TrackingRecorder` and `FrameRecorder` writer threads.
 
@@ -156,6 +157,6 @@ A freshly created project starts `SetupFlow` (`src/UI/SetupFlow.h`), the guided 
 
 `Scene3dPanel` renders the marker-plane grid, per-camera frustums, the loaded avatar at its rest pose, and the fused hand/arm skeletons (with optional dimmed per-camera skeletons) into an FBO using `src/Render/`. The skeleton it draws is the same FK reconstruction a client rebuilds from the streamed parameters; with an avatar shown the lines draw depth-disabled so they stay visible inside the character.
 
-`AvatarPanel` (`src/UI/AvatarPanel.h`) loads and unloads the project's VRM avatar and shows its humanoid bone map. The model itself is owned by `App` (loaded on the main thread at the end of `App::activateProject`, cleared on return to the menu), because the renderer builds GL resources from it; `AppConfig` persists only its path and placement. See [avatar.md](./avatar.md).
+`AvatarPanel` (`src/UI/AvatarPanel.h`) loads and unloads the project's VRM avatar and shows its humanoid bone map. The model itself is owned by `App` (loaded on the main thread at the end of `App::activateProject`, cleared on return to the menu), because the renderer builds GL resources from it; `AppConfig` persists only its path and placement. `MainWindow` runs the display-side `AvatarRetarget` on whatever fused result the scene shows (live, or the timeline's replayed frame with the recording's body lengths) and hands the pose to `Scene3dPanel`. See [avatar.md](./avatar.md).
 
 Global hotkeys, handled in `MainWindow.cpp`: F9 requests a diagnostic dump, F10 toggles the tracking recording.

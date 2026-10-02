@@ -63,11 +63,11 @@ void Scene3dPanel::setAvatar(std::shared_ptr<const AvatarModel> model, std::shar
 	m_avatarGeneration= generation;
 }
 
-void Scene3dPanel::setAvatarPlacement(bool bShow, const glm::vec3& rootPositionWorld, float rootYawDegrees)
+void Scene3dPanel::setAvatarPose(const AvatarPose* pose)
 {
-	m_bShowAvatar= bShow;
-	m_avatarRootPositionWorld= rootPositionWorld;
-	m_avatarRootYawDegrees= rootYawDegrees;
+	m_bHasAvatarPose= pose != nullptr && pose->valid;
+	if (m_bHasAvatarPose)
+		m_avatarPose= *pose;
 }
 
 Scene3dPanel::~Scene3dPanel()= default;
@@ -235,18 +235,19 @@ bool Scene3dPanel::drawAvatar()
 		m_uploadedAvatarGeneration= m_avatarGeneration;
 	}
 
-	// Fixed root placement in the world frame, then the avatar's own axis
-	// convention, then the display rotation every world-space drawing takes
-	const glm::mat4 rootTransform=
-		glm::rotate(glm::translate(glm::mat4(1.f), m_avatarRootPositionWorld),
-					glm::radians(m_avatarRootYawDegrees), glm::vec3(0.f, 0.f, 1.f));
-	const glm::mat4 modelMatrix= k_displayFromWorld * rootTransform * m_avatarSkeleton->getWorldFromAvatar();
+	// The pose carries the root placement, so the model matrix is only the
+	// avatar's own axis convention and the display rotation every
+	// world-space drawing takes
+	if (m_bHasAvatarPose)
+		computePosedGlobals(*m_avatarModel, *m_avatarSkeleton, m_avatarPose, m_posedGlobals);
+	else
+		m_posedGlobals= m_avatarSkeleton->getRestGlobalsAvatar();
+	const glm::mat4 modelMatrix= k_displayFromWorld * m_avatarSkeleton->getWorldFromAvatar();
 
 	// One key light from above and in front of the avatar (display space:
 	// +Y up, +X the avatar's facing direction)
 	const glm::vec3 lightDirection= glm::normalize(glm::vec3(0.6f, 1.f, 0.4f));
-	m_meshRenderer->draw(m_camera->getViewProjection(), modelMatrix, m_avatarSkeleton->getRestGlobalsAvatar(),
-						 lightDirection);
+	m_meshRenderer->draw(m_camera->getViewProjection(), modelMatrix, m_posedGlobals, lightDirection);
 	return true;
 }
 

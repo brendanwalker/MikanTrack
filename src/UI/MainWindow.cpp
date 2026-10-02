@@ -8,6 +8,8 @@
 #include "App.h"
 #include "AppConfig.h"
 #include "AvatarPanel.h"
+#include "AvatarSkeleton.h"
+#include "BodyPoseSolver.h"
 #include "CalibrationPanel.h"
 #include "DevicePanel.h"
 #include "GlobalSettings.h"
@@ -421,8 +423,28 @@ void MainWindow::update(float deltaSeconds)
 	// with the frustums built from the RECORDING's config snapshot.
 	m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 	m_scene3dPanel->setAvatar(m_app->getAvatarModel(), m_app->getAvatarSkeleton(), m_app->getAvatarGeneration());
-	m_scene3dPanel->setAvatarPlacement(config->avatar.showInScene, config->avatar.rootPositionWorld,
-									   config->avatar.rootYawDegrees);
+	m_scene3dPanel->setShowAvatar(config->avatar.showInScene);
+	if (const std::shared_ptr<const AvatarSkeleton> skeleton= m_app->getAvatarSkeleton())
+	{
+		// Replay frames carry the recording's body lengths; live ones the
+		// project's. Switching feeds resets the root follow so the filter
+		// never bridges two timelines.
+		const bool bReplay= m_timelinePanel->isReplayViewActive();
+		if (bReplay != m_bAvatarPoseFromReplay)
+		{
+			m_avatarRetarget.reset();
+			m_bAvatarPoseFromReplay= bReplay;
+		}
+		const AppConfig& lengthsConfig= bReplay ? m_timelinePanel->getRecordedConfig() : *config;
+		const TrackingFrameResult& shownFused= bReplay ? m_timelinePanel->getDisplayFused() : m_latestFused;
+		m_avatarRetarget.solve(shownFused, makeBodyDimensions(lengthsConfig), *skeleton,
+							   makeAvatarRetargetConfig(*config), m_avatarPose);
+		m_scene3dPanel->setAvatarPose(&m_avatarPose);
+	}
+	else
+	{
+		m_scene3dPanel->setAvatarPose(nullptr);
+	}
 	if (m_timelinePanel->isReplayViewActive())
 	{
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),

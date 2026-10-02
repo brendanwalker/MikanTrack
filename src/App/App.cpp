@@ -276,6 +276,7 @@ bool App::loadAvatar(const std::filesystem::path& path)
 	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*result.model);
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
+	m_visionThread->setAvatarSkeleton(m_avatarSkeleton);
 	return true;
 }
 
@@ -287,6 +288,7 @@ void App::clearAvatar()
 	m_avatarSkeleton= nullptr;
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
+	m_visionThread->setAvatarSkeleton(nullptr);
 }
 
 void App::loadConfiguredAvatar()

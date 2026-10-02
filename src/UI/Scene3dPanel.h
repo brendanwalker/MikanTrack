@@ -6,6 +6,7 @@
 
 #include "glm/ext/matrix_float4x4.hpp"
 
+#include "AvatarRetarget.h"
 #include "TrackingTypes.h"
 
 class AppConfig;
@@ -63,9 +64,10 @@ public:
 	// when the model changed and its GPU copy must be rebuilt.
 	void setAvatar(std::shared_ptr<const AvatarModel> model, std::shared_ptr<const AvatarSkeleton> skeleton,
 				   uint32_t generation);
-	// Visibility plus the fixed root placement: origin in the world frame and
-	// yaw about world +Z (degrees, 0 = facing world +X)
-	void setAvatarPlacement(bool bShow, const glm::vec3& rootPositionWorld, float rootYawDegrees);
+	void setShowAvatar(bool bShow) { m_bShowAvatar= bShow; }
+	// The retargeted pose to draw (copied); null draws the rest pose at the
+	// world origin
+	void setAvatarPose(const AvatarPose* pose);
 
 	bool getShowPerCameraSkeletons() const { return m_bShowPerCameraSkeletons; }
 	void setShowPerCameraSkeletons(bool bShow) { m_bShowPerCameraSkeletons= bShow; }
@@ -88,8 +90,9 @@ private:
 	uint32_t m_avatarGeneration= 0;
 	uint32_t m_uploadedAvatarGeneration= 0;
 	bool m_bShowAvatar= true;
-	glm::vec3 m_avatarRootPositionWorld{0.f};
-	float m_avatarRootYawDegrees= 0.f;
+	bool m_bHasAvatarPose= false;
+	AvatarPose m_avatarPose;
+	std::vector<glm::mat4> m_posedGlobals;
 	bool m_bRenderInitialized= false;
 	bool m_bShowPerCameraSkeletons= false;
 	float m_forearmLengthMeters= 0.25f;
