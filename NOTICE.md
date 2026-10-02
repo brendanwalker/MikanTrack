@@ -34,6 +34,7 @@ linked, so this app builds standalone.
 - **glm** — MIT/Happy Bunny — `thirdparty/glm` (submodule)
 - **nlohmann/json** — MIT — `thirdparty/nlohmann_json` (submodule)
 - **readerwriterqueue** — BSD-2 — `thirdparty/readerwriterqueue` (submodule)
+- **cgltf** — MIT — `thirdparty/cgltf` (submodule), the glTF 2.0 parser behind the VRM avatar loader
 - **SDL2** 2.30.10 — zlib — prebuilt in `deps/`
 - **GLEW** 2.2.0 — BSD/MIT — prebuilt in `deps/`
 - **OpenCV** 4.10.0 — Apache-2.0 — prebuilt in `deps/`
@@ -55,6 +56,12 @@ model, downloaded from the MMPose model zoo
 (https://github.com/open-mmlab/mmpose):
 
 - `rtmpose_body.onnx` — rtmpose-m_simcc-body7_pt-body7_420e-256x192
+
+## Sample avatars
+
+`models/avatars/fem_vroid.vrm` and `masc_vroid.vrm` are the VRoid Studio sample avatars from the
+vrm-samples collection (https://github.com/madjin/vrm-samples), published under CC0, downloaded by
+`InitialSetup_x64.bat`. They are used by `--test-vrm-samples` and as ready-made avatars for the Avatar panel.
 
 `rtm_demo.jpg` is MMDeploy's demo image (Apache-2.0), used only as the
 fixture the pose model cross-check scores against.

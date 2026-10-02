@@ -142,6 +142,23 @@ curl -L https://raw.githubusercontent.com/open-mmlab/mmdeploy/main/demo/resource
 IF %ERRORLEVEL% NEQ 0 goto model_failure
 :skip_rtm_demo
 
+:: ---------------------------------------------------------- sample avatars
+:: CC0 VRoid Studio sample avatars from the vrm-samples collection, used by
+:: --test-vrm-samples and as ready-made avatars for the Avatar panel.
+:: https://github.com/madjin/vrm-samples
+IF NOT EXIST models\avatars mkdir models\avatars
+IF EXIST models\avatars\fem_vroid.vrm goto skip_fem_vroid
+echo "Downloading sample avatar fem_vroid.vrm..."
+curl -L https://raw.githubusercontent.com/madjin/vrm-samples/master/vroid/fem_vroid.vrm --output models\avatars\fem_vroid.vrm
+IF %ERRORLEVEL% NEQ 0 goto model_failure
+:skip_fem_vroid
+
+IF EXIST models\avatars\masc_vroid.vrm goto skip_masc_vroid
+echo "Downloading sample avatar masc_vroid.vrm..."
+curl -L https://raw.githubusercontent.com/madjin/vrm-samples/master/vroid/masc_vroid.vrm --output models\avatars\masc_vroid.vrm
+IF %ERRORLEVEL% NEQ 0 goto model_failure
+:skip_masc_vroid
+
 echo "Initial setup complete!"
 goto exit
 
