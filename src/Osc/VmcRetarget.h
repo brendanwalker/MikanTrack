@@ -6,7 +6,11 @@
 #include "glm/ext/quaternion_float.hpp"
 #include "glm/ext/vector_float3.hpp"
 
+#include "AvatarTypes.h"
 #include "TrackingTypes.h"
+
+struct AvatarPose;
+class AvatarSkeleton;
 
 // Retargets the measured world-space pose onto the VMC protocol's humanoid
 // bone stream. Pure math: no socket, no config object, no clock - so the whole
@@ -153,4 +157,18 @@ glm::quat shortestArc(const glm::vec3& from, const glm::vec3& to);
 void buildPose(
 	const std::array<HandPose, 2>& poses, const bool bSideValid[2],
 	const TrackingFrameResult::HeadPose& head, const VmcBodyLengths& lengths, VmcPose& outPose);
+
+// -- From a loaded avatar ----------------------------------------------------
+
+// The humanoid bone a VMC bone names (same Unity spelling on both sides)
+eHumanoidBone humanoidBoneForVmc(eVmcBone bone);
+
+// Fills outPose from a retargeted avatar pose instead of the measured
+// lengths: each streamed bone's local rotation is its delta measured against
+// the nearest streamed ancestor's delta (the torso is never streamed, so an
+// arm hangs off the rest chest exactly as in buildPose), and its local
+// position is the AVATAR's own rest offset from its humanoid parent, so a
+// receiver loading the same file keeps the character's proportions. Bones the
+// pose did not place, or the avatar lacks, are left out.
+void buildPoseFromAvatar(const AvatarPose& pose, const AvatarSkeleton& skeleton, VmcPose& outPose);
 } // namespace VmcRetarget

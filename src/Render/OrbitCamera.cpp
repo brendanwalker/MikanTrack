@@ -3,6 +3,8 @@
 
 #include "glm/ext/matrix_clip_space.hpp"
 #include "glm/ext/matrix_transform.hpp"
+#include "glm/geometric.hpp"
+#include "glm/matrix.hpp"
 
 #include <cmath>
 
@@ -97,4 +99,13 @@ glm::vec3 OrbitCamera::getCameraPosition() const
 	const glm::vec3 position= -d * rotMat;
 
 	return position;
+}
+
+void OrbitCamera::unprojectRay(float ndcX, float ndcY, glm::vec3& outOrigin, glm::vec3& outDirection) const
+{
+	const glm::mat4 inverseViewProjection= glm::inverse(getViewProjection());
+	const glm::vec4 nearPoint= inverseViewProjection * glm::vec4(ndcX, ndcY, -1.f, 1.f);
+	const glm::vec4 farPoint= inverseViewProjection * glm::vec4(ndcX, ndcY, 1.f, 1.f);
+	outOrigin= glm::vec3(nearPoint) / nearPoint.w;
+	outDirection= glm::normalize(glm::vec3(farPoint) / farPoint.w - outOrigin);
 }

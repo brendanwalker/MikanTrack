@@ -28,6 +28,9 @@ public:
 	const TrackingFrameResult& getDisplayFused() const { return m_displayFused; }
 	// Camera frustums from the RECORDING's config snapshot (not the live one)
 	std::vector<SceneCameraView> getSceneCameras() const;
+	// The recording's config snapshot itself, for the body lengths a replayed
+	// frame was solved with
+	const AppConfig& getRecordedConfig() const { return m_replay.getRecordedConfig(); }
 	// Current frame's replayed per-camera results (stale cameras carry their
 	// last fresh result, like the live preview panes). Pointers are valid for
 	// the rest of the current UI frame.

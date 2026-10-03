@@ -11,6 +11,7 @@
 #include "imgui_impl_sdl2.h"
 
 #include "AppConfig.h"
+#include "AvatarSkeleton.h"
 #include "FrameTimer.h"
 #include "GlobalSettings.h"
 #include "ImuService.h"
@@ -23,8 +24,13 @@
 #include "ProjectManager.h"
 #include "VideoCaptureSystem.h"
 #include "VisionThread.h"
+#include "VrmLoader.h"
 
 App* App::m_instance= nullptr;
+
+// Rig edits arrive per frame while a control is dragged; the sidecar is
+// written once they settle
+static constexpr float k_avatarRigAutoSaveSeconds= 3.f;
 
 App::App()
 {
@@ -181,6 +187,7 @@ bool App::activateProject(const std::filesystem::path& projectFile)
 	m_imuService->startup();
 	m_visionThread->start();
 	m_mainWindow->tryRestoreVideoDeviceFromConfig();
+	loadConfiguredAvatar();
 	m_appState= eAppState::Project;
 	return true;
 }
@@ -209,6 +216,7 @@ bool App::activateNewProject(const std::string& projectName)
 void App::returnToMainMenu()
 {
 	m_config->save();
+	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
@@ -220,6 +228,7 @@ void App::discardNewProjectAndReturnToMenu()
 {
 	const std::filesystem::path projectFile= m_config->getProjectFilePath();
 
+	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
@@ -244,6 +253,112 @@ void App::discardNewProjectAndReturnToMenu()
 	m_globalSettings->save();
 
 	m_appState= eAppState::MainMenu;
+}
+
+std::filesystem::path App::resolveAvatarPath(const std::string& modelPath) const
+{
+	const std::filesystem::path path= PathUtils::utf8ToPath(modelPath);
+	if (path.empty() || path.is_absolute())
+		return path;
+
+	const std::filesystem::path projectDirectory= m_config->getProjectDirectory();
+	if (!projectDirectory.empty() && std::filesystem::is_regular_file(projectDirectory / path))
+		return projectDirectory / path;
+	return PathUtils::getModulePath() / path;
+}
+
+bool App::loadAvatar(const std::filesystem::path& path)
+{
+	const VrmLoader::LoadResult result= VrmLoader::loadFile(path);
+	if (result.model == nullptr)
+	{
+		m_avatarLoadError= result.error;
+		return false;
+	}
+
+	// The previous avatar's pending rig edits belong to its own sidecar
+	saveAvatarRigIfDirty();
+
+	m_avatarModel= result.model;
+	m_avatarRigLoadWarnings.clear();
+	m_avatarRig= loadAvatarRig(path, &m_avatarRigLoadWarnings);
+	m_bAvatarRigDirty= false;
+	rebuildAvatarSkeleton();
+	m_avatarLoadError.clear();
+	++m_avatarGeneration;
+	m_visionThread->setAvatarSkeleton(m_avatarSkeleton, m_avatarRig);
+	return true;
+}
+
+void App::rebuildAvatarSkeleton()
+{
+	m_avatarRigWarnings= m_avatarRigLoadWarnings;
+	applyRigToModel(m_avatarRig, *m_avatarModel, m_avatarRigWarnings);
+	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*m_avatarModel);
+	m_avatarRigWarnings.insert(m_avatarRigWarnings.end(), m_avatarSkeleton->getWarnings().begin(),
+							   m_avatarSkeleton->getWarnings().end());
+	for (const std::string& warning : m_avatarRigWarnings)
+		MIKAN_LOG_WARNING("App::rebuildAvatarSkeleton") << warning;
+}
+
+void App::setAvatarRig(const AvatarRigSettings& rig)
+{
+	if (m_avatarModel == nullptr)
+		return;
+
+	// Only the mapping changes the skeleton. Keeping the same skeleton for
+	// every other edit also keeps the streamer's root follow running.
+	const bool bMappingChanged= !rig.sameMapping(m_avatarRig);
+	m_avatarRig= rig;
+	if (bMappingChanged)
+		rebuildAvatarSkeleton();
+	m_visionThread->setAvatarSkeleton(m_avatarSkeleton, m_avatarRig);
+
+	if (!m_bAvatarRigDirty)
+		m_avatarRigSecondsSinceDirty= 0.f;
+	m_bAvatarRigDirty= true;
+}
+
+void App::updateAvatarRigAutoSave(float deltaSeconds)
+{
+	if (!m_bAvatarRigDirty)
+		return;
+	m_avatarRigSecondsSinceDirty+= deltaSeconds;
+	if (m_avatarRigSecondsSinceDirty >= k_avatarRigAutoSaveSeconds)
+		saveAvatarRigIfDirty();
+}
+
+void App::saveAvatarRigIfDirty()
+{
+	if (!m_bAvatarRigDirty)
+		return;
+	m_bAvatarRigDirty= false;
+	m_avatarRigSecondsSinceDirty= 0.f;
+	if (m_avatarModel != nullptr && !m_avatarModel->sourcePath.empty())
+		saveAvatarRig(PathUtils::utf8ToPath(m_avatarModel->sourcePath), m_avatarRig);
+}
+
+void App::clearAvatar()
+{
+	saveAvatarRigIfDirty();
+	if (m_avatarModel == nullptr && m_avatarLoadError.empty())
+		return;
+	m_avatarModel= nullptr;
+	m_avatarSkeleton= nullptr;
+	m_avatarRig= AvatarRigSettings();
+	m_avatarRigLoadWarnings.clear();
+	m_avatarRigWarnings.clear();
+	m_avatarLoadError.clear();
+	++m_avatarGeneration;
+	m_visionThread->setAvatarSkeleton(nullptr, m_avatarRig);
+}
+
+void App::loadConfiguredAvatar()
+{
+	clearAvatar();
+	if (m_config->avatar.modelPath.empty())
+		return;
+	loadAvatar(resolveAvatarPath(m_config->avatar.modelPath));
 }
 
 bool App::consumeStartSetupFlowFlag()
@@ -310,6 +425,7 @@ void App::shutdown()
 
 	if (m_config != nullptr)
 		m_config->save();
+	saveAvatarRigIfDirty();
 
 	if (m_visionThread != nullptr)
 	{
@@ -399,4 +515,5 @@ void App::tick(float deltaSeconds)
 	SDL_GL_SwapWindow(m_sdlWindow);
 
 	m_config->updateAutoSave(deltaSeconds);
+	updateAvatarRigAutoSave(deltaSeconds);
 }

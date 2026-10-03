@@ -10,20 +10,25 @@
 #include "glm/gtc/constants.hpp"
 
 #include "AppConfig.h"
+#include "AvatarSkeleton.h"
 #include "Colors.h"
 #include "DebugDraw.h"
 #include "GlFrameBuffer.h"
 #include "GlLineRenderer.h"
+#include "GlSkinnedMeshRenderer.h"
 #include "HandPoseModel.h"
 #include "MikanVideoSourceTypes.h"
 #include "OrbitCamera.h"
 
 #include "glm/gtc/quaternion.hpp"
 
-// World is Z-up (marker plane = XY); the renderer/orbit camera are Y-up.
-// displayFromWorld rotates world +Z to display +Y: (x,y,z) -> (x, z, -y)
 static const glm::mat4 k_displayFromWorld=
 	glm::rotate(glm::mat4(1.f), -glm::half_pi<float>(), glm::vec3(1.f, 0.f, 0.f));
+
+const glm::mat4& displayFromWorld()
+{
+	return k_displayFromWorld;
+}
 
 // OpenCV camera convention (+Y down, +Z forward) <-> GL camera convention
 // (+Y up, -Z forward): 180-degree rotation about X. Its own inverse.
@@ -45,15 +50,34 @@ Scene3dPanel::Scene3dPanel()
 	: m_frameBuffer(std::make_unique<GlFrameBuffer>())
 	, m_lineRenderer(std::make_unique<GlLineRenderer>())
 	, m_camera(std::make_unique<OrbitCamera>())
+	, m_meshRenderer(std::make_unique<GlSkinnedMeshRenderer>())
 {
 	m_camera->setOrbitLocation(30.f, -40.f, 1.8f);
+}
+
+void Scene3dPanel::setAvatar(std::shared_ptr<const AvatarModel> model, std::shared_ptr<const AvatarSkeleton> skeleton,
+							 uint32_t generation)
+{
+	m_avatarModel= std::move(model);
+	m_avatarSkeleton= std::move(skeleton);
+	m_avatarGeneration= generation;
+}
+
+void Scene3dPanel::setAvatarPose(const AvatarPose* pose)
+{
+	m_bHasAvatarPose= pose != nullptr && pose->valid;
+	if (m_bHasAvatarPose)
+		m_avatarPose= *pose;
 }
 
 Scene3dPanel::~Scene3dPanel()= default;
 
 void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
-						const std::vector<const TrackingFrameResult*>& perCameraResults)
+						const std::vector<const TrackingFrameResult*>& perCameraResults, SceneGizmos& gizmos)
 {
+	for (SceneGizmos::ElbowHint& hint : gizmos.elbowHints)
+		hint.bDragging= false;
+
 	if (!ImGui::Begin(locWindowTitle("windows.scene3d")))
 	{
 		ImGui::End();
@@ -76,20 +100,23 @@ void Scene3dPanel::draw(const TrackingFrameResult& fusedResult, const std::vecto
 	}
 	m_frameBuffer->resize(fbWidth, fbHeight);
 
-	renderScene(fusedResult, cameras, perCameraResults, (float)fbWidth / (float)fbHeight);
+	renderScene(fusedResult, cameras, perCameraResults, gizmos, (float)fbWidth / (float)fbHeight);
 
 	// FBO textures are bottom-up; flip V
 	ImGui::Image(
 		(ImTextureID)(intptr_t)m_frameBuffer->getColorTextureId(),
 		ImVec2((float)fbWidth, (float)fbHeight),
 		ImVec2(0, 1), ImVec2(1, 0));
+	const ImVec2 imageMin= ImGui::GetItemRectMin();
+	const bool bGizmoOwnsMouse= updateGizmoDrag(gizmos, glm::vec2(imageMin.x, imageMin.y),
+												glm::vec2((float)fbWidth, (float)fbHeight));
 
 	// Orbit interaction on the image item
 	if (ImGui::IsItemHovered())
 	{
 		ImGuiIO& io= ImGui::GetIO();
 
-		if (ImGui::IsMouseDragging(ImGuiMouseButton_Left))
+		if (!bGizmoOwnsMouse && ImGui::IsMouseDragging(ImGuiMouseButton_Left))
 			m_camera->adjustOrbitAngles(io.MouseDelta.x * 0.4f, -io.MouseDelta.y * 0.4f);
 
 		if (ImGui::IsMouseDragging(ImGuiMouseButton_Middle))
@@ -188,8 +215,143 @@ void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightn
 	}
 }
 
+bool Scene3dPanel::drawAvatar()
+{
+	if (m_avatarModel == nullptr || m_avatarSkeleton == nullptr)
+	{
+		// Unloaded: drop the GPU copy rather than keeping a 12 MB model resident
+		if (m_meshRenderer->hasModel())
+			m_meshRenderer->clear();
+		return false;
+	}
+	if (!m_bShowAvatar)
+		return false;
+
+	if (!m_bMeshRendererInitialized)
+	{
+		m_bMeshRendererInitialized= m_meshRenderer->startup();
+		if (!m_bMeshRendererInitialized)
+			return false;
+	}
+	// Rebuild the GPU copy only when the model changed, not per frame
+	if (m_uploadedAvatarGeneration != m_avatarGeneration || !m_meshRenderer->hasModel())
+	{
+		if (!m_meshRenderer->upload(*m_avatarModel))
+			return false;
+		m_uploadedAvatarGeneration= m_avatarGeneration;
+	}
+
+	// The pose carries the root placement, so the model matrix is only the
+	// avatar's own axis convention and the display rotation every
+	// world-space drawing takes
+	if (m_bHasAvatarPose)
+		computePosedGlobals(*m_avatarModel, *m_avatarSkeleton, m_avatarPose, m_posedGlobals);
+	else
+		m_posedGlobals= m_avatarSkeleton->getRestGlobalsAvatar();
+	const glm::mat4 modelMatrix= k_displayFromWorld * m_avatarSkeleton->getWorldFromAvatar();
+
+	// One key light from above and in front of the avatar (display space:
+	// +Y up, +X the avatar's facing direction)
+	const glm::vec3 lightDirection= glm::normalize(glm::vec3(0.6f, 1.f, 0.4f));
+	m_meshRenderer->draw(m_camera->getViewProjection(), modelMatrix, m_posedGlobals, lightDirection);
+	return true;
+}
+
+bool Scene3dPanel::projectToImage(const glm::vec3& world, const glm::vec2& imageMin, const glm::vec2& imageSize,
+								  glm::vec2& outPixel) const
+{
+	const glm::vec4 clip= m_camera->getViewProjection() * k_displayFromWorld * glm::vec4(world, 1.f);
+	if (clip.w <= 1e-6f)
+		return false;
+	const glm::vec2 ndc= glm::vec2(clip) / clip.w;
+	// The image shows the framebuffer flipped, so NDC +Y is the image top
+	outPixel= imageMin + glm::vec2((ndc.x * 0.5f + 0.5f) * imageSize.x, (0.5f - ndc.y * 0.5f) * imageSize.y);
+	return true;
+}
+
+bool Scene3dPanel::updateGizmoDrag(SceneGizmos& gizmos, const glm::vec2& imageMin, const glm::vec2& imageSize)
+{
+	constexpr float kPickRadiusPixels= 8.f;
+	const ImVec2 mouse= ImGui::GetIO().MousePos;
+	const glm::vec2 mousePixel(mouse.x, mouse.y);
+
+	if (m_draggedElbowHint >= 0 &&
+		(!ImGui::IsMouseDown(ImGuiMouseButton_Left) || !gizmos.elbowHints[m_draggedElbowHint].bEnabled))
+	{
+		m_draggedElbowHint= -1;
+	}
+
+	// A press on a hint starts its drag, in the camera-facing plane through it
+	if (m_draggedElbowHint < 0 && ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+	{
+		float bestDistance= kPickRadiusPixels;
+		for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+		{
+			const SceneGizmos::ElbowHint& hint= gizmos.elbowHints[sideIndex];
+			glm::vec2 pixel;
+			if (!hint.bEnabled || !projectToImage(hint.hintWorld, imageMin, imageSize, pixel))
+				continue;
+			const float distance= glm::length(pixel - mousePixel);
+			if (distance <= bestDistance)
+			{
+				bestDistance= distance;
+				m_draggedElbowHint= sideIndex;
+			}
+		}
+		if (m_draggedElbowHint >= 0)
+		{
+			m_dragPlanePoint= glm::vec3(k_displayFromWorld * glm::vec4(gizmos.elbowHints[m_draggedElbowHint].hintWorld, 1.f));
+			m_dragPlaneNormal= glm::normalize(m_camera->getCameraPosition() - m_dragPlanePoint);
+		}
+	}
+	if (m_draggedElbowHint < 0)
+		return false;
+
+	// Move the hint to where the mouse ray meets the drag plane
+	SceneGizmos::ElbowHint& hint= gizmos.elbowHints[m_draggedElbowHint];
+	hint.bDragging= true;
+	hint.draggedHintWorld= hint.hintWorld;
+	const float ndcX= (mousePixel.x - imageMin.x) / imageSize.x * 2.f - 1.f;
+	const float ndcY= 1.f - (mousePixel.y - imageMin.y) / imageSize.y * 2.f;
+	glm::vec3 rayOrigin, rayDirection;
+	m_camera->unprojectRay(ndcX, ndcY, rayOrigin, rayDirection);
+	const float denominator= glm::dot(rayDirection, m_dragPlaneNormal);
+	if (std::fabs(denominator) > 1e-6f)
+	{
+		const float distance= glm::dot(m_dragPlanePoint - rayOrigin, m_dragPlaneNormal) / denominator;
+		if (distance > 0.f)
+		{
+			const glm::vec3 displayPoint= rayOrigin + rayDirection * distance;
+			hint.draggedHintWorld= glm::vec3(glm::inverse(k_displayFromWorld) * glm::vec4(displayPoint, 1.f));
+		}
+	}
+	return true;
+}
+
+void Scene3dPanel::drawGizmos(const SceneGizmos& gizmos)
+{
+	// Rings face the camera: the circle helper draws in its local XZ plane,
+	// so local Y goes along the view direction
+	const glm::mat3 cameraRotation= glm::transpose(glm::mat3(m_camera->getViewMatrix()));
+	const glm::mat3 facing(cameraRotation[0], cameraRotation[2], cameraRotation[1]);
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const SceneGizmos::ElbowHint& hint= gizmos.elbowHints[sideIndex];
+		if (!hint.bEnabled)
+			continue;
+		const glm::vec3 color= sideIndex == 0 ? Colors::CornflowerBlue : Colors::Red;
+		const glm::vec3 ringColor= sideIndex == m_draggedElbowHint ? Colors::White : Colors::Yellow;
+		drawSegment(*m_lineRenderer, k_displayFromWorld, hint.shoulderWorld, hint.hintWorld, color);
+		glm::mat4 ring(facing);
+		ring[3]= k_displayFromWorld * glm::vec4(hint.hintWorld, 1.f);
+		drawTransformedCircle(*m_lineRenderer, ring, 0.025f, ringColor, 24);
+		drawPoint(*m_lineRenderer, k_displayFromWorld, hint.hintWorld, ringColor, 6.f);
+	}
+}
+
 void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
-							   const std::vector<const TrackingFrameResult*>& perCameraResults, float aspect)
+							   const std::vector<const TrackingFrameResult*>& perCameraResults,
+							   const SceneGizmos& gizmos, float aspect)
 {
 	m_camera->setPerspectiveProjection(50.f, aspect, 0.01f, 100.f);
 
@@ -237,8 +399,12 @@ void Scene3dPanel::renderScene(const TrackingFrameResult& fusedResult, const std
 
 	// Fused skeleton, full brightness
 	drawSkeleton(fusedResult, 1.f, nullptr);
+	drawGizmos(gizmos);
 
-	m_lineRenderer->render3d(m_camera->getViewProjection());
+	// The avatar mesh first, then the lines over it with depth off when it is
+	// shown, so the tracked skeleton stays visible inside the character
+	const bool bAvatarDrawn= drawAvatar();
+	m_lineRenderer->render3d(m_camera->getViewProjection(), bAvatarDrawn);
 
 	m_frameBuffer->unbindFrameBuffer();
 }

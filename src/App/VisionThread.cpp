@@ -1,6 +1,8 @@
 #include "VisionThread.h"
 
 #include "AppConfig.h"
+#include "AvatarRetarget.h"
+#include "AvatarSkeleton.h"
 #include "Logger.h"
 #include "OscStreamer.h"
 #include "SteadyClock.h"
@@ -417,6 +419,11 @@ void VisionThread::refreshConfigOnThread()
 	}
 
 	// OSC
+	applyOscConfigOnThread();
+}
+
+void VisionThread::applyOscConfigOnThread()
+{
 	if (m_oscStreamer == nullptr)
 	{
 		m_oscStreamer= std::make_unique<OscStreamer>();
@@ -453,6 +460,11 @@ void VisionThread::refreshConfigOnThread()
 		oscConfig.logPalmFrames= m_config->osc.logPalmFrames;
 		oscConfig.vmcHeadOffsetMeters= m_config->osc.vmcHeadOffsetMeters;
 		oscConfig.vmcFreezeOnLoss= m_config->osc.vmcFreezeOnLoss;
+		// The avatar path takes the same lengths the solver placed the joints
+		// with, plus the skeleton the main thread handed over
+		oscConfig.bodyDimensions= bodyDimensions;
+		oscConfig.avatarRetarget= makeAvatarRetargetConfig(*m_config, m_avatar.rig);
+		oscConfig.avatarSkeleton= m_avatar.skeleton;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
@@ -542,6 +554,16 @@ void VisionThread::threadLoop()
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread stopped";
 }
 
+void VisionThread::setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton, const AvatarRigSettings& rig)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_avatarMutex);
+		m_pendingAvatar.skeleton= std::move(skeleton);
+		m_pendingAvatar.rig= rig;
+	}
+	m_bAvatarSkeletonChanged= true;
+}
+
 void VisionThread::servicePendingRequests()
 {
 	if (m_bConfigRefreshRequested.exchange(false))
@@ -550,6 +572,14 @@ void VisionThread::servicePendingRequests()
 		// discontinuity the recording's header snapshot cannot describe
 		finalizeRecordingOnThread(false, "config changed");
 		refreshConfigOnThread();
+	}
+	if (m_bAvatarSkeletonChanged.exchange(false))
+	{
+		{
+			std::lock_guard<std::mutex> lock(m_avatarMutex);
+			m_avatar= m_pendingAvatar;
+		}
+		applyOscConfigOnThread();
 	}
 	if (m_bRecordingStopRequested.exchange(false))
 		finalizeRecordingOnThread(false, "");

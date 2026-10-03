@@ -51,6 +51,7 @@ Three steps, in order:
 - `thirdparty/glm`: header-only.
 - `thirdparty/nlohmann_json`: header-only, the include path is `thirdparty/nlohmann_json/single_include`.
 - `thirdparty/readerwriterqueue`: header-only.
+- `thirdparty/cgltf`: header-only glTF 2.0 parser behind the VRM avatar loader; the one `CGLTF_IMPLEMENTATION` is in `src/Avatar/VrmLoader.cpp`.
 - `thirdparty/tinyfiledialogs`: native file dialogs, vendored directly (two files, not a submodule), compiled into the exe. Needs `comdlg32` and `ole32` in `target_link_libraries`.
 
 ---
@@ -65,6 +66,8 @@ Three steps, in order:
 | `hand_landmark.onnx` | `src/Vision/HandLandmarkModel.h`/`.cpp` |
 | `person_detection.onnx` | `src/Vision/PoseDetector.h`/`.cpp` |
 | `rtmpose_body.onnx` | `src/Vision/RtmPoseBodyModel.h`/`.cpp` |
+
+`InitialSetup_x64.bat` also fetches the two CC0 VRoid Studio sample avatars into `models/avatars/` (`fem_vroid.vrm`, `masc_vroid.vrm`, about 12 MB each, skipped when already present). They ride the same post-build `models/` copy, are read by `--test-vrm-samples`, and can be loaded from the Avatar panel by their relative path.
 
 Each model's exact tensor input/output contract (shapes, layout, normalization, decode math) is documented as a comment block directly above its wrapper class in the corresponding header, not in this doc. Read `PalmDetector.h`, `PoseDetector.h`, `HandLandmarkModel.h`, or `RtmPoseBodyModel.h` before changing how a model is invoked.
 

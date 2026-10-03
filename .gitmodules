@@ -11,3 +11,6 @@
 [submodule "thirdparty/readerwriterqueue"]
 	path = thirdparty/readerwriterqueue
 	url = https://github.com/cameron314/readerwriterqueue.git
+[submodule "thirdparty/cgltf"]
+	path = thirdparty/cgltf
+	url = https://github.com/jkuhlmann/cgltf.git

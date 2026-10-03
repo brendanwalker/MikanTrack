@@ -77,6 +77,33 @@ glm::mat4 glm_composite_xform(const glm::mat4& first, const glm::mat4& second)
 	return second * first;
 }
 
+glm::quat glm_shortest_arc(const glm::vec3& from, const glm::vec3& to)
+{
+	const float fromLength= glm::length(from);
+	const float toLength= glm::length(to);
+	if (fromLength <= 1e-6f || toLength <= 1e-6f)
+		return glm::quat(1.f, 0.f, 0.f, 0.f);
+	const glm::vec3 a= from / fromLength;
+	const glm::vec3 b= to / toLength;
+
+	const float cosAngle= glm::clamp(glm::dot(a, b), -1.f, 1.f);
+	if (cosAngle > 1.f - 1e-7f)
+		return glm::quat(1.f, 0.f, 0.f, 0.f);
+
+	if (cosAngle < -1.f + 1e-7f)
+	{
+		// Antiparallel: every perpendicular axis is an equally valid half
+		// turn, so pick one deterministically rather than letting a near-zero
+		// cross product choose
+		glm::vec3 axis= glm::cross(a, glm::vec3(1.f, 0.f, 0.f));
+		if (glm::dot(axis, axis) < 1e-6f)
+			axis= glm::cross(a, glm::vec3(0.f, 1.f, 0.f));
+		return glm::angleAxis(glm::pi<float>(), glm::normalize(axis));
+	}
+
+	return glm::angleAxis(acosf(cosAngle), glm::normalize(glm::cross(a, b)));
+}
+
 glm::quat glm_composite_rotation(const glm::quat& first, const glm::quat& second)
 {
 	// http://www.opengl-tutorial.org/intermediate-tutorials/tutorial-17-quaternions/#how-do-i-cumulate-2-rotations-

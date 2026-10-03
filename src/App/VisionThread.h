@@ -6,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "AvatarRig.h"
 #include "BodyPoseSolver.h"
 #include "CameraContext.h"
 #include "DiagnosticDump.h"
@@ -18,6 +19,7 @@
 #include "TrackingTypes.h"
 
 class AppConfig;
+class AvatarSkeleton;
 class VideoCaptureSystem;
 class OscStreamer;
 
@@ -78,6 +80,11 @@ public:
 	// Re-reads config (cameras/intrinsics/extrinsics/hand scale/tracking/
 	// fusion/osc) on the vision thread before the next frame
 	void requestConfigRefresh() { m_bConfigRefreshRequested= true; }
+
+	// The loaded avatar's skeleton (null = none) and its rig settings, for
+	// the avatar-driven VMC output. Applied before the next frame without a
+	// config refresh, which would end a recording. Survives a stop/start.
+	void setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton, const AvatarRigSettings& rig);
 
 	// Rest-pose calibration: captures what EVERY camera currently reports for
 	// each tracked hand. Per camera because the model landmarks are
@@ -252,6 +259,9 @@ private:
 	void runDiagnosticsStage(IterationState& iteration);
 
 	void refreshConfigOnThread();
+	// (Re)creates the OSC streamer and pushes the current config, body
+	// dimensions and avatar skeleton into it
+	void applyOscConfigOnThread();
 	// Services a pending requestDiagnosticDump on the vision thread
 	void performDiagnosticDump(const TrackingFrameResult& latestOutput);
 
@@ -282,6 +292,17 @@ private:
 	bool m_bImuMountingReady= false;
 	ImuSideStatus m_imuStatus[2];
 	std::unique_ptr<OscStreamer> m_oscStreamer;
+	// Avatar handoff: the main thread drops the skeleton and the rig settings
+	// in the pending slot, the vision thread adopts them between frames
+	struct AvatarHandoff
+	{
+		std::shared_ptr<const AvatarSkeleton> skeleton;
+		AvatarRigSettings rig;
+	};
+	std::mutex m_avatarMutex;
+	AvatarHandoff m_pendingAvatar;
+	std::atomic<bool> m_bAvatarSkeletonChanged{false};
+	AvatarHandoff m_avatar;
 
 	std::thread m_thread;
 	std::atomic_bool m_bRunning{false};

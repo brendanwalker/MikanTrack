@@ -33,6 +33,10 @@ MIKAN_MATH_FUNC(void) glm_euler_angles_to_quat(float x_radians, float y_radians,
 											   glm::quat& out_orientation);
 MIKAN_MATH_FUNC(glm::mat4) glm_composite_xform(const glm::mat4& first, const glm::mat4& second);
 MIKAN_MATH_FUNC(glm::quat) glm_composite_rotation(const glm::quat& first, const glm::quat& second);
+// Rotation carrying `from` onto `to` with no roll about the result (inputs
+// need not be normalized; a zero vector yields the identity). Antiparallel
+// inputs pick a half turn about a deterministic perpendicular axis.
+MIKAN_MATH_FUNC(glm::quat) glm_shortest_arc(const glm::vec3& from, const glm::vec3& to);
 MIKAN_MATH_FUNC(glm::mat4) glm_relative_xform(const glm::mat4& parentWorldXform, const glm::mat4& childWorldXform);
 MIKAN_MATH_FUNC(glm::mat4) glm_mat4_from_pose(const glm::quat& orientation, const glm::vec3& position);
 

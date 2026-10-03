@@ -42,6 +42,7 @@ Delivery rules the schema is built on:
 - Bones streamed, by Unity `HumanBodyBones` name: `Head`, both `Shoulder`/`UpperArm`/`LowerArm`/`Hand`, and all 30 finger bones (`eVmcBone`). Torso, neck, legs, eyes, and jaw are never streamed and stay at the avatar's rest pose, which is also the reference the streamed rotations are measured against.
 - The arm chain is streamed whenever the hand is: with no measured elbow the upper arm aims straight at the wrist and the forearm takes the hand's own orientation (a neutral wrist), because an unstreamed arm snaps to the avatar's T-pose while the hand keeps its world orientation, and the whole arm error then surfaces as a spin at the wrist joint (`VmcRetarget.cpp`).
 - VMC carries no confidence and no tracked flag, so loss is expressed as stillness: past the dropout hold the last streamed bones freeze (`vmcFreezeOnLoss`, default on) rather than going silent.
+- With a VRM avatar loaded (see [avatar.md](./avatar.md)) the bones come from retargeting the resolved poses onto that avatar instead: the same bone set, with each local rotation measured against the nearest streamed ancestor and each local position the avatar's own rest offset, so a receiver running the same file keeps the character's proportions. The root stays identity either way.
 
 ## Consumers and change discipline
 

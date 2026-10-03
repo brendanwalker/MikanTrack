@@ -56,6 +56,14 @@ Two-Bone IK from the palm transform.
   triangulation, and a hand tracked by one camera but lost by another is
   projected into the lost camera's image to re-seed its search directly.
   Prefer 720p per camera and separate USB controllers for two streams.
+- **VRM avatar**: load a VRM 0.x or 1.0 avatar (Avatar panel) and see it
+  toon-shaded in the 3D scene, posed from the tracked hands, elbows and head
+  with the avatar's own proportions (reach scaled onto its arms, elbows from a
+  two-bone solve hinted by the measured elbow, fingers on its own hand rig).
+  In VMC mode the stream then carries that avatar's bones. The panel's Mapping
+  and Retarget tabs fix a rig's bone mapping, trim its rest pose, place the
+  elbow hints (draggable in the 3D scene) and tune the fingers, saved in a
+  `<name>.mikanrig.json` beside the VRM.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera
@@ -150,6 +158,7 @@ Developer reference lives in [docs/reference/](docs/reference/):
 - [hand-tracking.md](docs/reference/hand-tracking.md) and [body-pose.md](docs/reference/body-pose.md): the tracking pipelines
 - [calibration.md](docs/reference/calibration.md): the wizards and where results persist
 - [imu.md](docs/reference/imu.md): the wrist IMU system
+- [avatar.md](docs/reference/avatar.md): the VRM avatar loader, rest skeleton, and MToon renderer
 - [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
 - [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
 - [testing.md](docs/reference/testing.md): running the tests, what each verifies, coverage gaps
@@ -163,7 +172,7 @@ Windows 10/11, Visual Studio 2022, CMake >= 3.15.
 ```bat
 git clone <this repo>
 cd MikanTrack
-InitialSetup_x64.bat            :: downloads deps/ (SDL2, OpenCV, GLEW, ONNX Runtime, DirectML) + models/
+InitialSetup_x64.bat            :: downloads deps/ (SDL2, OpenCV, GLEW, ONNX Runtime, DirectML) + models/ (ONNX models, sample avatars)
 GenerateProjectFiles_X64_VS2022.bat
 cmake --build build --config Release
 build\Release\MikanTrack.exe

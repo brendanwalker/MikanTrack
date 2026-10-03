@@ -7,6 +7,11 @@
 
 #include "App.h"
 #include "AppConfig.h"
+#include "AvatarPanel.h"
+#include "AvatarPreviewPoses.h"
+#include "AvatarRig.h"
+#include "AvatarSkeleton.h"
+#include "BodyPoseSolver.h"
 #include "CalibrationPanel.h"
 #include "DevicePanel.h"
 #include "GlobalSettings.h"
@@ -37,6 +42,7 @@ MainWindow::MainWindow(App* app)
 	, m_calibrationPanel(std::make_unique<CalibrationPanel>(app->getConfig()))
 	, m_wizardHost(std::make_unique<WizardHost>(app->getConfig(), app->getVisionThread()))
 	, m_timelinePanel(std::make_unique<TimelinePanel>())
+	, m_avatarPanel(std::make_unique<AvatarPanel>(app, app->getConfig()))
 {
 	SetupFlow::WizardSet wizards;
 	wizards.intrinsics= m_wizardHost->getIntrinsicsWizard();
@@ -194,6 +200,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 		ImGui::DockBuilderDockWindow(locWindowTitle("windows.settings"), leftId);
 		ImGui::DockBuilderDockWindow(locWindowTitle("windows.calibration"), rightId);
 		ImGui::DockBuilderDockWindow(locWindowTitle("windows.oscOutput"), rightId);
+		ImGui::DockBuilderDockWindow(locWindowTitle("windows.avatar"), rightId);
 		ImGui::DockBuilderDockWindow(locWindowTitle("windows.log"), bottomId);
 		ImGui::DockBuilderDockWindow(locWindowTitle("windows.timeline"), bottomId);
 		ImGui::DockBuilderFinish(dockspaceId);
@@ -255,6 +262,7 @@ void MainWindow::drawDockspaceAndMenuBar()
 		{
 			ImGui::MenuItem(locLabel("mainWindow.logPanel"), nullptr, &m_bShowLogPanel);
 			ImGui::MenuItem(locLabel("mainWindow.viewSettingsPanel"), nullptr, &m_bShowSettingsPanel);
+			ImGui::MenuItem(locLabel("mainWindow.viewAvatarPanel"), nullptr, &m_bShowAvatarPanel);
 			ImGui::EndMenu();
 		}
 		ImGui::EndMenuBar();
@@ -352,6 +360,8 @@ void MainWindow::update(float deltaSeconds)
 	if (m_bShowSettingsPanel)
 		SettingsPanels::drawAppSettingsPanel();
 	m_timelinePanel->draw(config, visionThread);
+	if (m_bShowAvatarPanel)
+		m_avatarPanel->draw(&m_bShowAvatarPanel);
 
 	// Launch requests raised by the panels this frame
 	if (m_trackingPanelState.bLaunchMountingWizard)
@@ -414,19 +424,97 @@ void MainWindow::update(float deltaSeconds)
 	// view the whole feed comes from the timeline's scrub position instead,
 	// with the frustums built from the RECORDING's config snapshot.
 	m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
+	m_scene3dPanel->setAvatar(m_app->getAvatarModel(), m_app->getAvatarSkeleton(), m_app->getAvatarGeneration());
+	m_scene3dPanel->setShowAvatar(config->avatar.showInScene);
+	SceneGizmos gizmos;
+	updateDisplayAvatar(gizmos);
 	if (m_timelinePanel->isReplayViewActive())
 	{
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
-							 m_timelinePanel->getPerCameraResults());
+							 m_timelinePanel->getPerCameraResults(), gizmos);
 	}
 	else
 	{
-		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults);
+		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults, gizmos);
 	}
+	applyGizmoDrags(gizmos);
 
 	// The active wizard, drawn last, on top
 	m_wizardHost->update(deltaSeconds, m_latestPreviews, m_latestFused, m_videoPreviewPanel.get());
 
 	if (m_bShowLogPanel)
 		LogPanel::getInstance().draw(&m_bShowLogPanel);
+}
+
+void MainWindow::updateDisplayAvatar(SceneGizmos& outGizmos)
+{
+	const std::shared_ptr<const AvatarSkeleton> skeleton= m_app->getAvatarSkeleton();
+	if (skeleton == nullptr)
+	{
+		m_scene3dPanel->setAvatarPose(nullptr);
+		return;
+	}
+	const AppConfig* config= m_app->getConfig();
+	const AvatarRigSettings& rig= m_app->getAvatarRig();
+
+	// The feed: a preview pose from the Avatar panel, else replay frames
+	// (with the recording's body lengths), else live ones (with the
+	// project's). Switching feeds resets the root follow so the filter never
+	// bridges two timelines.
+	const AvatarPanel::ePreviewPose preview= m_avatarPanel->getPreviewPose();
+	const bool bReplay= m_timelinePanel->isReplayViewActive();
+	const int feed= preview != AvatarPanel::ePreviewPose::Live ? 1 + (int)preview : (bReplay ? 1 : 0);
+	if (feed != m_avatarPoseFeed)
+	{
+		m_avatarRetarget.reset();
+		m_avatarPoseFeed= feed;
+	}
+
+	const AvatarRetargetConfig retargetConfig= makeAvatarRetargetConfig(*config, rig);
+	if (preview != AvatarPanel::ePreviewPose::Live)
+	{
+		TrackingFrameResult frame;
+		BodyDimensions user;
+		if (preview == AvatarPanel::ePreviewPose::Rest)
+			AvatarPreviewPoses::makeRestFrame(*skeleton, frame, user);
+		else
+			AvatarPreviewPoses::makeDemoFrame(*skeleton, frame, user);
+		m_avatarRetarget.solve(frame, user, *skeleton, retargetConfig, m_avatarPose);
+	}
+	else
+	{
+		const AppConfig& lengthsConfig= bReplay ? m_timelinePanel->getRecordedConfig() : *config;
+		const TrackingFrameResult& shownFused= bReplay ? m_timelinePanel->getDisplayFused() : m_latestFused;
+		m_avatarRetarget.solve(shownFused, makeBodyDimensions(lengthsConfig), *skeleton, retargetConfig,
+							   m_avatarPose);
+	}
+	m_scene3dPanel->setAvatarPose(&m_avatarPose);
+
+	// The elbow hints where the solve put them: off the posed upper-arm
+	// joint, turned with the root
+	std::array<AvatarPosedBone, HUMANOID_BONE_COUNT> posed;
+	computePosedBones(*skeleton, m_avatarPose, posed);
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		SceneGizmos::ElbowHint& hint= outGizmos.elbowHints[sideIndex];
+		hint.bEnabled= config->avatar.showInScene && m_avatarPanel->getShowElbowGizmo(sideIndex);
+		const eHumanoidBone upperArm= sideIndex == 0 ? eHumanoidBone::LeftUpperArm : eHumanoidBone::RightUpperArm;
+		hint.shoulderWorld= posed[(int)upperArm].positionWorld;
+		hint.hintWorld= hint.shoulderWorld + m_avatarPose.rootRotationWorld * rig.sides[sideIndex].elbowHintOffset;
+	}
+}
+
+void MainWindow::applyGizmoDrags(const SceneGizmos& gizmos)
+{
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const SceneGizmos::ElbowHint& hint= gizmos.elbowHints[sideIndex];
+		if (!hint.bDragging || hint.draggedHintWorld == hint.hintWorld)
+			continue;
+		// Back into the rooted torso frame the hint is stored in
+		AvatarRigSettings rig= m_app->getAvatarRig();
+		rig.sides[sideIndex].elbowHintOffset=
+			glm::inverse(m_avatarPose.rootRotationWorld) * (hint.draggedHintWorld - hint.shoulderWorld);
+		m_app->setAvatarRig(rig);
+	}
 }

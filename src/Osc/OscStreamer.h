@@ -5,10 +5,12 @@
 #include "TrackingTypes.h"
 #include "UdpSocket.h"
 #include "VmcRetarget.h"
+#include "AvatarRetarget.h"
 
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -59,6 +61,12 @@ struct OscStreamerConfig
 	// expressed as motion. Freezing the last streamed bones reads far better
 	// than going silent, which drops the arm back to the avatar's T-pose.
 	bool vmcFreezeOnLoss= true;
+	// With a loaded avatar the VMC bones come from retargeting the resolved
+	// poses onto its skeleton (its proportions, its rest hand) instead of the
+	// measured-length chain above. Null keeps the measured-length path.
+	std::shared_ptr<const AvatarSkeleton> avatarSkeleton;
+	AvatarRetargetConfig avatarRetarget;
+	BodyDimensions bodyDimensions;
 };
 
 /// Streams per-frame parametric hand poses as OSC 1.0 bundles over UDP
@@ -239,6 +247,8 @@ private:
 	// the per-frame encode stays allocation-light like the Mikan path)
 	HeldPoseState m_lastVmcPose[2];
 	VmcRetarget::VmcPose m_vmcPose;
+	AvatarRetarget m_avatarRetarget;
+	AvatarPose m_avatarPose;
 	ClockTimePoint m_startTime;
 
 	// Rate decimation (frame timestamps) and info-message throttling (wall clock)

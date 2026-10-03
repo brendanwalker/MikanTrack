@@ -33,11 +33,18 @@ glm::vec3 safeNormalize(const glm::vec3& v)
 
 // Thumb flexion hinge: the standard hinge pronated about the (post-bend)
 // thumb metacarpal direction. chiralitySign: +1 when the thumb sits on the
-// palm frame's +Y side (right hand), -1 otherwise.
+// palm frame's +Y side, which is a LEFT hand (palm +Y runs toward the thumb
+// on a left hand and toward the pinky on a right), -1 for a right hand.
 glm::vec3 pronatedThumbHinge(const glm::vec3& standardHinge, const glm::vec3& boneDirection, float chiralitySign)
 {
 	const glm::quat pronation= glm::angleAxis(chiralitySign * kThumbPronationRad, safeNormalize(boneDirection));
 	return pronation * standardHinge;
+}
+
+// The same with the signed pronation angle given outright
+glm::vec3 pronatedThumbHingeByAngle(const glm::vec3& standardHinge, const glm::vec3& boneDirection, float pronationRad)
+{
+	return glm::angleAxis(pronationRad, safeNormalize(boneDirection)) * standardHinge;
 }
 } // namespace
 
@@ -296,8 +303,10 @@ void HandPoseModel::computeSkeleton(const std::array<glm::vec3, HAND_LANDMARK_CO
 
 void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const HandSkeleton& skeleton,
 									  const std::array<FingerAngles, FINGER_COUNT>& angles,
-									  std::array<std::array<glm::vec3, 4>, FINGER_COUNT>& outJoints)
+									  std::array<std::array<glm::vec3, 4>, FINGER_COUNT>& outJoints,
+									  const float* thumbPronationRad)
 {
+	const float pronationRad= thumbPronationRad != nullptr ? *thumbPronationRad : getThumbPronationRad(skeleton);
 	const glm::vec3 palmZLocal(0.f, 0.f, 1.f);
 
 	for (int finger= 0; finger < FINGER_COUNT; ++finger)
@@ -319,12 +328,10 @@ void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const Hand
 
 		// Thumb MCP/IP flexion happens about the pronated hinge (mirrors
 		// computeFingerAngles); chirality from the skeleton's index y sign,
-		// the FK-side equivalent of that function's bThumbOnMinusY test
+		// the FK-side equivalent of that function's bThumbOnMinusY test,
+		// unless the caller gave the angle
 		const glm::vec3 flexHinge=
-			finger == (int)eFinger::Thumb
-				? pronatedThumbHinge(hingeAxis, direction,
-									 skeleton.baseInPalm[(int)eFinger::Index].y < 0.f ? -1.f : 1.f)
-				: hingeAxis;
+			finger == (int)eFinger::Thumb ? pronatedThumbHingeByAngle(hingeAxis, direction, pronationRad) : hingeAxis;
 
 		std::array<glm::vec3, 4>& joints= outJoints[finger];
 		joints[0]= glm::vec3(palmTransform * glm::vec4(base, 1.f));
@@ -342,4 +349,9 @@ void HandPoseModel::buildFingerJoints(const glm::mat4& palmTransform, const Hand
 		position+= direction * skeleton.phalanxLengths[finger][2];
 		joints[3]= glm::vec3(palmTransform * glm::vec4(position, 1.f));
 	}
+}
+
+float HandPoseModel::getThumbPronationRad(const HandSkeleton& skeleton)
+{
+	return (skeleton.baseInPalm[(int)eFinger::Index].y < 0.f ? -1.f : 1.f) * kThumbPronationRad;
 }
