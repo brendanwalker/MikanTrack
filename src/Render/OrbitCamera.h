@@ -38,6 +38,11 @@ public:
 	// Camera world position derived from the view matrix (assumes no scaling)
 	glm::vec3 getCameraPosition() const;
 
+	// The ray through a point on the image, given in normalized device
+	// coordinates (-1..1, +Y up): its origin on the near plane and its unit
+	// direction, in the camera's world (display) space
+	void unprojectRay(float ndcX, float ndcY, glm::vec3& outOrigin, glm::vec3& outDirection) const;
+
 private:
 	void applyOrbitParamsToViewMatrix();
 

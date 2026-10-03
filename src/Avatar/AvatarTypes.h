@@ -95,6 +95,9 @@ constexpr int HUMANOID_BONE_COUNT= (int)eHumanoidBone::Count;
 
 // Unity HumanBodyBones spelling ("LeftUpperArm"); "" for an out-of-range value
 const char* humanoidBoneName(eHumanoidBone bone);
+// The inverse: eHumanoidBone::Count (HUMANOID_BONE_NONE) for a name that is
+// not a bone
+eHumanoidBone humanoidBoneFromName(const char* name);
 
 // The parent each bone hangs off in the VRM humanoid hierarchy (Hips -> none).
 // This is the SPEC parent, which may be an optional bone the avatar lacks
@@ -225,10 +228,19 @@ struct AvatarModel
 	std::vector<AvatarTexture> textures;
 	std::vector<AvatarImage> images;
 
-	// Node index per humanoid bone, -1 when the avatar lacks that bone
+	// Node index per humanoid bone, -1 when the avatar lacks that bone. The
+	// map in effect: the file's own map with the rig sidecar's overrides
+	// applied (see AvatarRig.h).
 	std::array<int, HUMANOID_BONE_COUNT> humanoidNodes{};
+	// The map exactly as the file names it, kept so an override can be reset
+	// without reloading the file
+	std::array<int, HUMANOID_BONE_COUNT> fileHumanoidNodes{};
 
-	AvatarModel() { humanoidNodes.fill(-1); }
+	AvatarModel()
+	{
+		humanoidNodes.fill(-1);
+		fileHumanoidNodes.fill(-1);
+	}
 
 	int boneNode(eHumanoidBone bone) const { return humanoidNodes[(int)bone]; }
 	bool hasBone(eHumanoidBone bone) const { return humanoidNodes[(int)bone] >= 0; }

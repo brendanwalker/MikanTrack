@@ -26,7 +26,7 @@ Tracking data flows `Video` -> `Vision` -> `Tracking` -> `Osc`. `App` orchestrat
 
 - `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`; with an avatar loaded it runs the avatar retarget over the resolved poses for the VMC bones. See [wire-protocol.md](./wire-protocol.md).
 
-- `src/Avatar`: the VRM avatar. `VrmLoader` reads a VRM 0.x or 1.0 file into `AvatarModel` (`AvatarTypes.h`: the glTF scene plus the `eHumanoidBone` map and meta), `AvatarSkeleton` derives the immutable rest data the renderer poses from and the retarget measures against, and `AvatarRetarget` poses that skeleton from a tracked frame (`AvatarPose`, plus the posed-globals composition for the renderer). Pure CPU, no GL. See [avatar.md](./avatar.md).
+- `src/Avatar`: the VRM avatar. `VrmLoader` reads a VRM 0.x or 1.0 file into `AvatarModel` (`AvatarTypes.h`: the glTF scene plus the `eHumanoidBone` map and meta), `AvatarSkeleton` derives the immutable rest data the renderer poses from and the retarget measures against, `AvatarRetarget` poses that skeleton from a tracked frame (`AvatarPose`, plus the posed-globals composition for the renderer), `AvatarRig` holds the per-avatar corrections persisted in a sidecar beside the model, and `AvatarPreviewPoses` builds canned frames for posing without cameras. Pure CPU, no GL. See [avatar.md](./avatar.md).
 
 - `src/Render`: minimal GL helpers for the 3D scene view: `GlFrameBuffer`, `GlTexture`, `GlLineRenderer`, `DebugDraw`, `OrbitCamera`, `Colors.h`, plus `GlSkinnedMeshRenderer`, the skinned MToon renderer for the avatar. No scene graph.
 
@@ -82,7 +82,7 @@ The main thread runs the SDL/ImGui UI (`App::tick` at a ~90 Hz cap) and pumps `V
 - `fetchPreviewFrame` and `fetchFusedResult` copy the newest frame/result and clear a freshness flag
 - status reads (`getDominantCamera`, `getObservationConfidence`, hitch counters, recording counters) are plain atomics
 - wizard interactions are atomic request flags serviced on the vision thread with mutex-guarded result structs fetched later (`fetchRestPoseCapture`, `fetchBoneCalibration`, `fetchImuMountingCapture`)
-- the avatar skeleton goes the other way through `setAvatarSkeleton`: a mutex-guarded pending pointer plus a changed flag, adopted between frames and pushed into the OSC streamer's config without a config refresh (which would end a recording)
+- the avatar skeleton and its rig settings go the other way through `setAvatarSkeleton`: a mutex-guarded pending slot plus a changed flag, adopted between frames and pushed into the OSC streamer's config without a config refresh (which would end a recording)
 
 The remaining threads: one Media Foundation callback thread per streaming camera, one HID read thread per Joy-Con (`JoyconDevice`, SPSC sample queue into the vision thread), the `ImuService` discovery worker (HID enumeration and the Bluetooth open handshake block for hundreds of milliseconds, so they never run on the frame loop), and the `TrackingRecorder` and `FrameRecorder` writer threads.
 
@@ -157,6 +157,6 @@ A freshly created project starts `SetupFlow` (`src/UI/SetupFlow.h`), the guided 
 
 `Scene3dPanel` renders the marker-plane grid, per-camera frustums, the loaded avatar at its rest pose, and the fused hand/arm skeletons (with optional dimmed per-camera skeletons) into an FBO using `src/Render/`. The skeleton it draws is the same FK reconstruction a client rebuilds from the streamed parameters; with an avatar shown the lines draw depth-disabled so they stay visible inside the character.
 
-`AvatarPanel` (`src/UI/AvatarPanel.h`) loads and unloads the project's VRM avatar and shows its humanoid bone map. The model itself is owned by `App` (loaded on the main thread at the end of `App::activateProject`, cleared on return to the menu), because the renderer builds GL resources from it; `AppConfig` persists only its path and placement. `MainWindow` runs the display-side `AvatarRetarget` on whatever fused result the scene shows (live, or the timeline's replayed frame with the recording's body lengths) and hands the pose to `Scene3dPanel`. See [avatar.md](./avatar.md).
+`AvatarPanel` (`src/UI/AvatarPanel.h`) loads and unloads the project's VRM avatar and edits its rig settings through `App::setAvatarRig`. The model itself is owned by `App` (loaded on the main thread at the end of `App::activateProject`, cleared on return to the menu), because the renderer builds GL resources from it; `AppConfig` persists only its path and placement. `MainWindow` runs the display-side `AvatarRetarget` on whatever the scene shows (live, the timeline's replayed frame with the recording's body lengths, or the panel's Rest or Demo preview frame), hands the pose to `Scene3dPanel`, and carries the elbow hint gizmos between the scene and the rig settings. See [avatar.md](./avatar.md).
 
 Global hotkeys, handled in `MainWindow.cpp`: F9 requests a diagnostic dump, F10 toggles the tracking recording.

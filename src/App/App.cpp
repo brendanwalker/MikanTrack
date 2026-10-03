@@ -28,6 +28,10 @@
 
 App* App::m_instance= nullptr;
 
+// Rig edits arrive per frame while a control is dragged; the sidecar is
+// written once they settle
+static constexpr float k_avatarRigAutoSaveSeconds= 3.f;
+
 App::App()
 {
 	m_instance= this;
@@ -272,25 +276,81 @@ bool App::loadAvatar(const std::filesystem::path& path)
 		return false;
 	}
 
+	// The previous avatar's pending rig edits belong to its own sidecar
+	saveAvatarRigIfDirty();
+
 	m_avatarModel= result.model;
-	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*result.model);
-	for (const std::string& warning : m_avatarSkeleton->getWarnings())
-		MIKAN_LOG_WARNING("App::loadAvatar") << warning;
+	m_avatarRigLoadWarnings.clear();
+	m_avatarRig= loadAvatarRig(path, &m_avatarRigLoadWarnings);
+	m_bAvatarRigDirty= false;
+	rebuildAvatarSkeleton();
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
-	m_visionThread->setAvatarSkeleton(m_avatarSkeleton);
+	m_visionThread->setAvatarSkeleton(m_avatarSkeleton, m_avatarRig);
 	return true;
+}
+
+void App::rebuildAvatarSkeleton()
+{
+	m_avatarRigWarnings= m_avatarRigLoadWarnings;
+	applyRigToModel(m_avatarRig, *m_avatarModel, m_avatarRigWarnings);
+	m_avatarSkeleton= std::make_shared<const AvatarSkeleton>(*m_avatarModel);
+	m_avatarRigWarnings.insert(m_avatarRigWarnings.end(), m_avatarSkeleton->getWarnings().begin(),
+							   m_avatarSkeleton->getWarnings().end());
+	for (const std::string& warning : m_avatarRigWarnings)
+		MIKAN_LOG_WARNING("App::rebuildAvatarSkeleton") << warning;
+}
+
+void App::setAvatarRig(const AvatarRigSettings& rig)
+{
+	if (m_avatarModel == nullptr)
+		return;
+
+	// Only the mapping changes the skeleton. Keeping the same skeleton for
+	// every other edit also keeps the streamer's root follow running.
+	const bool bMappingChanged= !rig.sameMapping(m_avatarRig);
+	m_avatarRig= rig;
+	if (bMappingChanged)
+		rebuildAvatarSkeleton();
+	m_visionThread->setAvatarSkeleton(m_avatarSkeleton, m_avatarRig);
+
+	if (!m_bAvatarRigDirty)
+		m_avatarRigSecondsSinceDirty= 0.f;
+	m_bAvatarRigDirty= true;
+}
+
+void App::updateAvatarRigAutoSave(float deltaSeconds)
+{
+	if (!m_bAvatarRigDirty)
+		return;
+	m_avatarRigSecondsSinceDirty+= deltaSeconds;
+	if (m_avatarRigSecondsSinceDirty >= k_avatarRigAutoSaveSeconds)
+		saveAvatarRigIfDirty();
+}
+
+void App::saveAvatarRigIfDirty()
+{
+	if (!m_bAvatarRigDirty)
+		return;
+	m_bAvatarRigDirty= false;
+	m_avatarRigSecondsSinceDirty= 0.f;
+	if (m_avatarModel != nullptr && !m_avatarModel->sourcePath.empty())
+		saveAvatarRig(PathUtils::utf8ToPath(m_avatarModel->sourcePath), m_avatarRig);
 }
 
 void App::clearAvatar()
 {
+	saveAvatarRigIfDirty();
 	if (m_avatarModel == nullptr && m_avatarLoadError.empty())
 		return;
 	m_avatarModel= nullptr;
 	m_avatarSkeleton= nullptr;
+	m_avatarRig= AvatarRigSettings();
+	m_avatarRigLoadWarnings.clear();
+	m_avatarRigWarnings.clear();
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
-	m_visionThread->setAvatarSkeleton(nullptr);
+	m_visionThread->setAvatarSkeleton(nullptr, m_avatarRig);
 }
 
 void App::loadConfiguredAvatar()
@@ -365,6 +425,7 @@ void App::shutdown()
 
 	if (m_config != nullptr)
 		m_config->save();
+	saveAvatarRigIfDirty();
 
 	if (m_visionThread != nullptr)
 	{
@@ -454,4 +515,5 @@ void App::tick(float deltaSeconds)
 	SDL_GL_SwapWindow(m_sdlWindow);
 
 	m_config->updateAutoSave(deltaSeconds);
+	updateAvatarRigAutoSave(deltaSeconds);
 }

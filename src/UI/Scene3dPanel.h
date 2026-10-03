@@ -1,10 +1,13 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <vector>
 
 #include "glm/ext/matrix_float4x4.hpp"
+#include "glm/ext/vector_float2.hpp"
+#include "glm/ext/vector_float3.hpp"
 
 #include "AvatarRetarget.h"
 #include "TrackingTypes.h"
@@ -33,6 +36,24 @@ struct SceneCameraView
 // applies the GL flip for the frustum itself.
 std::vector<SceneCameraView> makeSceneCameraViews(const AppConfig& config);
 
+// Draggable handles over the scene, world space. Per arm: the avatar's elbow
+// hint, drawn as a ring joined to the shoulder. The caller fills the inputs
+// each frame; draw() fills the outputs.
+struct SceneGizmos
+{
+	struct ElbowHint
+	{
+		bool bEnabled= false;
+		glm::vec3 shoulderWorld{0.f};
+		glm::vec3 hintWorld{0.f};
+
+		// While the hint is dragged: true, with where it was dragged to this frame
+		bool bDragging= false;
+		glm::vec3 draggedHintWorld{0.f};
+	};
+	std::array<ElbowHint, 2> elbowHints{};
+};
+
 // World is Z-up (marker plane = XY); the renderer and orbit camera are Y-up.
 // The one world-to-display conversion: world +Z becomes display +Y, so
 // (x, y, z) -> (x, z, -y). Shared with the headless avatar render tool.
@@ -54,7 +75,8 @@ public:
 
 	void draw(const TrackingFrameResult& fusedResult,
 			  const std::vector<SceneCameraView>& cameras,
-			  const std::vector<const TrackingFrameResult*>& perCameraResults);
+			  const std::vector<const TrackingFrameResult*>& perCameraResults,
+			  SceneGizmos& gizmos);
 
 	// Forearm length used to place the elbow estimate (meters); the
 	// direction is measured by the wrist IMU, only the length is assumed
@@ -74,7 +96,15 @@ public:
 
 private:
 	void renderScene(const TrackingFrameResult& fusedResult, const std::vector<SceneCameraView>& cameras,
-					 const std::vector<const TrackingFrameResult*>& perCameraResults, float aspect);
+					 const std::vector<const TrackingFrameResult*>& perCameraResults, const SceneGizmos& gizmos,
+					 float aspect);
+	void drawGizmos(const SceneGizmos& gizmos);
+	// Picks and drags the gizmos with the mouse over the scene image; returns
+	// whether a gizmo owns the mouse this frame (the orbit drag stands down)
+	bool updateGizmoDrag(SceneGizmos& gizmos, const glm::vec2& imageMin, const glm::vec2& imageSize);
+	// World point -> image pixel; false when behind the camera
+	bool projectToImage(const glm::vec3& world, const glm::vec2& imageMin, const glm::vec2& imageSize,
+						glm::vec2& outPixel) const;
 	void drawSkeleton(const TrackingFrameResult& result, float brightness, const glm::vec3* colorOverride);
 	// Draws the avatar when one is shown; returns whether anything was drawn
 	bool drawAvatar();
@@ -93,6 +123,11 @@ private:
 	bool m_bHasAvatarPose= false;
 	AvatarPose m_avatarPose;
 	std::vector<glm::mat4> m_posedGlobals;
+	// The gizmo being dragged (-1 none) and the camera-facing plane it moves
+	// in, display space
+	int m_draggedElbowHint= -1;
+	glm::vec3 m_dragPlanePoint{0.f};
+	glm::vec3 m_dragPlaneNormal{0.f};
 	bool m_bRenderInitialized= false;
 	bool m_bShowPerCameraSkeletons= false;
 	float m_forearmLengthMeters= 0.25f;

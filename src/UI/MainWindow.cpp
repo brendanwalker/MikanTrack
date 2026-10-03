@@ -8,6 +8,8 @@
 #include "App.h"
 #include "AppConfig.h"
 #include "AvatarPanel.h"
+#include "AvatarPreviewPoses.h"
+#include "AvatarRig.h"
 #include "AvatarSkeleton.h"
 #include "BodyPoseSolver.h"
 #include "CalibrationPanel.h"
@@ -424,40 +426,95 @@ void MainWindow::update(float deltaSeconds)
 	m_scene3dPanel->setForearmLength(config->body.forearmLengthMeters);
 	m_scene3dPanel->setAvatar(m_app->getAvatarModel(), m_app->getAvatarSkeleton(), m_app->getAvatarGeneration());
 	m_scene3dPanel->setShowAvatar(config->avatar.showInScene);
-	if (const std::shared_ptr<const AvatarSkeleton> skeleton= m_app->getAvatarSkeleton())
-	{
-		// Replay frames carry the recording's body lengths; live ones the
-		// project's. Switching feeds resets the root follow so the filter
-		// never bridges two timelines.
-		const bool bReplay= m_timelinePanel->isReplayViewActive();
-		if (bReplay != m_bAvatarPoseFromReplay)
-		{
-			m_avatarRetarget.reset();
-			m_bAvatarPoseFromReplay= bReplay;
-		}
-		const AppConfig& lengthsConfig= bReplay ? m_timelinePanel->getRecordedConfig() : *config;
-		const TrackingFrameResult& shownFused= bReplay ? m_timelinePanel->getDisplayFused() : m_latestFused;
-		m_avatarRetarget.solve(shownFused, makeBodyDimensions(lengthsConfig), *skeleton,
-							   makeAvatarRetargetConfig(*config), m_avatarPose);
-		m_scene3dPanel->setAvatarPose(&m_avatarPose);
-	}
-	else
-	{
-		m_scene3dPanel->setAvatarPose(nullptr);
-	}
+	SceneGizmos gizmos;
+	updateDisplayAvatar(gizmos);
 	if (m_timelinePanel->isReplayViewActive())
 	{
 		m_scene3dPanel->draw(m_timelinePanel->getDisplayFused(), m_timelinePanel->getSceneCameras(),
-							 m_timelinePanel->getPerCameraResults());
+							 m_timelinePanel->getPerCameraResults(), gizmos);
 	}
 	else
 	{
-		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults);
+		m_scene3dPanel->draw(m_latestFused, makeSceneCameraViews(*config), perCameraResults, gizmos);
 	}
+	applyGizmoDrags(gizmos);
 
 	// The active wizard, drawn last, on top
 	m_wizardHost->update(deltaSeconds, m_latestPreviews, m_latestFused, m_videoPreviewPanel.get());
 
 	if (m_bShowLogPanel)
 		LogPanel::getInstance().draw(&m_bShowLogPanel);
+}
+
+void MainWindow::updateDisplayAvatar(SceneGizmos& outGizmos)
+{
+	const std::shared_ptr<const AvatarSkeleton> skeleton= m_app->getAvatarSkeleton();
+	if (skeleton == nullptr)
+	{
+		m_scene3dPanel->setAvatarPose(nullptr);
+		return;
+	}
+	const AppConfig* config= m_app->getConfig();
+	const AvatarRigSettings& rig= m_app->getAvatarRig();
+
+	// The feed: a preview pose from the Avatar panel, else replay frames
+	// (with the recording's body lengths), else live ones (with the
+	// project's). Switching feeds resets the root follow so the filter never
+	// bridges two timelines.
+	const AvatarPanel::ePreviewPose preview= m_avatarPanel->getPreviewPose();
+	const bool bReplay= m_timelinePanel->isReplayViewActive();
+	const int feed= preview != AvatarPanel::ePreviewPose::Live ? 1 + (int)preview : (bReplay ? 1 : 0);
+	if (feed != m_avatarPoseFeed)
+	{
+		m_avatarRetarget.reset();
+		m_avatarPoseFeed= feed;
+	}
+
+	const AvatarRetargetConfig retargetConfig= makeAvatarRetargetConfig(*config, rig);
+	if (preview != AvatarPanel::ePreviewPose::Live)
+	{
+		TrackingFrameResult frame;
+		BodyDimensions user;
+		if (preview == AvatarPanel::ePreviewPose::Rest)
+			AvatarPreviewPoses::makeRestFrame(*skeleton, frame, user);
+		else
+			AvatarPreviewPoses::makeDemoFrame(*skeleton, frame, user);
+		m_avatarRetarget.solve(frame, user, *skeleton, retargetConfig, m_avatarPose);
+	}
+	else
+	{
+		const AppConfig& lengthsConfig= bReplay ? m_timelinePanel->getRecordedConfig() : *config;
+		const TrackingFrameResult& shownFused= bReplay ? m_timelinePanel->getDisplayFused() : m_latestFused;
+		m_avatarRetarget.solve(shownFused, makeBodyDimensions(lengthsConfig), *skeleton, retargetConfig,
+							   m_avatarPose);
+	}
+	m_scene3dPanel->setAvatarPose(&m_avatarPose);
+
+	// The elbow hints where the solve put them: off the posed upper-arm
+	// joint, turned with the root
+	std::array<AvatarPosedBone, HUMANOID_BONE_COUNT> posed;
+	computePosedBones(*skeleton, m_avatarPose, posed);
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		SceneGizmos::ElbowHint& hint= outGizmos.elbowHints[sideIndex];
+		hint.bEnabled= config->avatar.showInScene && m_avatarPanel->getShowElbowGizmo(sideIndex);
+		const eHumanoidBone upperArm= sideIndex == 0 ? eHumanoidBone::LeftUpperArm : eHumanoidBone::RightUpperArm;
+		hint.shoulderWorld= posed[(int)upperArm].positionWorld;
+		hint.hintWorld= hint.shoulderWorld + m_avatarPose.rootRotationWorld * rig.sides[sideIndex].elbowHintOffset;
+	}
+}
+
+void MainWindow::applyGizmoDrags(const SceneGizmos& gizmos)
+{
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const SceneGizmos::ElbowHint& hint= gizmos.elbowHints[sideIndex];
+		if (!hint.bDragging || hint.draggedHintWorld == hint.hintWorld)
+			continue;
+		// Back into the rooted torso frame the hint is stored in
+		AvatarRigSettings rig= m_app->getAvatarRig();
+		rig.sides[sideIndex].elbowHintOffset=
+			glm::inverse(m_avatarPose.rootRotationWorld) * (hint.draggedHintWorld - hint.shoulderWorld);
+		m_app->setAvatarRig(rig);
+	}
 }

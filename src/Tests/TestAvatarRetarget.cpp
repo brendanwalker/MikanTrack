@@ -274,7 +274,7 @@ static int runAvatarRetargetTest(const TestArgs&)
 	}
 
 	// (c) Two-bone solve: the avatar's lengths hold, the elbow bends in the
-	// plane of the measured elbow, and without one the default pole bends it
+	// plane of the measured elbow, and without one the default elbow hint bends it
 	// down with the forearm taking the hand's own frame
 	{
 		Scenario scenario= makeRestScenario(eVrmVersion::Vrm1, false);
@@ -308,7 +308,7 @@ static int runAvatarRetargetTest(const TestArgs&)
 				  glm::dot(elbow - shoulder, hintedElbow - shoulder) > 0.f,
 			  "(c) the elbow bends in the plane of the measured elbow, on its side");
 
-		// No measured elbow: default pole, down and back
+		// No measured elbow: the default elbow hint, down and back
 		left.hasForearmPose= false;
 		AvatarRetarget retargetNoElbow;
 		solveScenario(scenario, retargetNoElbow, 0.0, pose);

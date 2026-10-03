@@ -791,6 +791,7 @@ LoadResult loadMemory(const uint8_t* bytes, size_t byteCount)
 	if (!checkRequiredBones(context, result.error))
 		return result;
 
+	model->fileHumanoidNodes= model->humanoidNodes;
 	result.model= model;
 	return result;
 }

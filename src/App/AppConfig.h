@@ -330,9 +330,11 @@ struct HandFusionConfig;
 HandFusionConfig makeHandFusionConfig(const class AppConfig& config);
 
 // And for the avatar retarget: the OSC streamer and the 3D view both solve
-// from this one mapping of the avatar settings
+// from this one mapping of the project's avatar settings and the loaded
+// avatar's rig settings
 struct AvatarRetargetConfig;
-AvatarRetargetConfig makeAvatarRetargetConfig(const class AppConfig& config);
+struct AvatarRigSettings;
+AvatarRetargetConfig makeAvatarRetargetConfig(const class AppConfig& config, const AvatarRigSettings& rig);
 
 class AppConfig
 {

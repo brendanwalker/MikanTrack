@@ -28,6 +28,8 @@ A VRM avatar arrives in glTF's right-handed Y-up frame, meters. A VRM 1.0 model 
 
 The avatar's `HandSkeleton` (`AvatarSkeleton::HandRest`) follows the palm convention below, built through the shipping `computePalmFrame`, but its `neutralDirInPalm` carries the avatar's rest finger directions rather than the flat-hand default: zero angles reproduce the avatar's own rest hand. This skeleton is never put on the wire. See [avatar.md](./avatar.md).
 
+The avatar rig settings carry two spatial quantities. A rotation trim rotates a bone's assumed rest frame in that frame's own axes: the canonical head frame for the head, the palm frame for a hand, and the forearm axis for the forearm roll. An elbow hint is a point in the rooted torso frame (the root rotation applied to the avatar's +X facing, +Y left, +Z up), relative to the avatar's upper-arm joint, so it turns with the root yaw.
+
 ## Palm, forearm, and head frames
 
 - **Palm frame** (Ultraleap-compatible, stated on `HandPose` in `src/Vision/TrackingTypes.h`): origin at the palm center (midpoint of wrist and middle MCP), +X toward the fingers, +Z out of the palmar surface (chirality-corrected per hand), +Y completing right-handed.

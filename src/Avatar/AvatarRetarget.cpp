@@ -211,13 +211,13 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 	{
 		AvatarPose::Bone& headBone= outPose.bones[(int)B::Head];
 		headBone.present= true;
-		headBone.deltaWorld= head.orientationWorld * glm::inverse(rest.rotation);
+		const glm::quat headTrim= glm::quat(config.headTrimRadians);
+		headBone.deltaWorld= head.orientationWorld * glm::inverse(rest.rotation * headTrim);
 	}
 
 	const bool bBothShoulders= bSideValid[0] && bSideValid[1] && poses[0].hasShoulder && poses[1].hasShoulder;
 	const glm::vec3 measuredShoulderMidpoint=
 		bBothShoulders ? (poses[0].shoulderPositionWorld + poses[1].shoulderPositionWorld) * 0.5f : glm::vec3(0.f);
-	const glm::vec3 defaultPole= safeNormalize(config.defaultElbowPoleWorld);
 
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
@@ -225,6 +225,7 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 			continue;
 		const HandPose& pose= poses[sideIndex];
 		const eHandSide side= (eHandSide)sideIndex;
+		const AvatarRetargetConfig::Side& sideConfig= config.sides[sideIndex];
 
 		const B shoulderBone= sideBone(sideIndex, B::LeftShoulder, B::RightShoulder);
 		const B upperArmBone= sideBone(sideIndex, B::LeftUpperArm, B::RightUpperArm);
@@ -274,19 +275,21 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 			wrist= avatarShoulder + toWrist * (avatarReach / reach);
 
 		// Elbow: the measured elbow, scaled the same way, hints which way the
-		// arm bends; otherwise the default pole does
-		glm::vec3 polePoint;
+		// arm bends, giving way to the rig's hint point (in the rooted torso
+		// frame, so it turns with the body) as the forearm confidence drops
+		const glm::vec3 hintOffset= rest.rotation * sideConfig.elbowHintOffset;
+		glm::vec3 polePoint= avatarShoulder + hintOffset;
 		if (pose.hasForearmPose)
 		{
 			const glm::vec3 userElbow= pose.getElbowPositionWorld(user.forearmLengthMeters);
-			polePoint= avatarShoulder + (userElbow - userShoulder) * ratio;
+			const glm::vec3 measuredPole= avatarShoulder + (userElbow - userShoulder) * ratio;
+			const float weight= sideConfig.elbowHintConfidence > 0.f
+				? std::clamp(pose.forearmConfidence / sideConfig.elbowHintConfidence, 0.f, 1.f)
+				: 1.f;
+			polePoint+= (measuredPole - polePoint) * weight;
 		}
-		else
-		{
-			polePoint= (avatarShoulder + wrist) * 0.5f + defaultPole * avatarReach;
-		}
-		const glm::vec3 elbow=
-			solveElbow(avatarShoulder, wrist, upperArm, forearm, polePoint, defaultPole, rest.direction(lowerArmBone));
+		const glm::vec3 elbow= solveElbow(avatarShoulder, wrist, upperArm, forearm, polePoint, safeNormalize(hintOffset),
+										  rest.direction(lowerArmBone));
 
 		// Upper arm: direction only
 		const glm::vec3 upperDirection= safeNormalize(elbow - avatarShoulder);
@@ -317,7 +320,8 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 					chainDelta * (rest.rotation * glm::vec3(hand.palmFrameWorld[2])), forearmDirection));
 				if (glm::dot(measuredPalmNormal, measuredPalmNormal) > 0.f && glm::dot(restPalmNormal, restPalmNormal) > 0.f)
 				{
-					const float twist= signedAngle(restPalmNormal, measuredPalmNormal, forearmDirection);
+					const float twist= signedAngle(restPalmNormal, measuredPalmNormal, forearmDirection) +
+						sideConfig.forearmRollTrimRadians;
 					chainDelta= glm::angleAxis(twist, forearmDirection) * chainDelta;
 				}
 			}
@@ -328,7 +332,11 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 		const glm::vec3 handPosition= elbow + chainDelta * rest.offset(handBone);
 
 		// Hand: the full measured palm frame against the avatar's rest palm
-		const glm::quat handDelta= pose.palmOrientationWorld * glm::inverse(rest.rotation * restPalmRotation);
+		// The trim rotates the rest palm the measurement is matched to, in its
+		// own axes: a measured palm equal to the trimmed one leaves the hand
+		// at rest
+		const glm::quat assumedRestPalmRotation= restPalmRotation * glm::quat(sideConfig.handTrimRadians);
+		const glm::quat handDelta= pose.palmOrientationWorld * glm::inverse(rest.rotation * assumedRestPalmRotation);
 		{
 			AvatarPose::Bone& bone= outPose.bones[(int)handBone];
 			bone.present= true;
@@ -345,13 +353,17 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 		glm::mat4 palmTransform= glm::mat4_cast(posedPalmRotation);
 		palmTransform[3]= glm::vec4(handPosition + handDelta * (rest.rotation * (restPalmCenter - restHandPosition)), 1.f);
 
-		// A rig with fewer bones than the measured finger folds the bends
-		// past its last bone into that bone, so a fist still closes on a
-		// two-bone finger
+		// The rig's gains scale the measured angles first. Then a rig with
+		// fewer bones than the measured finger folds the bends past its last
+		// bone into that bone, so a fist still closes on a two-bone finger.
 		std::array<FingerAngles, FINGER_COUNT> angles= pose.fingers;
 		for (int finger= 0; finger < FINGER_COUNT; ++finger)
 		{
 			FingerAngles& fingerAngles= angles[finger];
+			fingerAngles.lateral*= sideConfig.splayGain;
+			fingerAngles.proximal*= sideConfig.curlGain;
+			fingerAngles.intermediate*= sideConfig.curlGain;
+			fingerAngles.distal*= sideConfig.curlGain;
 			switch (hand.fingerBoneCount[finger])
 			{
 			case 1:
@@ -369,10 +381,14 @@ void AvatarRetarget::solve(const std::array<HandPose, 2>& poses, const bool bSid
 		}
 
 		std::array<std::array<glm::vec3, 4>, FINGER_COUNT> joints;
-		HandPoseModel::buildFingerJoints(palmTransform, hand.skeleton, angles, joints);
+		HandPoseModel::buildFingerJoints(palmTransform, hand.skeleton, angles, joints,
+										 sideConfig.bThumbPronationOverride ? &sideConfig.thumbPronationRad : nullptr);
 
 		for (int finger= 0; finger < FINGER_COUNT; ++finger)
 		{
+			// A disabled finger stays absent and follows the hand at rest
+			if (!sideConfig.fingerEnabled[finger])
+				continue;
 			glm::quat fingerDelta= handDelta;
 			for (int index= 0; index < hand.fingerBoneCount[finger]; ++index)
 			{

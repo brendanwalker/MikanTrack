@@ -87,7 +87,16 @@ void computeSkeleton(const std::array<glm::vec3, HAND_LANDMARK_COUNT>& points, e
 // Forward kinematics: joint positions (4 per finger, base -> tip) from a
 // palm pose + skeleton + angles, in the space of palmTransform. Exactly
 // inverts computeFingerAngles when given the same skeleton.neutralDirInPalm.
+// thumbPronationRad, when given, replaces the thumb hinge pronation the
+// skeleton implies (getThumbPronationRad) with an explicit signed angle;
+// only the avatar retarget passes one, so tracking and the wire never do.
 void buildFingerJoints(const glm::mat4& palmTransform, const HandSkeleton& skeleton,
 					   const std::array<FingerAngles, FINGER_COUNT>& angles,
-					   std::array<std::array<glm::vec3, 4>, FINGER_COUNT>& outJoints);
+					   std::array<std::array<glm::vec3, 4>, FINGER_COUNT>& outJoints,
+					   const float* thumbPronationRad= nullptr);
+
+// The signed thumb hinge pronation the forward kinematics applies for a
+// skeleton: the anatomical magnitude, signed by which side of the palm the
+// index base sits on
+float getThumbPronationRad(const HandSkeleton& skeleton);
 } // namespace HandPoseModel

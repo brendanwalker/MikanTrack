@@ -1,5 +1,7 @@
 #include "AvatarTypes.h"
 
+#include <cstring>
+
 const char* humanoidBoneName(eHumanoidBone bone)
 {
 	static const char* k_names[HUMANOID_BONE_COUNT]= {
@@ -26,6 +28,16 @@ const char* humanoidBoneName(eHumanoidBone bone)
 
 	const int index= (int)bone;
 	return (index >= 0 && index < HUMANOID_BONE_COUNT) ? k_names[index] : "";
+}
+
+eHumanoidBone humanoidBoneFromName(const char* name)
+{
+	for (int index= 0; index < HUMANOID_BONE_COUNT; ++index)
+	{
+		if (std::strcmp(humanoidBoneName((eHumanoidBone)index), name) == 0)
+			return (eHumanoidBone)index;
+	}
+	return eHumanoidBone::Count;
 }
 
 eHumanoidBone humanoidBoneParent(eHumanoidBone bone)

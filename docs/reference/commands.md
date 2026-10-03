@@ -67,6 +67,7 @@ Prints every registered command grouped by category (self-tests, hardware requir
 - `--test-seeding`: cross-camera seed redundancy gate
 - `--test-vmc`: VMC retarget: axis conversion, rest identity, chain round trip
 - `--test-avatar-retarget`: avatar retarget: rest identity, reach scaling, two-bone IK, hands, fingers, root, VMC
+- `--test-avatar-rig`: avatar rig: sidecar round trip, mapping overrides, trims, finger tweaks, elbow hint
 - `--test-vrm`: VRM loader and rest skeleton on synthetic in-memory files, both VRM generations
 
 ### Hardware (need a camera or controller physically connected to mean anything)
@@ -86,7 +87,7 @@ Prints every registered command grouped by category (self-tests, hardware requir
 - `--replay-dump`: emits a recording frame range with regenerated fusion diagnostics
 - `--replay-extrinsics`: A/B a candidate extrinsics config against a recording
 - `--replay-popmetrics`: pop statistics of a recording: baseline vs hand estimator
-- `--render-avatar`: renders a VRM at rest (or a canned retargeted pose with a trailing `demo`) to a PNG through the scene renderer from a hidden window
+- `--render-avatar`: renders a VRM at rest (or a canned retargeted pose with a trailing `demo`) to a PNG through the scene renderer from a hidden window, with the model's rig sidecar applied
 - `--replay-verify`: re-runs a recording and verifies every frame checksum
 - `--vrm-info`: prints what the loader reads from a VRM file and the derived skeleton
 - `--test-imupair`: solves the transform between two rigidly coupled IMUs from a dump (categorized as a Tool despite the `--test-` name, since it takes a dump file argument rather than running standalone)

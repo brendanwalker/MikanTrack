@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "AvatarRetarget.h"
+#include "Scene3dPanel.h" // SceneGizmos
 #include "SettingsPanels.h" // TrackingPanelState
 #include "VisionThread.h"    // VisionPreviewFrame
 
@@ -76,11 +77,17 @@ private:
 	TrackingPanelState m_trackingPanelState;
 
 	// The display-side avatar retarget, run on whatever fused result the 3D
-	// scene shows (live or replay); the OSC streamer runs its own on the
+	// scene shows (live, replay, or a preview pose); the OSC streamer runs its own on the
 	// vision thread over the resolved poses
 	AvatarRetarget m_avatarRetarget;
 	AvatarPose m_avatarPose;
-	bool m_bAvatarPoseFromReplay= false;
+	// Which feed the display retarget last solved (live, replay, or a
+	// preview pose), so a switch resets its root follow
+	int m_avatarPoseFeed= -1;
+	// Poses the scene's avatar and fills the elbow hint gizmos from it
+	void updateDisplayAvatar(SceneGizmos& outGizmos);
+	// Writes a dragged elbow hint back into the rig settings
+	void applyGizmoDrags(const SceneGizmos& gizmos);
 
 	bool m_bShowLogPanel= true;
 	bool m_bShowSettingsPanel= true;

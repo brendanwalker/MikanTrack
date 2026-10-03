@@ -463,8 +463,8 @@ void VisionThread::applyOscConfigOnThread()
 		// The avatar path takes the same lengths the solver placed the joints
 		// with, plus the skeleton the main thread handed over
 		oscConfig.bodyDimensions= bodyDimensions;
-		oscConfig.avatarRetarget= makeAvatarRetargetConfig(*m_config);
-		oscConfig.avatarSkeleton= m_avatarSkeleton;
+		oscConfig.avatarRetarget= makeAvatarRetargetConfig(*m_config, m_avatar.rig);
+		oscConfig.avatarSkeleton= m_avatar.skeleton;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
@@ -554,11 +554,12 @@ void VisionThread::threadLoop()
 	MIKAN_MT_LOG_INFO("VisionThread") << "Vision thread stopped";
 }
 
-void VisionThread::setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton)
+void VisionThread::setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton, const AvatarRigSettings& rig)
 {
 	{
 		std::lock_guard<std::mutex> lock(m_avatarMutex);
-		m_pendingAvatarSkeleton= std::move(skeleton);
+		m_pendingAvatar.skeleton= std::move(skeleton);
+		m_pendingAvatar.rig= rig;
 	}
 	m_bAvatarSkeletonChanged= true;
 }
@@ -576,7 +577,7 @@ void VisionThread::servicePendingRequests()
 	{
 		{
 			std::lock_guard<std::mutex> lock(m_avatarMutex);
-			m_avatarSkeleton= m_pendingAvatarSkeleton;
+			m_avatar= m_pendingAvatar;
 		}
 		applyOscConfigOnThread();
 	}

@@ -179,6 +179,7 @@ inline AvatarModel makeModel(eVrmVersion version, bool rotateLeftUpperArmNode)
 				model.humanoidNodes[boneIndex]= (int)index;
 		}
 	}
+	model.fileHumanoidNodes= model.humanoidNodes;
 	return model;
 }
 } // namespace SyntheticAvatar

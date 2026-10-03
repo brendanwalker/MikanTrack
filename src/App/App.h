@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
+
+#include "AvatarRig.h"
 
 struct SDL_Window;
 typedef void* SDL_GLContext;
@@ -76,6 +79,15 @@ public:
 	void clearAvatar();
 	std::shared_ptr<const AvatarModel> getAvatarModel() const { return m_avatarModel; }
 	std::shared_ptr<const AvatarSkeleton> getAvatarSkeleton() const { return m_avatarSkeleton; }
+
+	// The loaded avatar's rig settings, read from its sidecar on load. An
+	// edit applies at once: a mapping change reapplies the overrides and
+	// rebuilds the skeleton, every change goes to the vision thread, and the
+	// sidecar is saved after a short cooldown.
+	const AvatarRigSettings& getAvatarRig() const { return m_avatarRig; }
+	void setAvatarRig(const AvatarRigSettings& rig);
+	// What applying the rig and building the skeleton reported
+	const std::vector<std::string>& getAvatarRigWarnings() const { return m_avatarRigWarnings; }
 	uint32_t getAvatarGeneration() const { return m_avatarGeneration; }
 	const std::string& getAvatarLoadError() const { return m_avatarLoadError; }
 	// Resolves AvatarConfig::modelPath: absolute as is, else the project
@@ -112,8 +124,19 @@ private:
 
 	// Loads the configured avatar, if any, for the active project
 	void loadConfiguredAvatar();
-	std::shared_ptr<const AvatarModel> m_avatarModel;
+	// Applies m_avatarRig's mapping to the model and rebuilds the skeleton
+	void rebuildAvatarSkeleton();
+	void updateAvatarRigAutoSave(float deltaSeconds);
+	void saveAvatarRigIfDirty();
+	// Mutable here only so the rig's mapping can be reapplied on the main
+	// thread; everything else sees it const (the vision thread never does)
+	std::shared_ptr<AvatarModel> m_avatarModel;
 	std::shared_ptr<const AvatarSkeleton> m_avatarSkeleton;
+	AvatarRigSettings m_avatarRig;
+	std::vector<std::string> m_avatarRigLoadWarnings;
+	std::vector<std::string> m_avatarRigWarnings;
+	bool m_bAvatarRigDirty= false;
+	float m_avatarRigSecondsSinceDirty= 0.f;
 	uint32_t m_avatarGeneration= 0;
 	std::string m_avatarLoadError;
 

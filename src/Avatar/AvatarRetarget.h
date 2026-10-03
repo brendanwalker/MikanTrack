@@ -37,9 +37,36 @@ struct AvatarRetargetConfig
 	// shoulders carry the body solver's jitter, which would otherwise shake
 	// the whole character.
 	float rootFollowTimeConstantS= 0.3f;
-	// Where an elbow bends when nothing measured it: down and slightly back,
-	// the way a resting arm hangs. World frame, direction only.
-	glm::vec3 defaultElbowPoleWorld{-0.35f, 0.f, -1.f};
+
+	// Per arm and hand, left then right (copied from the avatar's rig
+	// settings, see AvatarRig.h)
+	struct Side
+	{
+		// The point the elbow bends toward when nothing measured it, meters,
+		// in the rooted torso frame relative to the avatar's upper-arm joint,
+		// so it turns with the root yaw. Down and back, the way a resting arm
+		// hangs.
+		glm::vec3 elbowHintOffset{-0.15f, 0.f, -0.30f};
+		// Forearm confidence at and above which the measured elbow alone
+		// decides the bend; below it the pole blends toward the hint
+		float elbowHintConfidence= 0.5f;
+		// Trims on the rest frames the retarget assumes, radians: the palm
+		// frame in its own axes (XYZ Euler), and a roll about the forearm
+		glm::vec3 handTrimRadians{0.f};
+		float forearmRollTrimRadians= 0.f;
+		// Finger angle scales: curl on the three bends, splay on the lateral
+		float curlGain= 1.f;
+		float splayGain= 1.f;
+		std::array<bool, FINGER_COUNT> fingerEnabled{true, true, true, true, true};
+		// Explicit signed thumb hinge pronation; otherwise the hand
+		// skeleton's own (HandPoseModel::getThumbPronationRad)
+		bool bThumbPronationOverride= false;
+		float thumbPronationRad= 0.f;
+	};
+	std::array<Side, 2> sides{};
+	// Trim on the head's assumed rest frame (+X facing, +Y left, +Z up), in
+	// its own axes, XYZ Euler radians
+	glm::vec3 headTrimRadians{0.f};
 };
 
 // The posed avatar: a root placement plus one world rotation DELTA per

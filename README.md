@@ -60,7 +60,10 @@ Two-Bone IK from the palm transform.
   toon-shaded in the 3D scene, posed from the tracked hands, elbows and head
   with the avatar's own proportions (reach scaled onto its arms, elbows from a
   two-bone solve hinted by the measured elbow, fingers on its own hand rig).
-  In VMC mode the stream then carries that avatar's bones.
+  In VMC mode the stream then carries that avatar's bones. The panel's Mapping
+  and Retarget tabs fix a rig's bone mapping, trim its rest pose, place the
+  elbow hints (draggable in the 3D scene) and tune the fingers, saved in a
+  `<name>.mikanrig.json` beside the VRM.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
   forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
   camera frustums, marker grid, orbit camera

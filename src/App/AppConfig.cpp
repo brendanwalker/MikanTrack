@@ -11,6 +11,7 @@
 #include "nlohmann/json.hpp"
 
 #include "AvatarRetarget.h"
+#include "AvatarRig.h"
 #include "BodyPoseSolver.h" // BodyDimensions
 #include "HandFusion.h" // HandFusionConfig
 #include "HandPoseModel.h"
@@ -294,12 +295,31 @@ static json cameraProfileToJson(const CameraProfile& profile)
 	};
 }
 
-AvatarRetargetConfig makeAvatarRetargetConfig(const AppConfig& config)
+AvatarRetargetConfig makeAvatarRetargetConfig(const AppConfig& config, const AvatarRigSettings& rig)
 {
+	using B= eHumanoidBone;
 	AvatarRetargetConfig retarget;
 	retarget.followShoulders= config.avatar.followShoulders;
 	retarget.fixedRootPositionWorld= config.avatar.rootPositionWorld;
 	retarget.fixedRootYawDegrees= config.avatar.rootYawDegrees;
+
+	retarget.headTrimRadians= glm::radians(rig.rotationTrimDegrees[(int)B::Head]);
+	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
+	{
+		const AvatarRigSettings::Side& rigSide= rig.sides[sideIndex];
+		AvatarRetargetConfig::Side& side= retarget.sides[sideIndex];
+		const B handBone= sideIndex == 0 ? B::LeftHand : B::RightHand;
+		const B lowerArmBone= sideIndex == 0 ? B::LeftLowerArm : B::RightLowerArm;
+		side.elbowHintOffset= rigSide.elbowHintOffset;
+		side.elbowHintConfidence= rigSide.elbowHintConfidence;
+		side.handTrimRadians= glm::radians(rig.rotationTrimDegrees[(int)handBone]);
+		side.forearmRollTrimRadians= glm::radians(rig.rotationTrimDegrees[(int)lowerArmBone].x);
+		side.curlGain= rigSide.curlGain;
+		side.splayGain= rigSide.splayGain;
+		side.fingerEnabled= rigSide.fingerEnabled;
+		side.bThumbPronationOverride= !rigSide.bThumbPronationAuto;
+		side.thumbPronationRad= glm::radians(rigSide.thumbPronationDegrees);
+	}
 	return retarget;
 }
 
