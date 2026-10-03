@@ -817,14 +817,14 @@ LoadResult loadFile(const std::filesystem::path& path)
 	{
 		result.model->sourcePath= PathUtils::pathToUtf8(path);
 		MIKAN_LOG_INFO(k_logLabel) << "Loaded " << versionName(result.model->version) << " '"
-								   << result.model->meta.name << "' from " << path << " (" << result.model->nodes.size()
+								   << result.model->meta.name << "' from " << PathUtils::pathToUtf8(path) << " (" << result.model->nodes.size()
 								   << " nodes, " << result.model->skins.size() << " skins, "
 								   << result.model->triangleCount() << " triangles, " << result.model->images.size()
 								   << " images)";
 	}
 	else
 	{
-		MIKAN_LOG_ERROR(k_logLabel) << "Failed to load " << path << ": " << result.error;
+		MIKAN_LOG_ERROR(k_logLabel) << "Failed to load " << PathUtils::pathToUtf8(path) << ": " << result.error;
 	}
 	return result;
 }
