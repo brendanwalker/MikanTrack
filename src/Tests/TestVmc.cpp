@@ -2,6 +2,9 @@
 
 #include "glm/matrix.hpp"
 
+#include "AvatarFaceMap.h"
+#include "AvatarTypes.h"
+#include "FaceHead.h"
 #include "OscStreamer.h"
 
 // Synthetic tests for the VMC retarget. The whole conversion is pure, so every
@@ -799,6 +802,218 @@ static int runVmcTest(const TestArgs&)
 		check(strcmp(boneName(eVmcBone::LeftLittleDistal), "LeftLittleDistal") == 0 &&
 				  strcmp(boneName(eVmcBone::RightThumbProximal), "RightThumbProximal") == 0,
 			  "finger bones use Unity's HumanBodyBones spelling");
+	}
+
+	// (j) The face stream and the avatar announcement on the wire. The names
+	// are the contract here too: a receiver matches them exactly and ignores
+	// the rest.
+	{
+		auto arkit= [](const char* name) { return arkitBlendshapeFromName(name); };
+
+		AvatarModel model;
+		auto addExpression= [&model](const char* name, const char* preset) {
+			AvatarExpression expression;
+			expression.name= name;
+			expression.preset= preset;
+			model.expressions.push_back(expression);
+		};
+		addExpression("A", "aa");
+		addExpression("Blink", "blink");
+		addExpression("Blink_L", "blinkLeft");
+		addExpression("Blink_R", "blinkRight");
+		addExpression("Joy", "happy");
+		AvatarMesh mesh;
+		mesh.morphTargetNames= {"jawOpen", "eyeBlinkLeft", "Custom"};
+		model.meshes.push_back(mesh);
+
+		TrackingFrameResult frame;
+		frame.timestampMs= 1000.0;
+		frame.face.present= true;
+		frame.face.blendshapes[arkit("jawOpen")]= 0.6f;
+		frame.face.blendshapes[arkit("eyeBlinkLeft")]= 0.8f;
+		frame.face.blendshapes[arkit("eyeBlinkRight")]= 0.2f;
+		frame.face.blendshapes[arkit("mouthSmileLeft")]= 0.4f;
+
+		OscStreamerConfig config;
+		config.outputMode= eOscOutputMode::Vmc;
+		config.maxRateHz= 0.f;
+		config.avatarPath= "C:\\avatars\\test.vrm";
+		config.avatarTitle= "Test";
+		config.avatarSha256= std::string(64, 'a');
+		config.faceMap= AvatarFaceMap::build(model);
+
+		OscStreamer streamer;
+		streamer.setConfig(config);
+
+		auto encode= [&streamer](const TrackingFrameResult& sourceFrame, std::vector<DecodedMessage>& outMessages) {
+			std::vector<std::vector<uint8_t>> packets;
+			streamer.encodeFrame(sourceFrame, packets);
+			outMessages.clear();
+			bool bWellFormed= !packets.empty();
+			for (const std::vector<uint8_t>& packet : packets)
+			{
+				bWellFormed&= packet.size() <= OscStreamer::k_maxDatagramBytes;
+				bWellFormed&= decodeBundle(packet, outMessages);
+			}
+			return bWellFormed;
+		};
+
+		std::vector<DecodedMessage> messages;
+		check(encode(frame, messages), "a frame with a face is complete bundles within the size limit");
+
+		std::vector<std::pair<std::string, float>> blends;
+		bool bBlendsWellFormed= true;
+		size_t lastValueIndex= 0;
+		size_t applyIndex= SIZE_MAX;
+		for (size_t messageIndex= 0; messageIndex < messages.size(); ++messageIndex)
+		{
+			const DecodedMessage& message= messages[messageIndex];
+			if (message.address == "/VMC/Ext/Blend/Val")
+			{
+				bBlendsWellFormed&= message.tags == "sf" && message.strings.size() == 1 && message.floats.size() == 1;
+				if (message.strings.size() == 1 && message.floats.size() == 1)
+					blends.emplace_back(message.strings[0], message.floats[0]);
+				lastValueIndex= messageIndex;
+			}
+			else if (message.address == "/VMC/Ext/Blend/Apply")
+			{
+				bBlendsWellFormed&= message.tags.empty();
+				applyIndex= messageIndex;
+			}
+		}
+		check(bBlendsWellFormed, "every blendshape is ,sf and Apply carries no arguments");
+		check(applyIndex != SIZE_MAX && applyIndex > lastValueIndex, "Apply follows the last blendshape value");
+
+		auto blendValue= [&blends](const char* name, float& outValue) {
+			for (const auto& blend : blends)
+			{
+				if (blend.first == name)
+				{
+					outValue= blend.second;
+					return true;
+				}
+			}
+			return false;
+		};
+		float value= 0.f;
+		check(blends.size() == 5, "the avatar's presets and ARKit morph names are streamed, nothing else");
+		check(blendValue("A", value) && fabsf(value - 0.6f) < 1e-6f, "the aa preset follows the jaw");
+		check(blendValue("Blink_L", value) && fabsf(value - 0.8f) < 1e-6f &&
+				  blendValue("Blink_R", value) && fabsf(value - 0.2f) < 1e-6f,
+			  "each eye's blink preset follows its own eye, in the avatar's spelling");
+		check(!blendValue("Blink", value), "the two-eyed blink stays silent when each eye blinks on its own");
+		check(!blendValue("Joy", value), "an emotion preset is never driven");
+		check(blendValue("jawOpen", value) && fabsf(value - 0.6f) < 1e-6f && blendValue("eyeBlinkLeft", value),
+			  "ARKit-named morph targets ride along under their own names");
+
+		const DecodedMessage* avatar= findMessage(messages, "/VMC/Ext/VRM");
+		check(avatar != nullptr && avatar->tags == "sss" && avatar->strings.size() == 3 &&
+				  avatar->strings[0] == config.avatarPath && avatar->strings[1] == "Test" &&
+				  avatar->strings[2] == config.avatarSha256,
+			  "/VMC/Ext/VRM is ,sss path, title, sha256");
+
+		encode(frame, messages);
+		check(findMessage(messages, "/VMC/Ext/VRM") == nullptr, "/VMC/Ext/VRM goes out at most once a second");
+
+		TrackingFrameResult lostFrame= frame;
+		lostFrame.face.present= false;
+		encode(lostFrame, messages);
+		bool bAllZero= true;
+		int zeroCount= 0;
+		for (const DecodedMessage& message : messages)
+		{
+			if (message.address != "/VMC/Ext/Blend/Val")
+				continue;
+			bAllZero&= message.floats.size() == 1 && message.floats[0] == 0.f;
+			++zeroCount;
+		}
+		check(bAllZero && zeroCount == 5 && findMessage(messages, "/VMC/Ext/Blend/Apply") != nullptr,
+			  "the frame the stream stops relaxes every blendshape to zero once");
+		encode(lostFrame, messages);
+		check(findMessage(messages, "/VMC/Ext/Blend/Val") == nullptr &&
+				  findMessage(messages, "/VMC/Ext/Blend/Apply") == nullptr,
+			  "no blendshapes go out while the stream stays stopped");
+
+		config.faceMap= nullptr;
+		config.avatarPath.clear();
+		OscStreamer rawStreamer;
+		rawStreamer.setConfig(config);
+		std::vector<std::vector<uint8_t>> packets;
+		rawStreamer.encodeFrame(frame, packets);
+		messages.clear();
+		for (const std::vector<uint8_t>& packet : packets)
+			decodeBundle(packet, messages);
+		int rawCount= 0;
+		bool bRawNamesKnown= true;
+		for (const DecodedMessage& message : messages)
+		{
+			if (message.address != "/VMC/Ext/Blend/Val" || message.strings.size() != 1)
+				continue;
+			bRawNamesKnown&= arkitBlendshapeFromName(message.strings[0].c_str()) >= 0;
+			++rawCount;
+		}
+		check(rawCount == ARKIT_BLENDSHAPE_COUNT && bRawNamesKnown,
+			  "with no avatar the 52 ARKit names go out verbatim");
+		check(findMessage(messages, "/VMC/Ext/VRM") == nullptr, "with no avatar nothing is announced");
+	}
+
+	// (k) The face map's rules, which decide what any receiver can drive
+	{
+		auto addExpression= [](AvatarModel& model, const char* name, const char* preset) {
+			AvatarExpression expression;
+			expression.name= name;
+			expression.preset= preset;
+			model.expressions.push_back(expression);
+		};
+		AvatarModel perfectSync;
+		addExpression(perfectSync, "EyeBlinkLeft", "");
+		addExpression(perfectSync, "jawOpen", "");
+		addExpression(perfectSync, "A", "aa");
+		std::shared_ptr<const AvatarFaceMap> map= AvatarFaceMap::build(perfectSync);
+		check(map->isPerfectSync() && map->getOutputs().size() == 2 && map->getOutputs()[0].name == "EyeBlinkLeft",
+			  "perfect sync streams its ARKit expressions alone, in the avatar's spelling");
+
+		std::array<float, ARKIT_BLENDSHAPE_COUNT> arkitValues{};
+		arkitValues[arkitBlendshapeFromName("jawOpen")]= 1.7f;
+		std::vector<float> values;
+		map->evaluate(arkitValues, values);
+		check(values.size() == 2 && values[1] == 1.f, "a value past full is clamped to one");
+
+		AvatarModel blinkOnly;
+		addExpression(blinkOnly, "Blink", "blink");
+		map= AvatarFaceMap::build(blinkOnly);
+		arkitValues= {};
+		arkitValues[arkitBlendshapeFromName("eyeBlinkLeft")]= 1.f;
+		map->evaluate(arkitValues, values);
+		check(!map->isPerfectSync() && map->getOutputs().size() == 1 && fabsf(values[0] - 0.5f) < 1e-6f,
+			  "an avatar with only the two-eyed blink gets the average of both eyes");
+	}
+
+	// (l) The phone's head in the head frame (+X facing, +Y left, +Z up)
+	{
+		check(isIdentity(faceHeadDeltaFromPhoneEuler(glm::vec3(0.f)), 1e-6f),
+			  "looking straight at the phone is no rotation");
+
+		const glm::vec3 facing(1.f, 0.f, 0.f);
+		const glm::quat yaw= faceHeadDeltaFromPhoneEuler(glm::vec3(0.f, 90.f, 0.f));
+		check(nearlyEqual(yaw * facing, glm::vec3(0.f, 1.f, 0.f), 1e-5f), "yaw turns about up");
+		const glm::quat pitch= faceHeadDeltaFromPhoneEuler(glm::vec3(90.f, 0.f, 0.f));
+		check(nearlyEqual(pitch * facing, glm::vec3(0.f, 0.f, -1.f), 1e-5f), "pitch turns about the head's left axis");
+		const glm::quat roll= faceHeadDeltaFromPhoneEuler(glm::vec3(0.f, 0.f, 90.f));
+		check(nearlyEqual(roll * glm::vec3(0.f, 1.f, 0.f), glm::vec3(0.f, 0.f, 1.f), 1e-5f),
+			  "roll turns about the facing axis");
+
+		const glm::vec3 euler(12.f, -35.f, 8.f);
+		const glm::quat composed= faceHeadDeltaFromPhoneEuler(euler);
+		const glm::quat expected= faceHeadDeltaFromPhoneEuler(glm::vec3(0.f, euler.y, 0.f)) *
+								  faceHeadDeltaFromPhoneEuler(glm::vec3(euler.x, 0.f, 0.f)) *
+								  faceHeadDeltaFromPhoneEuler(glm::vec3(0.f, 0.f, euler.z));
+		check(fabsf(fabsf(glm::dot(composed, expected)) - 1.f) < 1e-5f, "yaw, then pitch, then roll about the head");
+
+		const glm::quat headWorld= glm::angleAxis(0.7f, glm::normalize(glm::vec3(0.2f, -0.4f, 1.f)));
+		const glm::quat anchor= faceHeadAnchorFromWorld(headWorld, euler);
+		check(fabsf(fabsf(glm::dot(faceHeadWorldOrientation(anchor, euler), headWorld)) - 1.f) < 1e-5f,
+			  "the captured anchor reproduces the camera head it was aligned to");
 	}
 
 	if (failures == 0)

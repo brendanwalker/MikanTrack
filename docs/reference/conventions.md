@@ -35,7 +35,7 @@ The avatar rig settings carry two spatial quantities. A rotation trim rotates a 
 - **Palm frame** (Ultraleap-compatible, stated on `HandPose` in `src/Vision/TrackingTypes.h`): origin at the palm center (midpoint of wrist and middle MCP), +X toward the fingers, +Z out of the palmar surface (chirality-corrected per hand), +Y completing right-handed.
 - **Wrist joint**: half a palm back from the palm center along palm -X. The half-palm distance is `skeleton.baseInPalm[Middle].x` (`HandPose::getWristPositionWorld`).
 - **Forearm frame**: equals the palm frame at a neutral wrist, +X along the forearm toward the hand, so the elbow is one forearm length back along -X (`HandPose::getElbowPositionWorld`). This identity is the reference IMU mounting calibration solves for (see [imu.md](./imu.md)), and it makes the wrist joint rotation `inverse(forearm) * palm`, identity when the hand points straight along the forearm.
-- **Head frame**: +X facing direction, +Y toward the person's left, +Z up, origin at the ear midpoint (see [body-pose.md](./body-pose.md)).
+- **Head frame**: +X facing direction, +Y toward the person's left, +Z up, origin at the ear midpoint (see [body-pose.md](./body-pose.md)). The phone face stream's head rotation (x pitch, y yaw, z roll, degrees, in a frame facing the performer) enters it at `faceHeadDeltaFromPhoneEuler` (`src/Face/FaceHead.h`) as turns about +Z, then +Y, then +X with the phone's own signs, a rotation away from looking straight at the phone. The face config's anchor places that straight ahead in the world (see [face.md](./face.md)).
 
 ## Finger angle conventions
 

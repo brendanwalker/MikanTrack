@@ -67,7 +67,7 @@ Draw order follows the spec: OPAQUE and MASK, then BLEND with z-write sorted by 
 
 VRM 0.x materials arrive as the `materialProperties` bag and are migrated the way UniVRM and three-vrm do: `_Color` and `_ShadeColor` from gamma to linear, `_MainTex` and `_ShadeTexture` as texture indices, `_ShadeToony` and `_ShadeShift` through the toony and shift remap, `_CullMode` 0 as double-sided, `_ZWrite` into `transparentWithZWrite`, and the Unity `renderQueue` values of the transparent materials ranked into offsets (z-write off onto -9..0 ending at 0, z-write on onto 0..9 starting at 0).
 
-Deferred, tracked in `docs/plan.md`: outline, rim, matcap, UV animation, morph targets (expressions), spring bones.
+Deferred, tracked in `docs/plan.md`: outline, rim, matcap, UV animation, morph target deltas (the loader reads the expressions and target names, the renderer does not deform), spring bones.
 
 ## The retarget (`src/Avatar/AvatarRetarget.h`)
 
@@ -103,6 +103,20 @@ Real rigs break the retarget's rest assumptions (a T-pose, palms down, the head 
 ## Avatar-driven VMC
 
 With a skeleton set, `OscStreamer` streams the retargeted pose through `VmcRetarget::buildPoseFromAvatar` instead of the measured-length chain: each VMC bone's local rotation is its delta measured against the nearest streamed ancestor's delta (the torso is never streamed, so an arm hangs off the rest chest as before), and its local position is the avatar's own rest offset from its humanoid parent, so a receiver loading the same file keeps the character's proportions. Bones the pose did not place, or the avatar lacks, are left out and rest on the receiving side. The root stays identity: the measured-shoulder placement is for the 3D view only, and a whole-body yaw lands in the root rather than the arms, so the streamed arms stay relative to the receiver's own torso. `humanoidBoneForVmc` maps the two Unity-spelled enums by name. Without an avatar the measured-length `VmcRetarget::buildPose` path is unchanged.
+
+The loaded file is announced as `/VMC/Ext/VRM` (path, title, SHA-256) once a second, so a receiver on the same machine can load the very file the bones were retargeted onto and confirm by the hash that it is unchanged. `App::loadAvatar` hands the identity and the face map to the vision thread through `VisionThread::setAvatarIdentity`, adopted between frames like the skeleton.
+
+## The face map (`src/Avatar/AvatarFaceMap.h`)
+
+`AvatarFaceMap` turns the face stream's 52 ARKit blendshapes (see [face.md](./face.md)) into the blendshape names a VMC receiver matches on, built once per loaded avatar. Each output is a weighted sum of ARKit columns, clamped to [0, 1]. Which names an avatar gets:
+
+- An avatar with expressions named after ARKit blendshapes (perfect sync, compared without case) gets those expressions alone, in its own spelling.
+
+- Otherwise each VRM preset the avatar carries gets the ARKit columns that shape it: the sided blinks from each eye, `aa` from the jaw, `ih` from the smile, `ee` from the stretch, `ou` from the pucker, `oh` from the funnel, and the four gaze directions from the eye looks. The two-eyed blink is driven only when the avatar lacks a sided pair, since both would close the eyes twice. The emotion presets have no ARKit counterpart and stay untouched.
+
+- Also in that second case, the ARKit names the avatar carries as morph targets go out under their own names. A standard receiver ignores them, since it matches expressions only. A receiver that also matches morph targets gets the full face, which is how an avatar whose ARKit shapes are morphs without expressions keeps its detail.
+
+- With no avatar loaded the ARKit names go out verbatim.
 
 ## Integration
 

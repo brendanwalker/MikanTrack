@@ -13,7 +13,8 @@ The living plan: what is in flight now, what comes next, and the open questions.
 ## Next
 
 - [ ] Live-verify the avatar retarget: with an avatar loaded and both cameras tracking, the 3D scene character follows the hands, bends its elbows toward the measured ones, turns its head, and slides onto the measured shoulders when the body-pose stage tracks them; then VMC mode against VSeeFace and VNyan with a VRoid sample and Bonjiri (arms, wrist roll, fingers, and the rest pose on a dropout). The solver and the stream are self-tested; the live feel (root follow time constant, default elbow hint and its confidence blend, reach scaling on a real body) is not.
-- [ ] A `/mikan/avatar` bone block on the Mikan wire so the Unreal plugin can drop its animation blueprint retarget, planned separately once the retarget is live.
+- [ ] Live-verify the face stream: iFacialMocap into MikanTrack and VMC out to VSeeFace with Jasper (the presets animate, the ARKit morph names ride along) and a VRoid sample, the phone head driving the `Head` bone, "Align head to camera" against the body-pose head, face-only frames with the cameras stopped, and `/VMC/Ext/VRM` arriving with the right path and hash. The parser, the map, the head conversion and the wire are self-tested; the live chain is not.
+- [ ] Retire the Mikan schema once jasper-mozu-studio and the Unreal plugin consume VMC: remove `appendMikanMessages`, `appendHandMessages`, `appendInfoMessage` and the Mikan-only resolvers with their selftest sections, the format combo and `OscConfig::targetPort`, and the Mikan tables in the README and wire-protocol.md, and update the namespace note in CLAUDE.md. VMC then carries no per-joint confidence, no world shoulder and elbow points, and no measured hand skeleton.
 - [ ] Live-verify the avatar mapping UI: load Jasper, swap index and middle on both hands through the Mapping tab's pickers and confirm the warning clears and the thumb curls inward on the Demo preview; drag an elbow hint in the 3D scene and watch the bend follow; tune a hand trim on the Rest preview; reload the project and confirm the sidecar restored everything. The rig math is self-tested and Jasper's remap is checked through `--render-avatar`; the panel, the figure, the picker and the gizmo picking are not exercised.
 
 ## Later
@@ -26,12 +27,13 @@ The living plan: what is in flight now, what comes next, and the open questions.
 - [ ] `GenerateProjectFiles_X64_VS2022.bat` passes `-A x64`, which conflicts with a `build/` cache configured without an explicit platform (Visual Studio 2022 defaults to x64 either way). Decide on one invocation so a fresh clone and an existing tree agree.
 - [ ] Human-review the machine-translated Japanese strings for the Avatar panel (`avatarPanel`, `windows.avatar`, `mainWindow.viewAvatarPanel` in `resources/localization/ja.json`).
 - [ ] A redistributable VRM 1.0 sample under `models/avatars/` for live and sample-test coverage of the 1.0 path (the synthetic test is the only 1.0 coverage; both VRoid samples and Bonjiri are 0.x).
-- [ ] MToon features the renderer skips: outline, rim and matcap, UV animation; plus morph targets (expressions) and spring bones (hair and cloth physics), which also need the VRM extension parsing extended.
+- [ ] MToon features the renderer skips: outline, rim and matcap, UV animation; plus morph target deltas (the loader reads expressions and target names, nothing deforms) and spring bones (hair and cloth physics), which also need the VRM extension parsing extended.
+- [ ] Face samples in tracking recordings, so a replay reproduces the face blendshapes and the phone head the live output carried (the IMU forearm output is the model).
+- [ ] Eye bones from the phone's eye rotations on the VMC `LeftEye`/`RightEye` bones, once a receiver's gaze blendshapes and eye bones are reconciled (driving both moves the eyes twice).
 - [ ] Avatar load is synchronous on the main thread (well under a second for a VRoid file); move the parse and image decode to a worker if large models stall the UI noticeably.
 - [ ] T-pose capture for the avatar rig: derive the head and hand rotation trims from a held reference pose instead of setting them by hand.
 - [ ] The avatar shade for non-MToon materials and the single key light are fixed in the renderer; expose light direction and ambient if the preview needs tuning.
 
 ## Open questions
 
-- A fully tracked Mikan-format frame (~1.6 KB) exceeds a single 1472-byte UDP payload and would rely on IP fragmentation on a real network (localhost is unaffected). Chunk it like VMC mode, or keep the one-bundle-per-frame contract and accept fragmentation?
 - Capture-phase GPU path, if the profile justifies one: OpenCV's OpenCL T-API (`cv::UMat`, no shader code, still a CPU tensor at the ONNX boundary) or a D3D12 preprocess feeding DirectML through IoBinding (custom shaders, no readback, the larger job)?

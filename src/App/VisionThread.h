@@ -3,6 +3,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -19,7 +20,9 @@
 #include "TrackingTypes.h"
 
 class AppConfig;
+class AvatarFaceMap;
 class AvatarSkeleton;
+class FaceService;
 class VideoCaptureSystem;
 class OscStreamer;
 
@@ -34,7 +37,8 @@ class OscStreamer;
 class VisionThread
 {
 public:
-	VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, AppConfig* config);
+	VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, FaceService* faceService,
+				 AppConfig* config);
 	~VisionThread();
 
 	// Sizes the per-camera contexts from the config's camera count and spawns
@@ -85,6 +89,24 @@ public:
 	// the avatar-driven VMC output. Applied before the next frame without a
 	// config refresh, which would end a recording. Survives a stop/start.
 	void setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skeleton, const AvatarRigSettings& rig);
+
+	// The loaded avatar's identity and face map, for the VMC output's
+	// /VMC/Ext/VRM announcement and blendshape names. Applied like the
+	// skeleton; an empty path clears both.
+	struct AvatarIdentity
+	{
+		std::string path;   // UTF-8
+		std::string title;
+		std::string sha256; // lowercase hex of the file bytes
+		std::shared_ptr<const AvatarFaceMap> faceMap;
+	};
+	void setAvatarIdentity(const AvatarIdentity& identity);
+
+	// Phone face stream: aligns the phone's head to the camera head at the
+	// next frame where both are measured. The anchor it solves is fetched by
+	// the UI and persisted in the face config.
+	void requestFaceAnchorCapture() { m_bFaceAnchorCaptureRequested= true; }
+	bool fetchFaceAnchorCapture(glm::quat& outAnchor);
 
 	// Rest-pose calibration: captures what EVERY camera currently reports for
 	// each tracked hand. Per camera because the model landmarks are
@@ -210,6 +232,7 @@ public:
 		Capture,       // frame pop, undistort, ML inference, 3D projection
 		Imu,           // wrist IMU sample drain, discovery, forearm publish
 		Fusion,        // cross-camera fusion + smoothing
+		Face,          // phone face stream drain
 		Osc,
 		Diagnostics, // dump history, recording enqueue, dump writes
 		Count
@@ -253,6 +276,13 @@ private:
 	void runBodySolveStage(IterationState& iteration);
 	// OSC send and the fused-result publish
 	void runOutputStage(IterationState& iteration);
+	// The face stream's blendshapes and head onto the output, phone head
+	// winning over the camera head while the stream is live
+	void applyFaceToOutput(TrackingFrameResult& output, double nowMs, bool bCameraHead);
+	// A face sample with no camera frame this iteration still goes out: the
+	// stream runs at the phone's rate, faster than the cameras, and must keep
+	// flowing with the cameras stopped. Returns true when it produced output.
+	bool runFaceOnlyOutput(IterationState& iteration, double nowMs);
 	// Bone calibration window and rest-pose capture
 	void runCalibrationCaptures();
 	// History ring, recording assembly, dump requests
@@ -291,6 +321,18 @@ private:
 	ImuMountingCapture m_capturedImuMounting;
 	bool m_bImuMountingReady= false;
 	ImuSideStatus m_imuStatus[2];
+	// Phone face stream. Owned by App; this thread drains it.
+	FaceService* m_faceService= nullptr;
+	uint64_t m_lastFaceSequence= 0;
+	// The timestamp of the last output a camera produced, so a face-only
+	// frame can tell when the hands it repeats have gone stale
+	double m_lastCameraOutputMs= -1.0;
+	glm::quat m_faceAnchor{1.f, 0.f, 0.f, 0.f};
+	std::atomic_bool m_bFaceAnchorCaptureRequested{false};
+	std::mutex m_faceAnchorMutex;
+	glm::quat m_capturedFaceAnchor{1.f, 0.f, 0.f, 0.f};
+	bool m_bFaceAnchorReady= false;
+
 	std::unique_ptr<OscStreamer> m_oscStreamer;
 	// Avatar handoff: the main thread drops the skeleton and the rig settings
 	// in the pending slot, the vision thread adopts them between frames
@@ -303,6 +345,9 @@ private:
 	AvatarHandoff m_pendingAvatar;
 	std::atomic<bool> m_bAvatarSkeletonChanged{false};
 	AvatarHandoff m_avatar;
+	AvatarIdentity m_pendingAvatarIdentity;
+	std::atomic<bool> m_bAvatarIdentityChanged{false};
+	AvatarIdentity m_avatarIdentity;
 
 	std::thread m_thread;
 	std::atomic_bool m_bRunning{false};

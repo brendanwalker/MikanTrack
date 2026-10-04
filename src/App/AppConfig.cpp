@@ -554,6 +554,13 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.face.enabled= fc.value("enabled", false);
 	config.face.port= fc.value("port", 49983);
 	config.face.phoneAddress= fc.value("phoneAddress", std::string("255.255.255.255"));
+	config.face.headAnchorPresent= false;
+	if (fc.contains("headAnchor") && fc["headAnchor"].is_array() && fc["headAnchor"].size() == 4)
+	{
+		const json& anchor= fc["headAnchor"];
+		config.face.headAnchor= glm::quat((float)anchor[3], (float)anchor[0], (float)anchor[1], (float)anchor[2]);
+		config.face.headAnchorPresent= true;
+	}
 
 	const json& im= j.value("imu", json::object());
 	config.imu.enabled= im.value("enabled", true);
@@ -689,11 +696,19 @@ std::string AppConfig::toJsonString() const
 		j["imu"]= imuJson;
 	}
 
-	j["face"]= {
-		{"enabled", face.enabled},
-		{"port", face.port},
-		{"phoneAddress", face.phoneAddress},
-	};
+	{
+		json faceJson= {
+			{"enabled", face.enabled},
+			{"port", face.port},
+			{"phoneAddress", face.phoneAddress},
+		};
+		if (face.headAnchorPresent)
+		{
+			const glm::quat& q= face.headAnchor;
+			faceJson["headAnchor"]= json::array({q.x, q.y, q.z, q.w});
+		}
+		j["face"]= faceJson;
+	}
 
 	j["body"]= {
 		{"forearmLengthMeters", body.forearmLengthMeters},

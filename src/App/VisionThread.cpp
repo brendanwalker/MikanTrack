@@ -3,6 +3,8 @@
 #include "AppConfig.h"
 #include "AvatarRetarget.h"
 #include "AvatarSkeleton.h"
+#include "FaceHead.h"
+#include "FaceService.h"
 #include "Logger.h"
 #include "OscStreamer.h"
 #include "SteadyClock.h"
@@ -22,6 +24,7 @@ const char* VisionThread::getPhaseName(eVisionPhase phase)
 	case eVisionPhase::Capture: return "capture+inference";
 	case eVisionPhase::Imu: return "imu";
 	case eVisionPhase::Fusion: return "fusion";
+	case eVisionPhase::Face: return "face";
 	case eVisionPhase::Osc: return "osc";
 	case eVisionPhase::Diagnostics: return "diagnostics";
 	default: return "none";
@@ -53,15 +56,18 @@ void VisionThread::reportHitchIfSlow(double totalMs, const double* phaseMs)
 		<< getPhaseName(worstPhase) << " " << (int)worstMs << " ms [config "
 		<< (int)phaseMs[(int)eVisionPhase::ConfigRefresh] << " capture "
 		<< (int)phaseMs[(int)eVisionPhase::Capture] << " imu " << (int)phaseMs[(int)eVisionPhase::Imu]
-		<< " fusion " << (int)phaseMs[(int)eVisionPhase::Fusion] << " osc "
+		<< " fusion " << (int)phaseMs[(int)eVisionPhase::Fusion] << " face "
+		<< (int)phaseMs[(int)eVisionPhase::Face] << " osc "
 		<< (int)phaseMs[(int)eVisionPhase::Osc] << " diag "
 		<< (int)phaseMs[(int)eVisionPhase::Diagnostics] << "]";
 }
 
-VisionThread::VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, AppConfig* config)
+VisionThread::VisionThread(VideoCaptureSystem* videoCapture, ImuService* imuService, FaceService* faceService,
+						   AppConfig* config)
 	: m_videoCapture(videoCapture)
-	, m_imuService(imuService)
 	, m_config(config)
+	, m_imuService(imuService)
+	, m_faceService(faceService)
 {
 }
 
@@ -385,6 +391,8 @@ void VisionThread::refreshConfigOnThread()
 			<< ") - restart the vision thread to apply";
 	}
 
+	m_faceAnchor= m_config->face.headAnchorPresent ? m_config->face.headAnchor : glm::quat(1.f, 0.f, 0.f, 0.f);
+
 	// A full bone calibration parks the auto hand-scale, so its factor is
 	// pinned back to 1 rather than left wherever this session's EMA had
 	// wandered to - it is still what the Hand Scale readout multiplies by.
@@ -465,6 +473,10 @@ void VisionThread::applyOscConfigOnThread()
 		oscConfig.bodyDimensions= bodyDimensions;
 		oscConfig.avatarRetarget= makeAvatarRetargetConfig(*m_config, m_avatar.rig);
 		oscConfig.avatarSkeleton= m_avatar.skeleton;
+		oscConfig.avatarPath= m_avatarIdentity.path;
+		oscConfig.avatarTitle= m_avatarIdentity.title;
+		oscConfig.avatarSha256= m_avatarIdentity.sha256;
+		oscConfig.faceMap= m_avatarIdentity.faceMap;
 		m_oscStreamer->setConfig(oscConfig);
 	}
 }
@@ -505,8 +517,15 @@ void VisionThread::threadLoop()
 		runCaptureStage(iteration);
 		lapPhase(eVisionPhase::Capture);
 
+		if (m_faceService != nullptr)
+			m_faceService->update(steadyNowMs());
+		lapPhase(eVisionPhase::Face);
+
 		if (!iteration.bAnyNewResult)
 		{
+			if (runFaceOnlyOutput(iteration, steadyNowMs()))
+				lapPhase(eVisionPhase::Osc);
+
 			// Still service dump requests while idle (cameras may be stopped)
 			if (m_bDumpRequested.exchange(false))
 				performDiagnosticDump(m_lastOutputResult);
@@ -564,6 +583,26 @@ void VisionThread::setAvatarSkeleton(std::shared_ptr<const AvatarSkeleton> skele
 	m_bAvatarSkeletonChanged= true;
 }
 
+void VisionThread::setAvatarIdentity(const AvatarIdentity& identity)
+{
+	{
+		std::lock_guard<std::mutex> lock(m_avatarMutex);
+		m_pendingAvatarIdentity= identity;
+	}
+	m_bAvatarIdentityChanged= true;
+}
+
+bool VisionThread::fetchFaceAnchorCapture(glm::quat& outAnchor)
+{
+	std::lock_guard<std::mutex> lock(m_faceAnchorMutex);
+	if (!m_bFaceAnchorReady)
+		return false;
+
+	outAnchor= m_capturedFaceAnchor;
+	m_bFaceAnchorReady= false;
+	return true;
+}
+
 void VisionThread::servicePendingRequests()
 {
 	if (m_bConfigRefreshRequested.exchange(false))
@@ -573,11 +612,16 @@ void VisionThread::servicePendingRequests()
 		finalizeRecordingOnThread(false, "config changed");
 		refreshConfigOnThread();
 	}
-	if (m_bAvatarSkeletonChanged.exchange(false))
+	const bool bSkeletonChanged= m_bAvatarSkeletonChanged.exchange(false);
+	const bool bIdentityChanged= m_bAvatarIdentityChanged.exchange(false);
+	if (bSkeletonChanged || bIdentityChanged)
 	{
 		{
 			std::lock_guard<std::mutex> lock(m_avatarMutex);
-			m_avatar= m_pendingAvatar;
+			if (bSkeletonChanged)
+				m_avatar= m_pendingAvatar;
+			if (bIdentityChanged)
+				m_avatarIdentity= m_pendingAvatarIdentity;
 		}
 		applyOscConfigOnThread();
 	}
@@ -820,6 +864,10 @@ void VisionThread::runBodySolveStage(IterationState& iteration)
 
 void VisionThread::runOutputStage(IterationState& iteration)
 {
+	if (iteration.bAnyNewResult)
+		m_lastCameraOutputMs= iteration.outputResult.timestampMs;
+	applyFaceToOutput(iteration.outputResult, steadyNowMs(), iteration.bAnyNewResult);
+
 	if (m_oscStreamer != nullptr)
 		m_oscStreamer->sendFrame(iteration.outputResult);
 
@@ -830,6 +878,79 @@ void VisionThread::runOutputStage(IterationState& iteration)
 		m_bFusedFresh= true;
 	}
 	m_lastOutputResult= iteration.outputResult;
+}
+
+void VisionThread::applyFaceToOutput(TrackingFrameResult& output, double nowMs, bool bCameraHead)
+{
+	output.face.present= false;
+
+	FaceSample sample;
+	if (m_faceService == nullptr || !m_faceService->isStreaming(nowMs) || !m_faceService->getLatestSample(sample))
+		return;
+	// The phone lost the face: its values are stale, so the face relaxes and
+	// the camera head stands
+	if (!sample.faceTracked)
+	{
+		m_lastFaceSequence= sample.sequence;
+		return;
+	}
+
+	// A camera frame carrying this sample means no face-only frame repeats it
+	m_lastFaceSequence= sample.sequence;
+	output.face.present= true;
+	static_assert(std::tuple_size<decltype(output.face.blendshapes)>::value == ARKIT_BLENDSHAPE_COUNT,
+				  "the output's face pose follows the ARKit table");
+	output.face.blendshapes= sample.blendshapes;
+
+	if (!sample.hasHead)
+		return;
+
+	// The anchor capture needs the CAMERA head, so it runs before the phone
+	// replaces it, and never on a face-only frame (whose head is the phone's)
+	if (bCameraHead && output.head.valid && m_bFaceAnchorCaptureRequested.exchange(false))
+	{
+		std::lock_guard<std::mutex> lock(m_faceAnchorMutex);
+		m_capturedFaceAnchor= faceHeadAnchorFromWorld(output.head.orientationWorld, sample.headEulerDegrees);
+		m_bFaceAnchorReady= true;
+	}
+
+	// The phone measures the head far better than the body-pose stage, so it
+	// wins outright while the stream is live. The position stays the camera
+	// head's: the phone's is relative to the phone.
+	output.head.orientationWorld= faceHeadWorldOrientation(m_faceAnchor, sample.headEulerDegrees);
+	output.head.valid= true;
+	output.head.confidence= 1.f;
+}
+
+bool VisionThread::runFaceOnlyOutput(IterationState& iteration, double nowMs)
+{
+	FaceSample sample;
+	if (m_faceService == nullptr || !m_faceService->getLatestSample(sample) || sample.sequence == m_lastFaceSequence)
+		return false;
+	m_lastFaceSequence= sample.sequence;
+	// A lost face has nothing new to send, beyond the one frame that relaxes
+	// a face the last output still carried
+	if (!sample.faceTracked && !m_lastOutputResult.face.present)
+		return false;
+
+	// Repeats the last output with the new face. The hands it carries stay
+	// live while the cameras keep up; once the last camera frame is older
+	// than the dropout window they go out untracked, so the streamer's hold
+	// and freeze rules see a loss rather than a pose that never ages.
+	// The sample's own arrival time keeps the streamer's rate gate pacing the
+	// interleaved stream. A camera frame stamped before it then reads as a
+	// timestamp regression, which the gate answers by sending that frame.
+	iteration.outputResult= m_lastOutputResult;
+	iteration.outputResult.timestampMs= sample.timestampMs;
+	const double holdMs= (double)m_config->osc.holdOnDropoutMs;
+	if (m_lastCameraOutputMs < 0.0 || sample.timestampMs - m_lastCameraOutputMs > holdMs)
+	{
+		for (HandPose& pose : iteration.outputResult.poses)
+			pose.tracked= false;
+	}
+
+	runOutputStage(iteration);
+	return true;
 }
 
 void VisionThread::runCalibrationCaptures()

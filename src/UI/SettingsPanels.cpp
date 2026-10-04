@@ -572,6 +572,34 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 			if (status.latest.hasHead)
 				ImGui::TextDisabled(locText("trackingPanel.faceHeadFmt"), status.latest.headEulerDegrees.x,
 									status.latest.headEulerDegrees.y, status.latest.headEulerDegrees.z);
+
+			// The phone's head turns about the world axes once its straight
+			// ahead is known; the camera head supplies it
+			ImGui::BeginDisabled(!status.streaming);
+			if (ImGui::Button(locLabel("trackingPanel.faceAlignHead")))
+				visionThread->requestFaceAnchorCapture();
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.faceAlignHeadTooltip"));
+			ImGui::EndDisabled();
+			if (face.headAnchorPresent)
+			{
+				ImGui::SameLine();
+				if (ImGui::Button(locLabel("trackingPanel.faceResetHeadAlign")))
+				{
+					face.headAnchorPresent= false;
+					face.headAnchor= glm::quat(1.f, 0.f, 0.f, 0.f);
+					bChanged= true;
+				}
+			}
+			ImGui::TextDisabled("%s", locText(face.headAnchorPresent ? "trackingPanel.faceHeadAligned"
+																	 : "trackingPanel.faceHeadNotAligned"));
+		}
+
+		glm::quat capturedAnchor;
+		if (visionThread->fetchFaceAnchorCapture(capturedAnchor))
+		{
+			face.headAnchor= capturedAnchor;
+			face.headAnchorPresent= true;
+			bChanged= true;
 		}
 	}
 

@@ -12,6 +12,7 @@
 #include "imgui_impl_sdl2.h"
 
 #include "AppConfig.h"
+#include "AvatarFaceMap.h"
 #include "AvatarSkeleton.h"
 #include "FrameTimer.h"
 #include "FaceService.h"
@@ -165,7 +166,8 @@ bool App::startup()
 	// activated
 	m_imuService= std::make_unique<ImuService>();
 	m_faceService= std::make_unique<FaceService>();
-	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_imuService.get(), m_config.get());
+	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_imuService.get(), m_faceService.get(),
+												   m_config.get());
 
 	m_mainWindow= std::make_unique<MainWindow>(this);
 
@@ -307,6 +309,13 @@ bool App::loadAvatar(const std::filesystem::path& path)
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
 	m_visionThread->setAvatarSkeleton(m_avatarSkeleton, m_avatarRig);
+
+	VisionThread::AvatarIdentity identity;
+	identity.path= m_avatarModel->sourcePath;
+	identity.title= m_avatarModel->meta.name;
+	identity.sha256= m_avatarModel->sha256Hex;
+	identity.faceMap= AvatarFaceMap::build(*m_avatarModel);
+	m_visionThread->setAvatarIdentity(identity);
 	return true;
 }
 
@@ -371,6 +380,7 @@ void App::clearAvatar()
 	m_avatarLoadError.clear();
 	++m_avatarGeneration;
 	m_visionThread->setAvatarSkeleton(nullptr, m_avatarRig);
+	m_visionThread->setAvatarIdentity(VisionThread::AvatarIdentity());
 }
 
 void App::loadConfiguredAvatar()
