@@ -56,6 +56,7 @@ Prints every registered command grouped by category (self-tests, hardware requir
 - `--test-dump`: diagnostic dump writer + schema
 - `--test-extrinsics`: Aruco marker pose + table-plane raycast
 - `--test-framerecorder`: raw frame recording: round trip, naming, overflow drops
+- `--test-face`: iFacialMocap receiver: datagram parser, receive filter, loopback socket
 - `--test-fusion`: multi-camera fusion, clustering, triangulation, holds
 - `--test-handestimator`: angle-space multi-view hand state estimator
 - `--test-handpose`: palm frame, finger angles, FK round-trip, conventions

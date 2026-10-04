@@ -1,5 +1,6 @@
 #include "App.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 
@@ -13,6 +14,7 @@
 #include "AppConfig.h"
 #include "AvatarSkeleton.h"
 #include "FrameTimer.h"
+#include "FaceService.h"
 #include "GlobalSettings.h"
 #include "ImuService.h"
 #include "ImGuiTheme.h"
@@ -162,11 +164,24 @@ bool App::startup()
 	// vision thread, cameras, and IMU service only spin up when a project is
 	// activated
 	m_imuService= std::make_unique<ImuService>();
+	m_faceService= std::make_unique<FaceService>();
 	m_visionThread= std::make_unique<VisionThread>(m_videoCapture.get(), m_imuService.get(), m_config.get());
 
 	m_mainWindow= std::make_unique<MainWindow>(this);
 
 	return true;
+}
+
+void App::applyFaceConfig()
+{
+	if (m_faceService == nullptr || m_config == nullptr)
+		return;
+
+	FaceServiceConfig faceConfig;
+	faceConfig.enabled= m_config->face.enabled;
+	faceConfig.port= (uint16_t)std::clamp(m_config->face.port, 1, 65535);
+	faceConfig.phoneAddress= m_config->face.phoneAddress;
+	m_faceService->setConfig(faceConfig);
 }
 
 bool App::activateProject(const std::filesystem::path& projectFile)
@@ -179,12 +194,15 @@ bool App::activateProject(const std::filesystem::path& projectFile)
 	if (!m_projectManager->loadProject(projectFile))
 	{
 		m_imuService->shutdown();
+		m_faceService->shutdown();
 		m_appState= eAppState::MainMenu;
 		return false;
 	}
 
 	m_videoCapture->setCameraSlotCount(m_config->cameraCount());
 	m_imuService->startup();
+	m_faceService->startup();
+	applyFaceConfig();
 	m_visionThread->start();
 	m_mainWindow->tryRestoreVideoDeviceFromConfig();
 	loadConfiguredAvatar();
@@ -219,6 +237,7 @@ void App::returnToMainMenu()
 	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
+	m_faceService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
 		m_videoCapture->closeDevice(cameraIndex);
 	m_appState= eAppState::MainMenu;
@@ -231,6 +250,7 @@ void App::discardNewProjectAndReturnToMenu()
 	clearAvatar();
 	m_visionThread->stop();
 	m_imuService->shutdown();
+	m_faceService->shutdown();
 	for (int cameraIndex= 0; cameraIndex < (int)m_videoCapture->getCameraSlotCount(); ++cameraIndex)
 		m_videoCapture->closeDevice(cameraIndex);
 
@@ -437,6 +457,12 @@ void App::shutdown()
 	{
 		m_imuService->shutdown();
 		m_imuService= nullptr;
+	}
+
+	if (m_faceService != nullptr)
+	{
+		m_faceService->shutdown();
+		m_faceService= nullptr;
 	}
 
 	if (m_videoCapture != nullptr)

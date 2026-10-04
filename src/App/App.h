@@ -15,6 +15,7 @@ class AppConfig;
 struct AvatarModel;
 class AvatarSkeleton;
 class GlobalSettings;
+class FaceService;
 class ImuService;
 class LocalizationManager;
 class ProjectManager;
@@ -100,6 +101,10 @@ public:
 	ProjectManager* getProjectManager() { return m_projectManager.get(); }
 	VideoCaptureSystem* getVideoCapture() { return m_videoCapture.get(); }
 	ImuService* getImuService() { return m_imuService.get(); }
+	FaceService* getFaceService() { return m_faceService.get(); }
+	// Pushes AppConfig::face to the face service (rebinds its socket when the
+	// port or enable flag changed)
+	void applyFaceConfig();
 	VisionThread* getVisionThread() { return m_visionThread.get(); }
 	SDL_Window* getSdlWindow() { return m_sdlWindow; }
 
@@ -119,6 +124,9 @@ private:
 	// Started with a project and stopped with it; the vision thread is its
 	// only caller while running, so it survives a vision thread restart
 	std::unique_ptr<ImuService> m_imuService;
+	// Started with a project like the IMU service. Its update() is driven by
+	// the vision thread.
+	std::unique_ptr<FaceService> m_faceService;
 	std::unique_ptr<VisionThread> m_visionThread;
 	std::unique_ptr<MainWindow> m_mainWindow;
 

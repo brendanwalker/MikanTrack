@@ -550,6 +550,11 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.extrinsicsQuality.worstPairSpacingScale= eq.value("worstPairSpacingScale", 1.0);
 	config.extrinsicsQuality.worstPairPlanarityRmsMm= eq.value("worstPairPlanarityRmsMm", 0.0);
 
+	const json& fc= j.value("face", json::object());
+	config.face.enabled= fc.value("enabled", false);
+	config.face.port= fc.value("port", 49983);
+	config.face.phoneAddress= fc.value("phoneAddress", std::string("255.255.255.255"));
+
 	const json& im= j.value("imu", json::object());
 	config.imu.enabled= im.value("enabled", true);
 	config.imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
@@ -683,6 +688,12 @@ std::string AppConfig::toJsonString() const
 		}
 		j["imu"]= imuJson;
 	}
+
+	j["face"]= {
+		{"enabled", face.enabled},
+		{"port", face.port},
+		{"phoneAddress", face.phoneAddress},
+	};
 
 	j["body"]= {
 		{"forearmLengthMeters", body.forearmLengthMeters},

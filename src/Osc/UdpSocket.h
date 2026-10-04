@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <string>
 
-/// RAII wrapper for a plain unicast UDP sender socket.
+/// RAII wrapper for a UDP socket: a unicast sender, or a bound non-blocking receiver.
 /// Windows: Winsock2.  Linux/macOS: POSIX sockets.
 class UdpSocket
 {
@@ -32,6 +32,20 @@ public:
 	/// @param length    Number of bytes to send
 	/// @returns true if all bytes were sent
 	bool sendTo(const std::string& destIP, uint16_t port, const void* data, int length);
+
+	/// Open the socket bound to a specific local port on every interface, for
+	/// receiving. The socket is non-blocking and can also send.
+	/// @param port        Local UDP port to bind
+	/// @param bBroadcast  Enable SO_BROADCAST so sendTo may target a broadcast address
+	/// @returns true on success
+	bool openBound(uint16_t port, bool bBroadcast);
+
+	/// Receive one waiting datagram without blocking.
+	/// @param buffer       Destination buffer
+	/// @param capacity     Size of the buffer; a longer datagram is truncated
+	/// @param outSourceIP  Optional, receives the sender's IPv4 address text
+	/// @returns bytes received, 0 when nothing is waiting, -1 on error
+	int receiveFrom(void* buffer, int capacity, std::string* outSourceIP= nullptr);
 
 private:
 #if defined(_WIN32)

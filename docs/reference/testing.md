@@ -30,7 +30,7 @@ Every command follows the same contract:
 
 ### Running every self-test in one pass
 
-The 23 self-tests are deterministic and need no hardware or input files, so they run as a batch. This drives the list from `--list-tests` rather than a hardcoded list, so a newly added test is picked up automatically:
+The 24 self-tests are deterministic and need no hardware or input files, so they run as a batch. This drives the list from `--list-tests` rather than a hardcoded list, so a newly added test is picked up automatically:
 
 ```bash
 cd build/Release && ./MikanTrack.exe --list-tests | awk '/^self-tests:/{f=1;next} /^[a-z]/{f=0} f && $1 ~ /^--/{print $1}' | while read -r flag; do ./MikanTrack.exe "$flag" >/dev/null 2>&1 || echo "FAIL $flag"; done; echo done
@@ -91,6 +91,8 @@ Side effects of a batch run: each test overwrites its own `.log` next to the exe
 ### Output and wire
 
 - `--selftest`: the OSC writer. Packet round trip across the message and bundle forms, address and string lengths at every 4-byte padding boundary, negative int32, reuse after `clear()`, the dropout hold-and-decay behavior, and the wrist-joint, elbow, forearm, shoulder, and head message payloads.
+
+- `--test-face`: the iFacialMocap receiver. The ARKit name table (52 unique names, `_L`/`_R` folding, unknown names), the v1 `-` and v2 `&` blendshape formats with negative values, head bones needing all six values and eye bones three, values a datagram omits keeping their state, the own-handshake receive filter, empty and garbage input, a loopback round trip through `FaceService` (looped-back handshake dropped, last datagram wins, rebind on port change), and the `UdpSocket` bound receive path.
 
 - `--test-vmc`: the VMC retarget and the streamer's datagram layout, about 45 checks. The world-to-Unity basis change including rotation sense and properness, the rest palm frames being palms-down T-pose hands of the correct chirality, the rest pose emitting only identity rotations, a bent finger breaking that identity without disturbing its neighbours, and a chain round trip that composes the emitted bones the way a receiver does and rebuilds the measured shoulder, elbow, wrist, palm orientation, and FK finger joints. Also degraded cases (no elbow, no arm, invalid side, invalid head), the freeze-on-loss behavior, the OSC bundle decode against the spec, bone name spelling and uniqueness, argument order, and that a steady-state Mikan-mode frame fits one unfragmented datagram.
 
@@ -158,7 +160,7 @@ Worth knowing before relying on a green batch:
 
 - Config and project persistence. `AppConfig`, `ProjectManager`, and `GlobalSettings` round trips are not tested, though the replay test does reconstruct an `AppConfig` from a recording header.
 
-- Assorted library code with no direct test: `OneEuroFilter`, most of `src/Math`, `src/Utility` (`PathUtils`, `StringUtils`, `WorkerThread`), and the `UdpSocket` send path (`--test-vmc` decodes the bytes the streamer builds, but never puts them on a socket).
+- Assorted library code with no direct test: `OneEuroFilter`, most of `src/Math`, `src/Utility` (`PathUtils`, `StringUtils`, `WorkerThread`), and the `UdpSocket` send path to a remote host (`--test-vmc` decodes the bytes the streamer builds, but never puts them on a socket).
 
 ---
 

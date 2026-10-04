@@ -158,6 +158,7 @@ Developer reference lives in [docs/reference/](docs/reference/):
 - [hand-tracking.md](docs/reference/hand-tracking.md) and [body-pose.md](docs/reference/body-pose.md): the tracking pipelines
 - [calibration.md](docs/reference/calibration.md): the wizards and where results persist
 - [imu.md](docs/reference/imu.md): the wrist IMU system
+- [face.md](docs/reference/face.md): the iFacialMocap face stream
 - [avatar.md](docs/reference/avatar.md): the VRM avatar loader, rest skeleton, and MToon renderer
 - [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
 - [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
