@@ -1,5 +1,14 @@
 #include "VrmLoader.h"
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <bcrypt.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -182,6 +191,146 @@ void readHumanoidAndMeta(LoadContext& context, const json& vrm, eVrmVersion vers
 		model.meta.author= meta.value("author", "");
 		model.meta.license= meta.value("licenseName", "");
 	}
+}
+
+// -- Expressions --------------------------------------------------------------
+
+// VRM 0.x presetName -> the VRM 1.0 preset vocabulary; "" for unknown or an
+// unmapped name
+const char* vrm0PresetToPreset(const std::string& presetName)
+{
+	static const std::pair<const char*, const char*> k_presets[]= {
+		{"a", "aa"},
+		{"i", "ih"},
+		{"u", "ou"},
+		{"e", "ee"},
+		{"o", "oh"},
+		{"blink", "blink"},
+		{"blink_l", "blinkLeft"},
+		{"blink_r", "blinkRight"},
+		{"joy", "happy"},
+		{"angry", "angry"},
+		{"sorrow", "sad"},
+		{"fun", "relaxed"},
+		{"lookup", "lookUp"},
+		{"lookdown", "lookDown"},
+		{"lookleft", "lookLeft"},
+		{"lookright", "lookRight"},
+		{"neutral", "neutral"},
+	};
+	for (const auto& preset : k_presets)
+	{
+		if (presetName == preset.first)
+			return preset.second;
+	}
+	return "";
+}
+
+// Adds one bind when its mesh and morph index exist, warns and drops it otherwise
+void addMorphBind(LoadContext& context, AvatarExpression& expression, int mesh, int morphIndex, float weight)
+{
+	const AvatarModel& model= *context.model;
+	if (mesh < 0 || mesh >= (int)model.meshes.size())
+	{
+		context.warn("Expression '" + expression.name + "' binds mesh " + std::to_string(mesh) + ", out of range");
+		return;
+	}
+	if (morphIndex < 0 || morphIndex >= (int)model.meshes[mesh].morphTargetNames.size())
+	{
+		context.warn("Expression '" + expression.name + "' binds morph target " + std::to_string(morphIndex) +
+					 " of mesh " + std::to_string(mesh) + ", out of range");
+		return;
+	}
+	expression.morphBinds.push_back({mesh, morphIndex, weight});
+}
+
+void readExpressions1(LoadContext& context, const json& vrm)
+{
+	const AvatarModel& model= *context.model;
+	const json& expressions= vrm.value("expressions", json::object());
+	if (!expressions.is_object())
+		return;
+
+	for (const char* group : {"preset", "custom"})
+	{
+		const bool bPreset= std::strcmp(group, "preset") == 0;
+		const json& entries= expressions.value(group, json::object());
+		if (!entries.is_object())
+			continue;
+
+		for (auto it= entries.begin(); it != entries.end(); ++it)
+		{
+			if (!it.value().is_object())
+				continue;
+			AvatarExpression expression;
+			expression.name= it.key();
+			expression.preset= bPreset ? it.key() : "";
+			expression.isBinary= it.value().value("isBinary", false);
+
+			const json& binds= it.value().value("morphTargetBinds", json::array());
+			if (binds.is_array())
+			{
+				for (const json& bind : binds)
+				{
+					if (!bind.is_object())
+						continue;
+					// 1.0 binds name a node, which resolves to the mesh it carries
+					const int node= bind.value("node", -1);
+					if (node < 0 || node >= (int)model.nodes.size() || model.nodes[node].mesh < 0)
+					{
+						context.warn("Expression '" + expression.name + "' binds node " + std::to_string(node) +
+									 ", which is out of range or has no mesh");
+						continue;
+					}
+					addMorphBind(context, expression, model.nodes[node].mesh, bind.value("index", -1),
+								 bind.value("weight", 1.f));
+				}
+			}
+			context.model->expressions.push_back(std::move(expression));
+		}
+	}
+}
+
+void readExpressions0(LoadContext& context, const json& vrm)
+{
+	const json& master= vrm.value("blendShapeMaster", json::object());
+	if (!master.is_object())
+		return;
+	const json& groups= master.value("blendShapeGroups", json::array());
+	if (!groups.is_array())
+		return;
+
+	for (const json& group : groups)
+	{
+		if (!group.is_object())
+			continue;
+		AvatarExpression expression;
+		expression.name= group.value("name", "");
+		expression.preset= vrm0PresetToPreset(group.value("presetName", ""));
+		expression.isBinary= group.value("isBinary", false);
+
+		const json& binds= group.value("binds", json::array());
+		if (binds.is_array())
+		{
+			for (const json& bind : binds)
+			{
+				if (!bind.is_object())
+					continue;
+				// The file weight runs 0..100
+				addMorphBind(context, expression, bind.value("mesh", -1), bind.value("index", -1),
+							 bind.value("weight", 100.f) / 100.f);
+			}
+		}
+		context.model->expressions.push_back(std::move(expression));
+	}
+}
+
+void readExpressions(LoadContext& context, const json& vrm, eVrmVersion version)
+{
+	if (version == eVrmVersion::Vrm1)
+		readExpressions1(context, vrm);
+	else
+		readExpressions0(context, vrm);
 }
 
 // -- Materials ----------------------------------------------------------------
@@ -667,6 +816,17 @@ void readMeshes(LoadContext& context)
 			if (readPrimitive(context, source.primitives[primitiveIndex], mesh.name, primitive))
 				mesh.primitives.push_back(std::move(primitive));
 		}
+
+		// Names only: the target count is the primitives' (they all share it)
+		const size_t targetCount=
+			source.target_names_count > 0
+				? source.target_names_count
+				: (source.primitives_count > 0 ? source.primitives[0].targets_count : 0);
+		for (size_t target= 0; target < targetCount; ++target)
+		{
+			const bool bNamed= target < source.target_names_count && source.target_names[target] != nullptr;
+			mesh.morphTargetNames.push_back(bNamed ? source.target_names[target] : std::to_string(target));
+		}
 		model.meshes.push_back(std::move(mesh));
 	}
 }
@@ -718,6 +878,39 @@ namespace VrmLoader
 const char* versionName(eVrmVersion version)
 {
 	return version == eVrmVersion::Vrm1 ? "VRM 1.0" : "VRM 0.x";
+}
+
+std::string sha256Hex(const uint8_t* bytes, size_t byteCount)
+{
+	BCRYPT_ALG_HANDLE algorithm= nullptr;
+	if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
+		return "";
+
+	uint8_t digest[32]= {};
+	// BCryptHash takes a 32-bit length, so a (theoretical) 4 GB+ file hashes in chunks
+	BCRYPT_HASH_HANDLE hash= nullptr;
+	bool bOk= BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+	for (size_t offset= 0; bOk && offset < byteCount;)
+	{
+		const size_t chunk= std::min<size_t>(byteCount - offset, 0x40000000);
+		bOk= BCryptHashData(hash, const_cast<PUCHAR>(bytes + offset), (ULONG)chunk, 0) >= 0;
+		offset+= chunk;
+	}
+	bOk= bOk && BCryptFinishHash(hash, digest, sizeof(digest), 0) >= 0;
+	if (hash != nullptr)
+		BCryptDestroyHash(hash);
+	BCryptCloseAlgorithmProvider(algorithm, 0);
+	if (!bOk)
+		return "";
+
+	static const char k_hex[]= "0123456789abcdef";
+	std::string text;
+	for (uint8_t byte : digest)
+	{
+		text.push_back(k_hex[byte >> 4]);
+		text.push_back(k_hex[byte & 15]);
+	}
+	return text;
 }
 
 LoadResult loadMemory(const uint8_t* bytes, size_t byteCount)
@@ -783,6 +976,8 @@ LoadResult loadMemory(const uint8_t* bytes, size_t byteCount)
 	readImages(context);
 	readMeshes(context);
 	readHumanoidAndMeta(context, vrmJson, model->version);
+	readExpressions(context, vrmJson, model->version);
+	model->sha256Hex= sha256Hex(bytes, byteCount);
 	if (model->version == eVrmVersion::Vrm0)
 		readMToon0(context, vrmJson);
 

@@ -101,6 +101,13 @@ static int runVrmInfoTool(const TestArgs& args)
 							   << skeleton.getHeightAboveHips() << " m, left upper arm direction (" << leftArm.x
 							   << ", " << leftArm.y << ", " << leftArm.z << ")";
 
+	MIKAN_LOG_INFO("vrm-info") << "sha256 " << model.sha256Hex;
+	for (const AvatarExpression& expression : model.expressions)
+	{
+		MIKAN_LOG_INFO("vrm-info") << "  expression '" << expression.name << "' preset '" << expression.preset
+								   << "' " << expression.morphBinds.size() << " binds";
+	}
+
 	for (const std::string& warning : result.warnings)
 		MIKAN_LOG_INFO("vrm-info") << "warning: " << warning;
 	for (const std::string& warning : skeleton.getWarnings())

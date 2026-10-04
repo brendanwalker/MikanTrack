@@ -28,6 +28,9 @@ The CC0 VRoid Studio samples `models/avatars/fem_vroid.vrm` and `masc_vroid.vrm`
 - textures and images: wrap and filter flags per texture, and every image decoded through `cv::imdecode` to RGBA8 with rows kept top-down (glTF's UV origin is the top-left texel, which is also the first row GL receives, so nothing flips anywhere); an undecodable image becomes a 1x1 white placeholder with a warning
 - the humanoid map: one node index per `eHumanoidBone`, -1 when absent, kept twice: `fileHumanoidNodes` as the file names it and `humanoidNodes` as in effect after the rig settings' overrides
 - meta: name, version, author, license (1.0 `licenseUrl`, 0.x `licenseName`)
+- morph target names per mesh (glTF `extras.targetNames`, the index as a string when absent), without the deltas
+- expressions: each `AvatarExpression` has the name as the file spells it, a VRM 1.0 preset name (0.x `presetName` values are mapped onto that vocabulary, an unknown preset is empty like a custom expression), `isBinary`, and morph binds of `(mesh, morphIndex, weight)` with weight 0..1. 0.x reads `blendShapeMaster.blendShapeGroups` (mesh index in the bind, weight divided by 100), 1.0 reads `expressions.preset` and `expressions.custom` (node index in the bind, resolved to the node's mesh). Binds out of range warn and are dropped. Material color and texture transform binds are ignored. `findExpressionByPreset` and `findExpressionByName` look them up
+- `sha256Hex`: SHA-256 of the exact file bytes (Windows CNG), computed for memory loads too
 
 A load fails when the glTF is invalid, when neither VRM extension is present, or when a required humanoid bone is missing (hips, spine, head, both arms with hands, both legs with feet). Unknown bone names warn and are ignored.
 

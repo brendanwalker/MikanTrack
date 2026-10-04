@@ -154,6 +154,8 @@ target_link_libraries(MikanTrack PRIVATE
     hid setupapi
     # misc win32
     winmm shlwapi ws2_32
+    # SHA-256 of the loaded avatar file (Windows CNG)
+    bcrypt
     # common dialogs (tinyfiledialogs)
     comdlg32 ole32
 )

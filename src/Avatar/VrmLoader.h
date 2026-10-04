@@ -31,6 +31,9 @@ LoadResult loadFile(const std::filesystem::path& path);
 // embed everything in the GLB, so this is the path the file loader takes too.
 LoadResult loadMemory(const uint8_t* bytes, size_t byteCount);
 
+// Lowercase hex SHA-256 (64 characters) of a byte range
+std::string sha256Hex(const uint8_t* bytes, size_t byteCount);
+
 // Human-readable name of a VRM generation ("VRM 0.x" / "VRM 1.0")
 const char* versionName(eVrmVersion version);
 } // namespace VrmLoader

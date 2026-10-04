@@ -332,6 +332,10 @@ BuiltAvatar buildAvatar(const RigOptions& options)
 			{"specVersion", "1.0"}, {"renderQueueOffsetNumber", -1}};
 	}
 
+	// Two morph targets (position deltas only, the loader reads just the names)
+	const float morphDeltas[9]= {0.f, 0.01f, 0.f, 0.f, 0.01f, 0.f, 0.f, 0.01f, 0.f};
+	const int morphAccessor= glb.addAccessor(glb.addBufferView(morphDeltas, sizeof(morphDeltas)), kFloat, "VEC3", 3);
+
 	glb.root["meshes"]= json::array({{
 		{"name", "tri"},
 		{"primitives", json::array({{
@@ -342,7 +346,9 @@ BuiltAvatar buildAvatar(const RigOptions& options)
 			  {"WEIGHTS_0", weightsAccessor}}},
 			{"indices", indicesAccessor},
 			{"material", 0},
+			{"targets", json::array({{{"POSITION", morphAccessor}}, {{"POSITION", morphAccessor}}})},
 		}})},
+		{"extras", {{"targetNames", {"smile", "blinkL"}}}},
 	}});
 	// The mesh hangs off a node whose own transform must NOT move skinned
 	// vertices
@@ -416,6 +422,31 @@ BuiltAvatar buildAvatar(const RigOptions& options)
 		writeVrm0();
 		break;
 	case eExtensions::None: break;
+	}
+	// Expressions over the two morph targets (smile = 0, blinkL = 1). Each file
+	// carries one bind past the target count, and 1.0 one bind on a node without
+	// a mesh, so the drop-with-warning path runs.
+	if (glb.root.contains("extensions") && glb.root["extensions"].contains("VRMC_vrm"))
+	{
+		const std::string meshNode= std::to_string(rig.size());
+		glb.root["extensions"]["VRMC_vrm"]["expressions"]= json::parse(
+			R"({"preset": {
+				"aa": {"morphTargetBinds": [{"node": )" + meshNode + R"(, "index": 0, "weight": 1.0},
+											{"node": )" + meshNode + R"(, "index": 9, "weight": 1.0},
+											{"node": 0, "index": 0, "weight": 1.0}]},
+				"blink": {"isBinary": true, "morphTargetBinds": [{"node": )" + meshNode + R"(, "index": 1, "weight": 1.0}]}},
+				"custom": {"smug": {"morphTargetBinds": [{"node": )" + meshNode + R"(, "index": 1, "weight": 0.5}]}}})");
+	}
+	if (glb.root.contains("extensions") && glb.root["extensions"].contains("VRM"))
+	{
+		glb.root["extensions"]["VRM"]["blendShapeMaster"]= json::parse(
+			R"({"blendShapeGroups": [
+				{"name": "A", "presetName": "a", "isBinary": false, "binds": [
+					{"mesh": 0, "index": 0, "weight": 100}, {"mesh": 0, "index": 1, "weight": 50},
+					{"mesh": 0, "index": 5, "weight": 100}, {"mesh": 3, "index": 0, "weight": 100}]},
+				{"name": "Blink_L", "presetName": "blink_l", "isBinary": true, "binds": [
+					{"mesh": 0, "index": 1, "weight": 100}]},
+				{"name": "Smug", "presetName": "unknown", "binds": [{"mesh": 0, "index": 0, "weight": 50}]}]})");
 	}
 	if (options.extensions != eExtensions::None)
 	{
@@ -747,6 +778,75 @@ static int runVrmTest(const TestArgs&)
 			  "(i) VRM 0.x and 1.0 rigs produce the same world rest skeleton");
 	}
 
+	// (j) Morph target names and expressions in both generations
+	{
+		check(model1.meshes[0].morphTargetNames == std::vector<std::string>({"smile", "blinkL"}) &&
+				  model0.meshes[0].morphTargetNames == std::vector<std::string>({"smile", "blinkL"}),
+			  "(j) morph target names read from the mesh extras");
+
+		auto hasWarning= [](const VrmLoader::LoadResult& result, const char* fragment) {
+			for (const std::string& warning : result.warnings)
+			{
+				if (warning.find(fragment) != std::string::npos)
+					return true;
+			}
+			return false;
+		};
+
+		// VRM 0.x: weights divided by 100, presets mapped, bad binds dropped
+		const AvatarExpression* a0= model0.findExpressionByName("A");
+		const AvatarExpression* blinkL0= model0.findExpressionByName("Blink_L");
+		const AvatarExpression* smug0= model0.findExpressionByName("Smug");
+		check(model0.expressions.size() == 3 && a0 != nullptr && blinkL0 != nullptr && smug0 != nullptr,
+			  "(j) VRM 0.x blend shape groups read");
+		check(a0 != nullptr && a0->preset == "aa" && !a0->isBinary && a0->morphBinds.size() == 2 &&
+				  a0->morphBinds[0].mesh == 0 && a0->morphBinds[0].morphIndex == 0 &&
+				  nearlyEqual(a0->morphBinds[0].weight, 1.f, 1e-6f) && a0->morphBinds[1].morphIndex == 1 &&
+				  nearlyEqual(a0->morphBinds[1].weight, 0.5f, 1e-6f),
+			  "(j) VRM 0.x preset a maps to aa with weights scaled to 0..1");
+		check(blinkL0 != nullptr && blinkL0->preset == "blinkLeft" && blinkL0->isBinary &&
+				  blinkL0->morphBinds.size() == 1 && blinkL0->morphBinds[0].morphIndex == 1,
+			  "(j) VRM 0.x blink_l maps to blinkLeft and keeps isBinary");
+		check(smug0 != nullptr && smug0->preset.empty() && smug0->morphBinds.size() == 1 &&
+				  nearlyEqual(smug0->morphBinds[0].weight, 0.5f, 1e-6f),
+			  "(j) VRM 0.x unknown preset is a custom expression");
+		check(hasWarning(result0, "morph target 5") && hasWarning(result0, "mesh 3"),
+			  "(j) VRM 0.x out-of-range binds are dropped with warnings");
+		check(model0.findExpressionByPreset("aa") == a0 && model0.findExpressionByPreset("blinkLeft") == blinkL0 &&
+				  model0.findExpressionByPreset("happy") == nullptr && model0.findExpressionByPreset("") == nullptr &&
+				  model0.findExpressionByName("a") == nullptr && model0.findExpressionByName("A") == a0,
+			  "(j) expression lookup by preset and by exact name");
+
+		// VRM 1.0: node binds resolve to the mesh, keys are the names
+		const AvatarExpression* aa1= model1.findExpressionByPreset("aa");
+		const AvatarExpression* blink1= model1.findExpressionByName("blink");
+		const AvatarExpression* smug1= model1.findExpressionByName("smug");
+		check(model1.expressions.size() == 3 && aa1 != nullptr && blink1 != nullptr && smug1 != nullptr,
+			  "(j) VRM 1.0 preset and custom expressions read");
+		check(aa1 != nullptr && aa1->name == "aa" && !aa1->isBinary && aa1->morphBinds.size() == 1 &&
+				  aa1->morphBinds[0].mesh == 0 && aa1->morphBinds[0].morphIndex == 0 &&
+				  nearlyEqual(aa1->morphBinds[0].weight, 1.f, 1e-6f),
+			  "(j) VRM 1.0 node bind resolves to its mesh");
+		check(blink1 != nullptr && blink1->preset == "blink" && blink1->isBinary,
+			  "(j) VRM 1.0 preset key becomes the preset and isBinary is read");
+		check(smug1 != nullptr && smug1->preset.empty() && smug1->morphBinds.size() == 1 &&
+				  smug1->morphBinds[0].morphIndex == 1 && nearlyEqual(smug1->morphBinds[0].weight, 0.5f, 1e-6f),
+			  "(j) VRM 1.0 custom expression has no preset and keeps its 0..1 weight");
+		check(hasWarning(result1, "morph target 9") && hasWarning(result1, "node 0"),
+			  "(j) VRM 1.0 out-of-range and mesh-less node binds are dropped with warnings");
+	}
+
+	// (k) SHA-256: the FIPS 180 vector for "abc", and a model hashes its own bytes
+	{
+		const uint8_t abc[3]= {'a', 'b', 'c'};
+		check(VrmLoader::sha256Hex(abc, 3) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+			  "(k) SHA-256 of \"abc\" matches the known vector");
+		check(model1.sha256Hex.size() == 64 &&
+				  model1.sha256Hex == VrmLoader::sha256Hex(avatar1.bytes.data(), avatar1.bytes.size()) &&
+				  model0.sha256Hex != model1.sha256Hex,
+			  "(k) a loaded model carries the SHA-256 of its file bytes");
+	}
+
 	MIKAN_LOG_INFO("test-vrm") << (failures == 0 ? "ALL PASSED" : "FAILURES") << " (" << failures << " failed)";
 	return failures == 0 ? 0 : 1;
 }
@@ -791,11 +891,14 @@ static int runVrmSamplesTest(const TestArgs&)
 		bool bSkinsBounded= true;
 		for (const AvatarSkin& skin : model.skins)
 			bSkinsBounded&= skin.joints.size() <= 1024;
+		const bool bExpressions= model.findExpressionByPreset("aa") != nullptr &&
+			model.findExpressionByPreset("blink") != nullptr && model.sha256Hex.size() == 64;
 		const bool bPass= presentCount >= 50 && bHands && bTPose && bPalmDown && bSkinsBounded &&
-			model.triangleCount() > 0 && !model.images.empty();
+			model.triangleCount() > 0 && !model.images.empty() && bExpressions;
 		MIKAN_LOG_INFO("test-vrm-samples") << (bPass ? "PASS " : "FAIL ") << sample << ": " << presentCount
 										   << " bones, hands " << (bHands ? "valid" : "invalid") << ", T-pose "
-										   << (bTPose ? "yes" : "no") << ", palms down " << (bPalmDown ? "yes" : "no");
+										   << (bTPose ? "yes" : "no") << ", palms down " << (bPalmDown ? "yes" : "no") << ", " << model.expressions.size()
+											   << " expressions, sha256 " << model.sha256Hex;
 		if (!bPass)
 			failures++;
 	}
