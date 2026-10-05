@@ -28,6 +28,9 @@ The CC0 VRoid Studio samples `models/avatars/fem_vroid.vrm` and `masc_vroid.vrm`
 - textures and images: wrap and filter flags per texture, and every image decoded through `cv::imdecode` to RGBA8 with rows kept top-down (glTF's UV origin is the top-left texel, which is also the first row GL receives, so nothing flips anywhere); an undecodable image becomes a 1x1 white placeholder with a warning
 - the humanoid map: one node index per `eHumanoidBone`, -1 when absent, kept twice: `fileHumanoidNodes` as the file names it and `humanoidNodes` as in effect after the rig settings' overrides
 - meta: name, version, author, license (1.0 `licenseUrl`, 0.x `licenseName`)
+- morph target names per mesh (glTF `extras.targetNames`, the index as a string when absent), and per primitive each target's position and normal offsets kept sparse, only the vertices it moves
+- expressions: each `AvatarExpression` has the name as the file spells it, a VRM 1.0 preset name (0.x `presetName` values are mapped onto that vocabulary, an unknown preset is empty like a custom expression), `isBinary`, and morph binds of `(mesh, morphIndex, weight)` with weight 0..1. 0.x reads `blendShapeMaster.blendShapeGroups` (mesh index in the bind, weight divided by 100), 1.0 reads `expressions.preset` and `expressions.custom` (node index in the bind, resolved to the node's mesh). Binds out of range warn and are dropped. Material color and texture transform binds are ignored. `findExpressionByPreset` and `findExpressionByName` look them up
+- `sha256Hex`: SHA-256 of the exact file bytes (Windows CNG), computed for memory loads too
 
 A load fails when the glTF is invalid, when neither VRM extension is present, or when a required humanoid bone is missing (hips, spine, head, both arms with hands, both legs with feet). Unknown bone names warn and are ignored.
 
@@ -64,7 +67,9 @@ Draw order follows the spec: OPAQUE and MASK, then BLEND with z-write sorted by 
 
 VRM 0.x materials arrive as the `materialProperties` bag and are migrated the way UniVRM and three-vrm do: `_Color` and `_ShadeColor` from gamma to linear, `_MainTex` and `_ShadeTexture` as texture indices, `_ShadeToony` and `_ShadeShift` through the toony and shift remap, `_CullMode` 0 as double-sided, `_ZWrite` into `transparentWithZWrite`, and the Unity `renderQueue` values of the transparent materials ranked into offsets (z-write off onto -9..0 ending at 0, z-write on onto 0..9 starting at 0).
 
-Deferred, tracked in `docs/plan.md`: outline, rim, matcap, UV animation, morph targets (expressions), spring bones.
+Morph targets deform on the CPU. A primitive with targets keeps its unmorphed vertices and the vertex range its targets touch. When `setMorphWeights` changes any of its weights, that range is recomposed from the base and re-uploaded with `glBufferSubData`. The 3D scene feeds it the shown frame's face through `AvatarFaceMorphs` (the face map below), so the preview shows the face exactly as a receiver holding the same file applies it.
+
+Deferred, tracked in `docs/plan.md`: outline, rim, matcap, UV animation, GPU morphing, spring bones.
 
 ## The retarget (`src/Avatar/AvatarRetarget.h`)
 
@@ -100,6 +105,22 @@ Real rigs break the retarget's rest assumptions (a T-pose, palms down, the head 
 ## Avatar-driven VMC
 
 With a skeleton set, `OscStreamer` streams the retargeted pose through `VmcRetarget::buildPoseFromAvatar` instead of the measured-length chain: each VMC bone's local rotation is its delta measured against the nearest streamed ancestor's delta (the torso is never streamed, so an arm hangs off the rest chest as before), and its local position is the avatar's own rest offset from its humanoid parent, so a receiver loading the same file keeps the character's proportions. Bones the pose did not place, or the avatar lacks, are left out and rest on the receiving side. The root stays identity: the measured-shoulder placement is for the 3D view only, and a whole-body yaw lands in the root rather than the arms, so the streamed arms stay relative to the receiver's own torso. `humanoidBoneForVmc` maps the two Unity-spelled enums by name. Without an avatar the measured-length `VmcRetarget::buildPose` path is unchanged.
+
+The loaded file is announced as `/VMC/Ext/VRM` (path, title, SHA-256) once a second, so a receiver on the same machine can load the very file the bones were retargeted onto and confirm by the hash that it is unchanged. `App::loadAvatar` hands the identity and the face map to the vision thread through `VisionThread::setAvatarIdentity`, adopted between frames like the skeleton.
+
+## The face map (`src/Avatar/AvatarFaceMap.h`)
+
+`AvatarFaceMap` turns the face stream's 52 ARKit blendshapes (see [face.md](./face.md)) into the blendshape names a VMC receiver matches on, built once per loaded avatar. Each output is a weighted sum of ARKit columns, clamped to [0, 1]. Which names an avatar gets:
+
+- An avatar with expressions named after ARKit blendshapes (perfect sync, compared without case) gets those expressions alone, in its own spelling.
+
+- Otherwise each VRM preset the avatar carries gets the ARKit columns that shape it: the sided blinks from each eye, `aa` from the jaw, `ih` from the smile, `ee` from the stretch, `ou` from the pucker, `oh` from the funnel, and the four gaze directions from the eye looks. The two-eyed blink is driven only when the avatar lacks a sided pair, since both would close the eyes twice. The emotion presets have no ARKit counterpart and stay untouched.
+
+- Also in that second case, the ARKit names the avatar carries as morph targets go out under their own names. A standard receiver ignores them, since it matches expressions only. A receiver that also matches morph targets gets the full face, which is how an avatar whose ARKit shapes are morphs without expressions keeps its detail.
+
+- With no avatar loaded the ARKit names go out verbatim.
+
+`AvatarFaceMorphs` is the receiving half on the same file, what the 3D scene's preview runs: an output naming an expression drives that expression's morph binds scaled by the bind weight, an output naming a morph target drives it directly, and a morph several outputs drive takes the largest weight rather than the sum, so a preset and the ARKit shape it was derived from never double up.
 
 ## Integration
 

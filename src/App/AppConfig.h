@@ -207,6 +207,24 @@ struct ImuConfig
 	std::array<glm::quat, 2> forearmToSensor{glm::quat(1.f, 0.f, 0.f, 0.f), glm::quat(1.f, 0.f, 0.f, 0.f)};
 };
 
+// iFacialMocap face stream (an iPhone app sending ARKit blendshapes and head
+// rotation over UDP)
+struct FaceConfig
+{
+	bool enabled= false;
+	// The UDP port the phone app streams to, and is asked to stream on
+	int port= 49983;
+	// Where the streaming handshake goes (the broadcast address reaches a
+	// phone anywhere on the LAN)
+	std::string phoneAddress= "255.255.255.255";
+	// World orientation of the head while it looks straight at the phone.
+	// Absent, that is world +X, the avatar's rest facing. Captured against the
+	// camera head, so a phone mounted off to one side still turns the head
+	// about the right axis.
+	bool headAnchorPresent= false;
+	glm::quat headAnchor{1.f, 0.f, 0.f, 0.f};
+};
+
 // Body proportions shared by every elbow consumer (IMU-measured forearms and
 // the vision body-pose solver alike)
 struct BodyConfig
@@ -348,6 +366,7 @@ public:
 	OscConfig osc;
 	FusionConfig fusion;
 	ImuConfig imu;
+	FaceConfig face;
 	BodyConfig body;
 	RecordingConfig recording;
 	AvatarConfig avatar;

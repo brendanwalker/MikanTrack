@@ -6,6 +6,7 @@
 #include "UdpSocket.h"
 #include "VmcRetarget.h"
 #include "AvatarRetarget.h"
+#include "AvatarFaceMap.h"
 
 #include <atomic>
 #include <chrono>
@@ -67,6 +68,15 @@ struct OscStreamerConfig
 	std::shared_ptr<const AvatarSkeleton> avatarSkeleton;
 	AvatarRetargetConfig avatarRetarget;
 	BodyDimensions bodyDimensions;
+	// The loaded avatar file, announced as /VMC/Ext/VRM so a receiver on the
+	// same machine can load the very file the bones were retargeted onto.
+	// An empty path announces nothing.
+	std::string avatarPath;
+	std::string avatarTitle;
+	std::string avatarSha256;
+	// The face stream's blendshapes as the avatar's names. Null streams the
+	// ARKit names verbatim.
+	std::shared_ptr<const AvatarFaceMap> faceMap;
 };
 
 /// Streams per-frame parametric hand poses as OSC 1.0 bundles over UDP
@@ -127,6 +137,14 @@ struct OscStreamerConfig
 ///     teleport it.
 ///   /VMC/Ext/Bone/Pos ,sfffffff name + local position xyz + rotation xyzw,
 ///     once per measured bone (head, clavicles, arms, hands, fingers)
+///   while the phone face stream is live (see AvatarFaceMap for the names):
+///     /VMC/Ext/Blend/Val ,sf name + value [0,1], once per mapped blendshape
+///     /VMC/Ext/Blend/Apply , after the last value. The frame the stream
+///       stops sends every value once more at zero, so the face relaxes
+///       instead of holding its last expression.
+///   /VMC/Ext/VRM ,sss path title sha256 (at most once per second, only with
+///     an avatar loaded): the local file path (UTF-8), the avatar's title,
+///     and the lowercase hex SHA-256 of the file bytes
 class OscStreamer
 {
 public:
@@ -225,6 +243,8 @@ private:
 						   std::vector<std::vector<uint8_t>>& outPackets);
 	void appendMikanMessages(const TrackingFrameResult& frame, const ClockTimePoint& now);
 	void appendVmcMessages(const TrackingFrameResult& frame, const ClockTimePoint& now);
+	void appendVmcBlendMessages(const TrackingFrameResult& frame);
+	void appendVmcAvatarMessage(const ClockTimePoint& now);
 	void appendHandMessages(const TrackingFrameResult& frame, int sideIndex, bool bSendSkeleton);
 	void appendInfoMessage(bool hasWorldSpace, const ClockTimePoint& now);
 	void updateSendStats(const ClockTimePoint& now);
@@ -250,6 +270,14 @@ private:
 	AvatarRetarget m_avatarRetarget;
 	AvatarPose m_avatarPose;
 	ClockTimePoint m_startTime;
+	// Face blendshape state: the ARKit fallback map, the evaluate scratch, and
+	// whether the last frame carried a face (for the one relaxing frame)
+	std::shared_ptr<const AvatarFaceMap> m_rawFaceMap;
+	std::vector<float> m_blendValues;
+	bool m_bFaceWasPresent= false;
+	// /VMC/Ext/VRM throttling (wall clock)
+	bool m_hasSentAvatar= false;
+	ClockTimePoint m_lastAvatarTime;
 
 	// Rate decimation (frame timestamps) and info-message throttling (wall clock)
 	double m_lastSendTimestampMs= -1.0;

@@ -347,6 +347,16 @@ struct TrackingFrameResult
 	};
 	HeadPose head;
 
+	// The phone face stream's blendshapes, in the ARKit table order of
+	// FaceTypes.h (52 entries). Present while the stream is live; only ever
+	// filled on the output result.
+	struct FacePose
+	{
+		bool present= false;
+		std::array<float, 52> blendshapes{};
+	};
+	FacePose face;
+
 	// Debug: raw palm detector output + active hand ROI boxes
 	std::vector<DetectionBox> palmDetections;
 };

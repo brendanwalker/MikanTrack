@@ -58,9 +58,22 @@ Scene3dPanel::Scene3dPanel()
 void Scene3dPanel::setAvatar(std::shared_ptr<const AvatarModel> model, std::shared_ptr<const AvatarSkeleton> skeleton,
 							 uint32_t generation)
 {
+	// The face map follows the model, so it is rebuilt only when that changes
+	if (model != m_avatarModel || generation != m_avatarGeneration)
+	{
+		m_faceMorphs= model != nullptr ? std::make_unique<AvatarFaceMorphs>(*model, AvatarFaceMap::build(*model))
+									   : nullptr;
+	}
 	m_avatarModel= std::move(model);
 	m_avatarSkeleton= std::move(skeleton);
 	m_avatarGeneration= generation;
+}
+
+void Scene3dPanel::setAvatarFace(const TrackingFrameResult::FacePose* face)
+{
+	m_bHasAvatarFace= face != nullptr && face->present;
+	if (m_bHasAvatarFace)
+		m_avatarFace= *face;
 }
 
 void Scene3dPanel::setAvatarPose(const AvatarPose* pose)
@@ -253,6 +266,11 @@ bool Scene3dPanel::drawAvatar()
 	// One key light from above and in front of the avatar (display space:
 	// +Y up, +X the avatar's facing direction)
 	const glm::vec3 lightDirection= glm::normalize(glm::vec3(0.6f, 1.f, 0.4f));
+	if (m_faceMorphs != nullptr)
+	{
+		m_faceMorphs->evaluate(m_bHasAvatarFace ? &m_avatarFace.blendshapes : nullptr, m_morphWeights);
+		m_meshRenderer->setMorphWeights(m_morphWeights);
+	}
 	m_meshRenderer->draw(m_camera->getViewProjection(), modelMatrix, m_posedGlobals, lightDirection);
 	return true;
 }

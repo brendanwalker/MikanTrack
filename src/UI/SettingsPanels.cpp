@@ -7,7 +7,9 @@
 
 #include "glm/gtc/quaternion.hpp"
 
+#include "App.h"
 #include "AppConfig.h"
+#include "FaceService.h"
 #include "HandPoseModel.h"
 #include "HandRoiQuality.h"
 #include "LocalizationManager.h"
@@ -519,6 +521,86 @@ void SettingsPanels::drawTrackingPanel(AppConfig* config, VisionThread* visionTh
 		ImGui::SetItemTooltip("%s", locText("trackingPanel.calibrateMountingTooltip"));
 
 		ImGui::EndDisabled();
+	}
+
+	ImGui::SeparatorText(locText("trackingPanel.faceSection"));
+	{
+		FaceConfig& face= config->face;
+		bool bFaceChanged= false;
+		bFaceChanged|= ImGui::Checkbox(locLabel("trackingPanel.enableFace"), &face.enabled);
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.enableFaceTooltip"));
+
+		ImGui::BeginDisabled(!face.enabled);
+		bFaceChanged|= ImGui::InputInt(locLabel("trackingPanel.facePort"), &face.port, 0, 0);
+		face.port= std::clamp(face.port, 1, 65535);
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.facePortTooltip"));
+
+		char addressBuffer[64]= {};
+		strncpy(addressBuffer, face.phoneAddress.c_str(), sizeof(addressBuffer) - 1);
+		if (ImGui::InputText(locLabel("trackingPanel.facePhoneAddress"), addressBuffer, sizeof(addressBuffer)))
+		{
+			face.phoneAddress= addressBuffer;
+			bFaceChanged= true;
+		}
+		ImGui::SetItemTooltip("%s", locText("trackingPanel.facePhoneAddressTooltip"));
+		ImGui::EndDisabled();
+
+		if (bFaceChanged)
+		{
+			bChanged= true;
+			App::getInstance()->applyFaceConfig();
+		}
+
+		if (face.enabled)
+		{
+			const FaceService* faceService= App::getInstance()->getFaceService();
+			const FaceServiceStatus status= faceService->getStatus();
+			if (!status.bound)
+				ImGui::TextColored(ImVec4(1.f, 0.4f, 0.4f, 1.f), "%s", locText("trackingPanel.faceNotBound"));
+			else if (status.streaming)
+				ImGui::TextColored(ImVec4(0.4f, 1.f, 0.5f, 1.f), locText("trackingPanel.faceStreamingFmt"),
+								   status.datagramsPerSecond);
+			else if (status.latest.valid)
+				ImGui::TextColored(ImVec4(1.f, 0.7f, 0.3f, 1.f), "%s", locText("trackingPanel.faceQuiet"));
+			else
+				ImGui::TextDisabled("%s", locText("trackingPanel.faceWaiting"));
+
+			ImGui::TextDisabled(locText("trackingPanel.faceCountsFmt"), (unsigned long long)status.unknownNameCount,
+								(unsigned long long)status.parseFailures);
+			if (!status.lastUnknownName.empty())
+				ImGui::TextDisabled(locText("trackingPanel.faceLastUnknownFmt"), status.lastUnknownName.c_str());
+			if (status.latest.hasHead)
+				ImGui::TextDisabled(locText("trackingPanel.faceHeadFmt"), status.latest.headEulerDegrees.x,
+									status.latest.headEulerDegrees.y, status.latest.headEulerDegrees.z);
+
+			// The phone's head turns about the world axes once its straight
+			// ahead is known; the camera head supplies it
+			ImGui::BeginDisabled(!status.streaming);
+			if (ImGui::Button(locLabel("trackingPanel.faceAlignHead")))
+				visionThread->requestFaceAnchorCapture();
+			ImGui::SetItemTooltip("%s", locText("trackingPanel.faceAlignHeadTooltip"));
+			ImGui::EndDisabled();
+			if (face.headAnchorPresent)
+			{
+				ImGui::SameLine();
+				if (ImGui::Button(locLabel("trackingPanel.faceResetHeadAlign")))
+				{
+					face.headAnchorPresent= false;
+					face.headAnchor= glm::quat(1.f, 0.f, 0.f, 0.f);
+					bChanged= true;
+				}
+			}
+			ImGui::TextDisabled("%s", locText(face.headAnchorPresent ? "trackingPanel.faceHeadAligned"
+																	 : "trackingPanel.faceHeadNotAligned"));
+		}
+
+		glm::quat capturedAnchor;
+		if (visionThread->fetchFaceAnchorCapture(capturedAnchor))
+		{
+			face.headAnchor= capturedAnchor;
+			face.headAnchorPresent= true;
+			bChanged= true;
+		}
 	}
 
 	ImGui::SeparatorText(locText("trackingPanel.bodyPoseSection"));

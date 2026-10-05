@@ -122,6 +122,30 @@ eHumanoidBone firstHumanoidFingerBone(int sideIndex)
 	return sideIndex == 0 ? eHumanoidBone::LeftThumbProximal : eHumanoidBone::RightThumbProximal;
 }
 
+const AvatarExpression* AvatarModel::findExpressionByPreset(const char* preset) const
+{
+	if (preset == nullptr || preset[0] == '\0')
+		return nullptr;
+	for (const AvatarExpression& expression : expressions)
+	{
+		if (expression.preset == preset)
+			return &expression;
+	}
+	return nullptr;
+}
+
+const AvatarExpression* AvatarModel::findExpressionByName(const char* name) const
+{
+	if (name == nullptr)
+		return nullptr;
+	for (const AvatarExpression& expression : expressions)
+	{
+		if (expression.name == name)
+			return &expression;
+	}
+	return nullptr;
+}
+
 size_t AvatarModel::triangleCount() const
 {
 	size_t count= 0;

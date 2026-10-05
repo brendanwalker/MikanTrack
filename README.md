@@ -158,6 +158,7 @@ Developer reference lives in [docs/reference/](docs/reference/):
 - [hand-tracking.md](docs/reference/hand-tracking.md) and [body-pose.md](docs/reference/body-pose.md): the tracking pipelines
 - [calibration.md](docs/reference/calibration.md): the wizards and where results persist
 - [imu.md](docs/reference/imu.md): the wrist IMU system
+- [face.md](docs/reference/face.md): the iFacialMocap face stream
 - [avatar.md](docs/reference/avatar.md): the VRM avatar loader, rest skeleton, and MToon renderer
 - [wire-protocol.md](docs/reference/wire-protocol.md): the OSC contract
 - [debugging.md](docs/reference/debugging.md): dumps, record/replay, diagnostics
@@ -336,6 +337,13 @@ switching formats cannot aim the stream at a listener that speaks the other.
 | `/VMC/Ext/T` | `f` | seconds since the socket opened |
 | `/VMC/Ext/Root/Pos` | `sfffffff` | `"root"` + identity; the avatar keeps whatever root it has |
 | `/VMC/Ext/Bone/Pos` | `sfffffff` | bone name + local position xyz (m) + rotation xyzw, Unity convention |
+| `/VMC/Ext/Blend/Val` | `sf` | blendshape name + value 0..1, while the phone face stream is live |
+| `/VMC/Ext/Blend/Apply` | (none) | after the last blendshape value |
+| `/VMC/Ext/VRM` | `sss` | loaded avatar's local file path, title, SHA-256 of the file (once a second) |
+
+With the face stream on (Tracking panel, Face section), the blendshapes go out
+under the loaded avatar's own expression names, and the phone's head rotation
+drives the `Head` bone. With no avatar loaded they go out as the 52 ARKit names.
 
 Bones streamed, using Unity's `HumanBodyBones` names: `Head`, both
 `Shoulder`/`UpperArm`/`LowerArm`/`Hand`, and all 30 finger bones. Everything

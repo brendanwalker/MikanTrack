@@ -550,6 +550,18 @@ static void applyConfigJson(AppConfig& config, const json& j)
 	config.extrinsicsQuality.worstPairSpacingScale= eq.value("worstPairSpacingScale", 1.0);
 	config.extrinsicsQuality.worstPairPlanarityRmsMm= eq.value("worstPairPlanarityRmsMm", 0.0);
 
+	const json& fc= j.value("face", json::object());
+	config.face.enabled= fc.value("enabled", false);
+	config.face.port= fc.value("port", 49983);
+	config.face.phoneAddress= fc.value("phoneAddress", std::string("255.255.255.255"));
+	config.face.headAnchorPresent= false;
+	if (fc.contains("headAnchor") && fc["headAnchor"].is_array() && fc["headAnchor"].size() == 4)
+	{
+		const json& anchor= fc["headAnchor"];
+		config.face.headAnchor= glm::quat((float)anchor[3], (float)anchor[0], (float)anchor[1], (float)anchor[2]);
+		config.face.headAnchorPresent= true;
+	}
+
 	const json& im= j.value("imu", json::object());
 	config.imu.enabled= im.value("enabled", true);
 	config.imu.visionYawSigma= im.value("visionYawSigma", 0.35f);
@@ -682,6 +694,20 @@ std::string AppConfig::toJsonString() const
 			imuJson[sideIndex == 0 ? "mountingLeft" : "mountingRight"]= json::array({q.x, q.y, q.z, q.w});
 		}
 		j["imu"]= imuJson;
+	}
+
+	{
+		json faceJson= {
+			{"enabled", face.enabled},
+			{"port", face.port},
+			{"phoneAddress", face.phoneAddress},
+		};
+		if (face.headAnchorPresent)
+		{
+			const glm::quat& q= face.headAnchor;
+			faceJson["headAnchor"]= json::array({q.x, q.y, q.z, q.w});
+		}
+		j["face"]= faceJson;
 	}
 
 	j["body"]= {

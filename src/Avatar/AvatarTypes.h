@@ -140,8 +140,19 @@ struct AvatarSkin
 	std::vector<glm::mat4> inverseBindMatrices; // one per joint, identity when absent
 };
 
+// One morph target of a primitive, sparse: only the vertices it moves, with
+// their position and normal offsets (normal offsets empty when the file has
+// none). A primitive carries one per mesh morph target name, in that order.
+struct AvatarMorphTarget
+{
+	std::vector<uint32_t> vertices;
+	std::vector<glm::vec3> positionDeltas;
+	std::vector<glm::vec3> normalDeltas;
+};
+
 struct AvatarPrimitive
 {
+	std::vector<AvatarMorphTarget> morphTargets;
 	std::vector<glm::vec3> positions;
 	std::vector<glm::vec3> normals;  // empty when the file has none
 	std::vector<glm::vec2> uvs;      // TEXCOORD_0, empty when absent
@@ -155,6 +166,32 @@ struct AvatarMesh
 {
 	std::string name;
 	std::vector<AvatarPrimitive> primitives;
+	// Morph target names in target order (glTF extras.targetNames, "0","1",...
+	// when the file has none). The offsets live on each primitive.
+	std::vector<std::string> morphTargetNames;
+};
+
+// One morph target weight an expression drives
+struct AvatarMorphBind
+{
+	int mesh= -1;        // AvatarModel::meshes index
+	int morphIndex= -1;  // index into that mesh's morphTargetNames
+	float weight= 1.f;   // 0..1 at full expression (VRM 0.x weights are 0..100 in the file, divided by 100)
+};
+
+struct AvatarExpression
+{
+	// The name a VMC receiver matches on, exactly as the file spells it:
+	// VRM 0.x the blendShapeGroup's "name", VRM 1.0 the key in expressions.preset / expressions.custom
+	std::string name;
+	// The VRM 1.0 preset vocabulary, lower camel case ("aa","ih","ou","ee","oh","blink","blinkLeft","blinkRight",
+	// "happy","angry","sad","relaxed","surprised","lookUp","lookDown","lookLeft","lookRight","neutral"),
+	// "" for a custom expression. VRM 0.x presetName values are mapped onto it
+	// (a,i,u,e,o -> aa,ih,ou,ee,oh; blink, blink_l -> blinkLeft, blink_r -> blinkRight; joy -> happy, angry -> angry,
+	// sorrow -> sad, fun -> relaxed, lookup/lookdown/lookleft/lookright -> lookUp/...; neutral; "unknown" -> "").
+	std::string preset;
+	bool isBinary= false;
+	std::vector<AvatarMorphBind> morphBinds;
 };
 
 enum class eAlphaMode
@@ -227,6 +264,10 @@ struct AvatarModel
 	std::vector<AvatarMaterial> materials;
 	std::vector<AvatarTexture> textures;
 	std::vector<AvatarImage> images;
+	std::vector<AvatarExpression> expressions;
+
+	// SHA-256 of the exact file bytes, 64 lowercase hex characters
+	std::string sha256Hex;
 
 	// Node index per humanoid bone, -1 when the avatar lacks that bone. The
 	// map in effect: the file's own map with the rig sidecar's overrides
@@ -244,6 +285,11 @@ struct AvatarModel
 
 	int boneNode(eHumanoidBone bone) const { return humanoidNodes[(int)bone]; }
 	bool hasBone(eHumanoidBone bone) const { return humanoidNodes[(int)bone] >= 0; }
+
+	// First expression with this VRM 1.0 preset name, nullptr when absent
+	const AvatarExpression* findExpressionByPreset(const char* preset) const;
+	// Expression whose file spelling equals name exactly, nullptr when absent
+	const AvatarExpression* findExpressionByName(const char* name) const;
 
 	size_t triangleCount() const;
 };

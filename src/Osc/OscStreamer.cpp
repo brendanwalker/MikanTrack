@@ -23,6 +23,9 @@ static const char* k_vmcOkAddress= "/VMC/Ext/OK";
 static const char* k_vmcTimeAddress= "/VMC/Ext/T";
 static const char* k_vmcRootAddress= "/VMC/Ext/Root/Pos";
 static const char* k_vmcBoneAddress= "/VMC/Ext/Bone/Pos";
+static const char* k_vmcBlendValueAddress= "/VMC/Ext/Blend/Val";
+static const char* k_vmcBlendApplyAddress= "/VMC/Ext/Blend/Apply";
+static const char* k_vmcAvatarAddress= "/VMC/Ext/VRM";
 
 static const char* k_infoWorldSpace=
 	"space=marker;units=m;handed=RH;up=Z;palm=x-fingers,z-palmar;angles=deg";
@@ -70,6 +73,8 @@ bool OscStreamer::startup()
 	// A reconnecting client must not inherit a frozen pose from the last one
 	m_lastVmcPose[0]= HeldPoseState();
 	m_lastVmcPose[1]= HeldPoseState();
+	m_bFaceWasPresent= false;
+	m_hasSentAvatar= false;
 
 	// The target is logged by setConfig instead: startup runs before the app's
 	// config reaches the streamer, so anything named here would be a default
@@ -108,6 +113,7 @@ void OscStreamer::setConfig(const OscStreamerConfig& config)
 		m_avatarRetarget.reset();
 	m_config= config;
 	m_hasSentInfo= false; // re-announce info on config change
+	m_hasSentAvatar= false;
 
 	if (bTargetChanged)
 	{
@@ -355,6 +361,50 @@ void OscStreamer::appendVmcMessages(const TrackingFrameResult& frame, const Cloc
 		addVec3(boneMessage, bone.localPosition);
 		addQuat(boneMessage, bone.localRotation);
 	}
+
+	appendVmcBlendMessages(frame);
+	appendVmcAvatarMessage(now);
+}
+
+void OscStreamer::appendVmcBlendMessages(const TrackingFrameResult& frame)
+{
+	const bool bFacePresent= frame.face.present;
+	if (!bFacePresent && !m_bFaceWasPresent)
+		return;
+	m_bFaceWasPresent= bFacePresent;
+
+	if (m_rawFaceMap == nullptr)
+		m_rawFaceMap= AvatarFaceMap::buildRaw();
+	const AvatarFaceMap& faceMap= m_config.faceMap != nullptr ? *m_config.faceMap : *m_rawFaceMap;
+
+	// A stopped stream sends zeros once: a receiver holds the last value of a
+	// blendshape that stops arriving, which would freeze a blink mid-closure
+	if (bFacePresent)
+		faceMap.evaluate(frame.face.blendshapes, m_blendValues);
+	else
+		m_blendValues.assign(faceMap.getOutputs().size(), 0.f);
+
+	for (size_t outputIndex= 0; outputIndex < faceMap.getOutputs().size(); ++outputIndex)
+	{
+		OscMessage& blendMessage= m_bundle.addMessage(k_vmcBlendValueAddress);
+		blendMessage.addString(faceMap.getOutputs()[outputIndex].name.c_str()).addFloat(m_blendValues[outputIndex]);
+	}
+	m_bundle.addMessage(k_vmcBlendApplyAddress);
+}
+
+void OscStreamer::appendVmcAvatarMessage(const ClockTimePoint& now)
+{
+	if (m_config.avatarPath.empty())
+		return;
+	if (m_hasSentAvatar && now - m_lastAvatarTime < std::chrono::seconds(1))
+		return;
+	m_hasSentAvatar= true;
+	m_lastAvatarTime= now;
+
+	OscMessage& avatarMessage= m_bundle.addMessage(k_vmcAvatarAddress);
+	avatarMessage.addString(m_config.avatarPath.c_str())
+		.addString(m_config.avatarTitle.c_str())
+		.addString(m_config.avatarSha256.c_str());
 }
 
 bool OscStreamer::resolveOutputPose(const HandPose& pose, double frameTimestampMs, float minConfidence,

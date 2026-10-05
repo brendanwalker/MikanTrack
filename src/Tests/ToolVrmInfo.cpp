@@ -1,5 +1,6 @@
 #include "TestCommon.h"
 
+#include "AvatarFaceMap.h"
 #include "AvatarSkeleton.h"
 #include "PathUtils.h"
 #include "VrmLoader.h"
@@ -100,6 +101,21 @@ static int runVrmInfoTool(const TestArgs& args)
 	MIKAN_LOG_INFO("vrm-info") << "shoulder width " << skeleton.getShoulderWidth() << " m, height above hips "
 							   << skeleton.getHeightAboveHips() << " m, left upper arm direction (" << leftArm.x
 							   << ", " << leftArm.y << ", " << leftArm.z << ")";
+
+	MIKAN_LOG_INFO("vrm-info") << "sha256 " << model.sha256Hex;
+	for (const AvatarExpression& expression : model.expressions)
+	{
+		MIKAN_LOG_INFO("vrm-info") << "  expression '" << expression.name << "' preset '" << expression.preset
+								   << "' " << expression.morphBinds.size() << " binds";
+	}
+
+	// What the face stream would put on the wire for this avatar
+	const std::shared_ptr<const AvatarFaceMap> faceMap= AvatarFaceMap::build(model);
+	std::string faceNames;
+	for (const AvatarFaceMap::Output& output : faceMap->getOutputs())
+		faceNames+= (faceNames.empty() ? "" : ", ") + output.name;
+	MIKAN_LOG_INFO("vrm-info") << "face map" << (faceMap->isPerfectSync() ? " (perfect sync)" : "") << ": "
+							   << faceMap->getOutputs().size() << " blendshapes: " << faceNames;
 
 	for (const std::string& warning : result.warnings)
 		MIKAN_LOG_INFO("vrm-info") << "warning: " << warning;
