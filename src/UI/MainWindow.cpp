@@ -452,6 +452,7 @@ void MainWindow::updateDisplayAvatar(SceneGizmos& outGizmos)
 	if (skeleton == nullptr)
 	{
 		m_scene3dPanel->setAvatarPose(nullptr);
+		m_scene3dPanel->setAvatarFace(nullptr);
 		return;
 	}
 	const AppConfig* config= m_app->getConfig();
@@ -480,6 +481,7 @@ void MainWindow::updateDisplayAvatar(SceneGizmos& outGizmos)
 		else
 			AvatarPreviewPoses::makeDemoFrame(*skeleton, frame, user);
 		m_avatarRetarget.solve(frame, user, *skeleton, retargetConfig, m_avatarPose);
+		m_scene3dPanel->setAvatarFace(nullptr);
 	}
 	else
 	{
@@ -487,6 +489,7 @@ void MainWindow::updateDisplayAvatar(SceneGizmos& outGizmos)
 		const TrackingFrameResult& shownFused= bReplay ? m_timelinePanel->getDisplayFused() : m_latestFused;
 		m_avatarRetarget.solve(shownFused, makeBodyDimensions(lengthsConfig), *skeleton, retargetConfig,
 							   m_avatarPose);
+		m_scene3dPanel->setAvatarFace(&shownFused.face);
 	}
 	m_scene3dPanel->setAvatarPose(&m_avatarPose);
 

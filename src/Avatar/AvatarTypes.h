@@ -140,8 +140,19 @@ struct AvatarSkin
 	std::vector<glm::mat4> inverseBindMatrices; // one per joint, identity when absent
 };
 
+// One morph target of a primitive, sparse: only the vertices it moves, with
+// their position and normal offsets (normal offsets empty when the file has
+// none). A primitive carries one per mesh morph target name, in that order.
+struct AvatarMorphTarget
+{
+	std::vector<uint32_t> vertices;
+	std::vector<glm::vec3> positionDeltas;
+	std::vector<glm::vec3> normalDeltas;
+};
+
 struct AvatarPrimitive
 {
+	std::vector<AvatarMorphTarget> morphTargets;
 	std::vector<glm::vec3> positions;
 	std::vector<glm::vec3> normals;  // empty when the file has none
 	std::vector<glm::vec2> uvs;      // TEXCOORD_0, empty when absent
@@ -156,7 +167,7 @@ struct AvatarMesh
 	std::string name;
 	std::vector<AvatarPrimitive> primitives;
 	// Morph target names in target order (glTF extras.targetNames, "0","1",...
-	// when the file has none). The deltas themselves are not loaded.
+	// when the file has none). The offsets live on each primitive.
 	std::vector<std::string> morphTargetNames;
 };
 

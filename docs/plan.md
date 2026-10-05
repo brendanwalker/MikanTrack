@@ -27,7 +27,8 @@ The living plan: what is in flight now, what comes next, and the open questions.
 - [ ] `GenerateProjectFiles_X64_VS2022.bat` passes `-A x64`, which conflicts with a `build/` cache configured without an explicit platform (Visual Studio 2022 defaults to x64 either way). Decide on one invocation so a fresh clone and an existing tree agree.
 - [ ] Human-review the machine-translated Japanese strings for the Avatar panel (`avatarPanel`, `windows.avatar`, `mainWindow.viewAvatarPanel` in `resources/localization/ja.json`).
 - [ ] A redistributable VRM 1.0 sample under `models/avatars/` for live and sample-test coverage of the 1.0 path (the synthetic test is the only 1.0 coverage; both VRoid samples and Bonjiri are 0.x).
-- [ ] MToon features the renderer skips: outline, rim and matcap, UV animation; plus morph target deltas (the loader reads expressions and target names, nothing deforms) and spring bones (hair and cloth physics), which also need the VRM extension parsing extended.
+- [ ] MToon features the renderer skips: outline, rim and matcap, UV animation; plus spring bones (hair and cloth physics), which also need the VRM extension parsing extended.
+- [ ] GPU morphing in `GlSkinnedMeshRenderer`: the sparse offsets in a texture buffer beside the joint matrices, summed in the vertex shader, with the CPU recompose kept behind an internal debug setting for A/B comparison.
 - [ ] Face samples in tracking recordings, so a replay reproduces the face blendshapes and the phone head the live output carried (the IMU forearm output is the model).
 - [ ] Eye bones from the phone's eye rotations on the VMC `LeftEye`/`RightEye` bones, once a receiver's gaze blendshapes and eye bones are reconciled (driving both moves the eyes twice).
 - [ ] Avatar load is synchronous on the main thread (well under a second for a VRoid file); move the parse and image decode to a worker if large models stall the UI noticeably.

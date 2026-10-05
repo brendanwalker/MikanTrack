@@ -987,6 +987,36 @@ static int runVmcTest(const TestArgs&)
 		map->evaluate(arkitValues, values);
 		check(!map->isPerfectSync() && map->getOutputs().size() == 1 && fabsf(values[0] - 0.5f) < 1e-6f,
 			  "an avatar with only the two-eyed blink gets the average of both eyes");
+
+		// The receiver half: outputs onto morph targets, as the preview applies them
+		AvatarModel morphed;
+		AvatarMesh face;
+		face.morphTargetNames= {"jawOpen", "blinkShape"};
+		morphed.meshes.push_back(face);
+		AvatarExpression aa;
+		aa.name= "A";
+		aa.preset= "aa";
+		aa.morphBinds.push_back(AvatarMorphBind{0, 0, 1.f});
+		morphed.expressions.push_back(aa);
+		AvatarExpression blinkLeft;
+		blinkLeft.name= "Blink_L";
+		blinkLeft.preset= "blinkLeft";
+		blinkLeft.morphBinds.push_back(AvatarMorphBind{0, 1, 0.5f});
+		morphed.expressions.push_back(blinkLeft);
+
+		const AvatarFaceMorphs faceMorphs(morphed, AvatarFaceMap::build(morphed));
+		arkitValues= {};
+		arkitValues[arkitBlendshapeFromName("jawOpen")]= 0.6f;
+		arkitValues[arkitBlendshapeFromName("eyeBlinkLeft")]= 1.f;
+		std::vector<std::vector<float>> meshWeights;
+		faceMorphs.evaluate(&arkitValues, meshWeights);
+		check(meshWeights.size() == 1 && meshWeights[0].size() == 2 && fabsf(meshWeights[0][0] - 0.6f) < 1e-6f,
+			  "a morph driven by a preset and by its own ARKit name takes the larger weight, not the sum");
+		check(meshWeights.size() == 1 && fabsf(meshWeights[0][1] - 0.5f) < 1e-6f,
+			  "an expression scales the morphs it binds by the bind weight");
+		faceMorphs.evaluate(nullptr, meshWeights);
+		check(meshWeights.size() == 1 && meshWeights[0][0] == 0.f && meshWeights[0][1] == 0.f,
+			  "no face rests every morph");
 	}
 
 	// (l) The phone's head in the head frame (+X facing, +Y left, +Z up)

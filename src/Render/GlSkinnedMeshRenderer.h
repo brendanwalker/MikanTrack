@@ -2,12 +2,14 @@
 
 #include "glm/ext/matrix_float4x4.hpp"
 #include "glm/ext/vector_float3.hpp"
+#include "glm/ext/vector_float2.hpp"
 #include "glm/ext/vector_float4.hpp"
+#include "glm/ext/vector_uint4.hpp"
 
 #include <cstdint>
 #include <vector>
 
-struct AvatarModel;
+#include "AvatarTypes.h"
 
 // Draws a loaded VRM avatar (GL 3.3 core) into whatever framebuffer is bound.
 // upload() turns the CPU model into per-primitive VAOs, sRGB textures and a
@@ -40,7 +42,37 @@ public:
 	void draw(const glm::mat4& viewProj, const glm::mat4& modelMatrix, const std::vector<glm::mat4>& nodeGlobalsAvatar,
 			  const glm::vec3& lightDirection);
 
+	// Morph target weights, per mesh one per morph target name (missing
+	// entries read as zero). Morphing runs on the CPU: a primitive whose
+	// weights changed has its morphed vertex range recomposed from the base
+	// vertices and re-uploaded. Requires a current GL context.
+	void setMorphWeights(const std::vector<std::vector<float>>& meshWeights);
+
 private:
+	// Interleaved vertex, 64 bytes
+	struct SkinnedVertex
+	{
+		glm::vec3 position;
+		glm::vec3 normal;
+		glm::vec2 uv;
+		glm::uvec4 joints;
+		glm::vec4 weights;
+	};
+
+	// A primitive with morph targets: its unmorphed vertices, its sparse
+	// targets, the vertex range any target touches, and the weights its
+	// buffer currently holds
+	struct MorphPrimitive
+	{
+		int primitive= -1; // index into m_primitives
+		int mesh= -1;
+		std::vector<SkinnedVertex> baseVertices;
+		std::vector<AvatarMorphTarget> targets;
+		uint32_t touchedBegin= 0;
+		uint32_t touchedEnd= 0;
+		std::vector<float> appliedWeights;
+	};
+
 	struct GpuPrimitive
 	{
 		uint32_t vao= 0;
@@ -135,4 +167,6 @@ private:
 
 	// Per draw scratch, reused
 	std::vector<glm::mat4> m_jointMatrices;
+	std::vector<MorphPrimitive> m_morphPrimitives;
+	std::vector<SkinnedVertex> m_morphedVertices;
 };

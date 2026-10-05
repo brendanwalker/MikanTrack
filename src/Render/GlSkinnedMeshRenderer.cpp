@@ -11,6 +11,7 @@
 #include "glm/matrix.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 // Texture units the program samples from
@@ -116,17 +117,6 @@ void main()
 
 namespace
 {
-	// Interleaved vertex, 64 bytes
-	struct SkinnedVertex
-	{
-		glm::vec3 position;
-		glm::vec3 normal;
-		glm::vec2 uv;
-		glm::uvec4 joints;
-		glm::vec4 weights;
-	};
-	static_assert(sizeof(SkinnedVertex) == 64, "SkinnedVertex must stay tightly packed");
-
 	// Area-weighted smooth normals: the unnormalized face cross product is twice
 	// the triangle area, so summing it weights each face by its area for free
 	void computeSmoothNormals(const std::vector<glm::vec3>& positions, const std::vector<uint32_t>& indices,
@@ -366,6 +356,7 @@ void GlSkinnedMeshRenderer::releaseModelResources()
 	}
 	m_primitives.clear();
 	m_meshPrimitiveBase.clear();
+	m_morphPrimitives.clear();
 
 	for (uint32_t texture : m_imageTextures)
 	{
@@ -646,7 +637,33 @@ bool GlSkinnedMeshRenderer::upload(const AvatarModel& model)
 
 			glBindVertexArray(primitive.vao);
 			glBindBuffer(GL_ARRAY_BUFFER, primitive.vbo);
-			glBufferData(GL_ARRAY_BUFFER, vertexCount * sizeof(SkinnedVertex), vertices.data(), GL_STATIC_DRAW);
+			// A morphed primitive keeps its unmorphed vertices and rewrites its
+			// buffer as the weights change
+			uint32_t touchedBegin= (uint32_t)vertexCount;
+			uint32_t touchedEnd= 0;
+			for (const AvatarMorphTarget& target : source.morphTargets)
+			{
+				for (uint32_t vertex : target.vertices)
+				{
+					touchedBegin= std::min(touchedBegin, vertex);
+					touchedEnd= std::max(touchedEnd, vertex + 1);
+				}
+			}
+			const bool bMorphed= touchedEnd > touchedBegin;
+			if (bMorphed)
+			{
+				MorphPrimitive morph;
+				morph.primitive= (int)m_primitives.size();
+				morph.mesh= (int)meshIndex;
+				morph.baseVertices= vertices;
+				morph.targets= source.morphTargets;
+				morph.touchedBegin= touchedBegin;
+				morph.touchedEnd= touchedEnd;
+				morph.appliedWeights.assign(source.morphTargets.size(), 0.f);
+				m_morphPrimitives.push_back(std::move(morph));
+			}
+			glBufferData(GL_ARRAY_BUFFER, vertexCount * sizeof(SkinnedVertex), vertices.data(),
+						 bMorphed ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW);
 			// The element binding is VAO state, so it is bound while the VAO is
 			glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, primitive.ebo);
 			glBufferData(GL_ELEMENT_ARRAY_BUFFER, indexCount * sizeof(uint32_t), source.indices.data(),
@@ -772,6 +789,58 @@ bool GlSkinnedMeshRenderer::upload(const AvatarModel& model)
 	m_nodeCount= model.nodes.size();
 	m_bHasModel= true;
 	return true;
+}
+
+void GlSkinnedMeshRenderer::setMorphWeights(const std::vector<std::vector<float>>& meshWeights)
+{
+	static_assert(sizeof(SkinnedVertex) == 64, "SkinnedVertex must stay tightly packed");
+	// Below this a weight moves nothing visible, and a change below it is
+	// not worth an upload
+	constexpr float k_weightEpsilon= 1e-4f;
+
+	for (MorphPrimitive& morph : m_morphPrimitives)
+	{
+		const std::vector<float>* weights=
+			morph.mesh < (int)meshWeights.size() ? &meshWeights[morph.mesh] : nullptr;
+		auto weightOf= [weights](size_t target) {
+			return weights != nullptr && target < weights->size() ? (*weights)[target] : 0.f;
+		};
+
+		bool bChanged= false;
+		for (size_t target= 0; target < morph.targets.size() && !bChanged; ++target)
+			bChanged= std::abs(weightOf(target) - morph.appliedWeights[target]) > k_weightEpsilon;
+		if (!bChanged)
+			continue;
+
+		// Recompose the touched range from the base: summing onto last
+		// frame's result would drift
+		const uint32_t begin= morph.touchedBegin;
+		const uint32_t count= morph.touchedEnd - morph.touchedBegin;
+		m_morphedVertices.assign(morph.baseVertices.begin() + begin, morph.baseVertices.begin() + begin + count);
+		for (size_t target= 0; target < morph.targets.size(); ++target)
+		{
+			const float weight= weightOf(target);
+			morph.appliedWeights[target]= weight;
+			if (std::abs(weight) <= k_weightEpsilon)
+				continue;
+
+			const AvatarMorphTarget& morphTarget= morph.targets[target];
+			const bool bHasNormals= morphTarget.normalDeltas.size() == morphTarget.vertices.size();
+			for (size_t entry= 0; entry < morphTarget.vertices.size(); ++entry)
+			{
+				SkinnedVertex& vertex= m_morphedVertices[morphTarget.vertices[entry] - begin];
+				vertex.position+= weight * morphTarget.positionDeltas[entry];
+				if (bHasNormals)
+					vertex.normal+= weight * morphTarget.normalDeltas[entry];
+			}
+		}
+
+		// The fragment shader normalizes, so a summed normal needs no renormalizing here
+		glBindBuffer(GL_ARRAY_BUFFER, m_primitives[morph.primitive].vbo);
+		glBufferSubData(GL_ARRAY_BUFFER, begin * sizeof(SkinnedVertex), count * sizeof(SkinnedVertex),
+						m_morphedVertices.data());
+	}
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
 void GlSkinnedMeshRenderer::draw(const glm::mat4& viewProj, const glm::mat4& modelMatrix,

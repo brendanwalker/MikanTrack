@@ -797,6 +797,42 @@ bool readPrimitive(LoadContext& context, const cgltf_primitive& source, const st
 	}
 
 	outPrimitive.material= source.material != nullptr ? (int)(source.material - data.materials) : -1;
+
+	// Morph targets, kept sparse: a face shape moves a few hundred vertices of
+	// a body primitive's tens of thousands
+	outPrimitive.morphTargets.resize(source.targets_count);
+	std::vector<glm::vec3> positionDeltas;
+	std::vector<glm::vec3> normalDeltas;
+	for (cgltf_size targetIndex= 0; targetIndex < source.targets_count; ++targetIndex)
+	{
+		const cgltf_morph_target& target= source.targets[targetIndex];
+		positionDeltas.clear();
+		normalDeltas.clear();
+		for (cgltf_size attributeIndex= 0; attributeIndex < target.attributes_count; ++attributeIndex)
+		{
+			const cgltf_attribute& attribute= target.attributes[attributeIndex];
+			if (attribute.data == nullptr || attribute.data->count != vertexCount)
+				continue;
+			if (attribute.type == cgltf_attribute_type_position)
+				readFloatAttribute<glm::vec3, 3>(*attribute.data, positionDeltas);
+			else if (attribute.type == cgltf_attribute_type_normal && !outPrimitive.normals.empty())
+				readFloatAttribute<glm::vec3, 3>(*attribute.data, normalDeltas);
+		}
+
+		AvatarMorphTarget& morph= outPrimitive.morphTargets[targetIndex];
+		for (size_t vertex= 0; vertex < vertexCount; ++vertex)
+		{
+			const glm::vec3 positionDelta= vertex < positionDeltas.size() ? positionDeltas[vertex] : glm::vec3(0.f);
+			const glm::vec3 normalDelta= vertex < normalDeltas.size() ? normalDeltas[vertex] : glm::vec3(0.f);
+			if (positionDelta == glm::vec3(0.f) && normalDelta == glm::vec3(0.f))
+				continue;
+
+			morph.vertices.push_back((uint32_t)vertex);
+			morph.positionDeltas.push_back(positionDelta);
+			if (!normalDeltas.empty())
+				morph.normalDeltas.push_back(normalDelta);
+		}
+	}
 	return true;
 }
 

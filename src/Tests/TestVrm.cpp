@@ -784,6 +784,12 @@ static int runVrmTest(const TestArgs&)
 				  model0.meshes[0].morphTargetNames == std::vector<std::string>({"smile", "blinkL"}),
 			  "(j) morph target names read from the mesh extras");
 
+		const std::vector<AvatarMorphTarget>& morphs= model0.meshes[0].primitives[0].morphTargets;
+		check(morphs.size() == 2 && morphs[0].vertices.size() == 3 && morphs[0].positionDeltas.size() == 3 &&
+				  nearlyEqual(morphs[0].positionDeltas[2], glm::vec3(0.f, 0.01f, 0.f), 1e-6f) &&
+				  morphs[0].normalDeltas.empty() && morphs[0].vertices[2] == 2,
+			  "(j) morph target position offsets read per vertex, normals absent when the file has none");
+
 		auto hasWarning= [](const VrmLoader::LoadResult& result, const char* fragment) {
 			for (const std::string& warning : result.warnings)
 			{

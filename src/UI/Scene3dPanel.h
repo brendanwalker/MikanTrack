@@ -9,6 +9,7 @@
 #include "glm/ext/vector_float2.hpp"
 #include "glm/ext/vector_float3.hpp"
 
+#include "AvatarFaceMap.h"
 #include "AvatarRetarget.h"
 #include "TrackingTypes.h"
 
@@ -90,6 +91,10 @@ public:
 	// The retargeted pose to draw (copied); null draws the rest pose at the
 	// world origin
 	void setAvatarPose(const AvatarPose* pose);
+	// The face to show on the avatar (copied); null rests the face. The
+	// avatar's morph targets take it the way a VMC receiver holding the same
+	// file would.
+	void setAvatarFace(const TrackingFrameResult::FacePose* face);
 
 	bool getShowPerCameraSkeletons() const { return m_bShowPerCameraSkeletons; }
 	void setShowPerCameraSkeletons(bool bShow) { m_bShowPerCameraSkeletons= bShow; }
@@ -122,6 +127,10 @@ private:
 	bool m_bShowAvatar= true;
 	bool m_bHasAvatarPose= false;
 	AvatarPose m_avatarPose;
+	std::unique_ptr<AvatarFaceMorphs> m_faceMorphs;
+	bool m_bHasAvatarFace= false;
+	TrackingFrameResult::FacePose m_avatarFace;
+	std::vector<std::vector<float>> m_morphWeights;
 	std::vector<glm::mat4> m_posedGlobals;
 	// The gizmo being dragged (-1 none) and the camera-facing plane it moves
 	// in, display space

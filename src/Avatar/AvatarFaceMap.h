@@ -51,3 +51,33 @@ private:
 	std::vector<Output> m_outputs;
 	bool m_bPerfectSync= false;
 };
+
+// The face map's outputs as morph target weights on one avatar, the way a
+// receiver holding the same file would apply them: an output naming an
+// expression drives that expression's morph binds, an output naming a morph
+// target drives it directly, and a morph driven by several outputs takes the
+// largest weight rather than their sum, so a preset and the ARKit shape it
+// came from never double up.
+class AvatarFaceMorphs
+{
+public:
+	AvatarFaceMorphs(const AvatarModel& model, std::shared_ptr<const AvatarFaceMap> faceMap);
+
+	// Per mesh, one weight per morph target name. All zero without a face.
+	void evaluate(const std::array<float, ARKIT_BLENDSHAPE_COUNT>* arkit,
+				  std::vector<std::vector<float>>& outMeshWeights) const;
+
+private:
+	struct Bind
+	{
+		int output= -1;
+		int mesh= -1;
+		int morph= -1;
+		float weight= 1.f;
+	};
+
+	std::shared_ptr<const AvatarFaceMap> m_faceMap;
+	std::vector<Bind> m_binds;
+	std::vector<size_t> m_meshMorphCounts;
+	mutable std::vector<float> m_outputValues;
+};

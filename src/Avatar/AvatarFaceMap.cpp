@@ -136,3 +136,56 @@ void AvatarFaceMap::evaluate(const std::array<float, ARKIT_BLENDSHAPE_COUNT>& ar
 		outValues[outputIndex]= std::clamp(value, 0.f, 1.f);
 	}
 }
+
+AvatarFaceMorphs::AvatarFaceMorphs(const AvatarModel& model, std::shared_ptr<const AvatarFaceMap> faceMap)
+	: m_faceMap(std::move(faceMap))
+{
+	m_meshMorphCounts.resize(model.meshes.size());
+	for (size_t meshIndex= 0; meshIndex < model.meshes.size(); ++meshIndex)
+		m_meshMorphCounts[meshIndex]= model.meshes[meshIndex].morphTargetNames.size();
+
+	const std::vector<AvatarFaceMap::Output>& outputs= m_faceMap->getOutputs();
+	for (size_t outputIndex= 0; outputIndex < outputs.size(); ++outputIndex)
+	{
+		const std::string& name= outputs[outputIndex].name;
+		if (const AvatarExpression* expression= model.findExpressionByName(name.c_str()))
+		{
+			for (const AvatarMorphBind& bind : expression->morphBinds)
+			{
+				if (bind.mesh >= 0 && bind.mesh < (int)m_meshMorphCounts.size() && bind.morphIndex >= 0 &&
+					bind.morphIndex < (int)m_meshMorphCounts[bind.mesh])
+				{
+					m_binds.push_back(Bind{(int)outputIndex, bind.mesh, bind.morphIndex, bind.weight});
+				}
+			}
+			continue;
+		}
+
+		for (size_t meshIndex= 0; meshIndex < model.meshes.size(); ++meshIndex)
+		{
+			const std::vector<std::string>& morphNames= model.meshes[meshIndex].morphTargetNames;
+			for (size_t morphIndex= 0; morphIndex < morphNames.size(); ++morphIndex)
+			{
+				if (morphNames[morphIndex] == name)
+					m_binds.push_back(Bind{(int)outputIndex, (int)meshIndex, (int)morphIndex, 1.f});
+			}
+		}
+	}
+}
+
+void AvatarFaceMorphs::evaluate(const std::array<float, ARKIT_BLENDSHAPE_COUNT>* arkit,
+								std::vector<std::vector<float>>& outMeshWeights) const
+{
+	outMeshWeights.resize(m_meshMorphCounts.size());
+	for (size_t meshIndex= 0; meshIndex < m_meshMorphCounts.size(); ++meshIndex)
+		outMeshWeights[meshIndex].assign(m_meshMorphCounts[meshIndex], 0.f);
+	if (arkit == nullptr)
+		return;
+
+	m_faceMap->evaluate(*arkit, m_outputValues);
+	for (const Bind& bind : m_binds)
+	{
+		float& weight= outMeshWeights[bind.mesh][bind.morph];
+		weight= std::max(weight, m_outputValues[bind.output] * bind.weight);
+	}
+}
