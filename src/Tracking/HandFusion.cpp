@@ -698,8 +698,8 @@ bool HandFusion::triangulateCluster(eHandSide side, HandCluster& cluster, Tracke
 	}
 
 	// Pose from the triangulated geometry. The skeleton stays the best
-	// candidate's (metric via the calibrated hand scale, and the wire
-	// contract wants a stable skeleton) - only the palm frame and the
+	// candidate's (metric via the calibrated hand scale, and the streamed
+	// finger bone offsets want a stable skeleton) - only the palm frame and the
 	// angles come from the stereo landmarks.
 	const glm::mat4 palmFrame=
 		HandPoseModel::computePalmFrame(triPoints, side, &m_triPalmarMemory[(int)side]);
@@ -1137,7 +1137,7 @@ void HandFusion::updateEstimatorSkeleton(eHandSide side, const HandSkeleton& obs
 				(observed.phalanxLengths[finger][phalanx] - skeleton.phalanxLengths[finger][phalanx]);
 	}
 	// Neutral directions are ALWAYS the flat-hand default derived from the
-	// bases (the wire convention), so rebuild rather than blend them
+	// bases (the angle convention), so rebuild rather than blend them
 	skeleton.neutralDirInPalm= HandPoseModel::makeDefaultNeutralDirections(skeleton);
 }
 

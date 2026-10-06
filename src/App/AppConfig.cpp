@@ -622,15 +622,11 @@ static void applyConfigJson(AppConfig& config, const json& j)
 
 	const json& os= j.value("osc", json::object());
 	config.osc.enabled= os.value("enabled", true);
-	config.osc.outputMode= (eOscOutputMode)std::clamp(
-		os.value("outputMode", (int)eOscOutputMode::Mikan), 0, (int)eOscOutputMode::Count - 1);
 	config.osc.targetIp= os.value("ip", "127.0.0.1");
-	config.osc.targetPort= os.value("port", 8000);
-	config.osc.vmcPort= os.value("vmcPort", 39539);
+	config.osc.port= os.value("vmcPort", 39539);
 	config.osc.maxRateHz= os.value("maxRateHz", 60);
 	config.osc.minConfidence= os.value("minConfidence", 0.f);
 	config.osc.holdOnDropoutMs= os.value("holdOnDropoutMs", 250.f);
-	config.osc.logPalmFrames= os.value("logPalmFrames", false);
 	config.osc.vmcHeadOffsetMeters= os.value("vmcHeadOffsetMeters", 0.08f);
 	config.osc.vmcFreezeOnLoss= os.value("vmcFreezeOnLoss", true);
 }
@@ -754,14 +750,11 @@ std::string AppConfig::toJsonString() const
 
 	j["osc"]= {
 		{"enabled", osc.enabled},
-		{"outputMode", (int)osc.outputMode},
 		{"ip", osc.targetIp},
-		{"port", osc.targetPort},
-		{"vmcPort", osc.vmcPort},
+		{"vmcPort", osc.port},
 		{"maxRateHz", osc.maxRateHz},
 		{"minConfidence", osc.minConfidence},
 		{"holdOnDropoutMs", osc.holdOnDropoutMs},
-		{"logPalmFrames", osc.logPalmFrames},
 		{"vmcHeadOffsetMeters", osc.vmcHeadOffsetMeters},
 		{"vmcFreezeOnLoss", osc.vmcFreezeOnLoss},
 	};

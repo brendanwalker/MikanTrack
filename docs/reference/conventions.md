@@ -39,20 +39,20 @@ The avatar rig settings carry two spatial quantities. A rotation trim rotates a 
 
 ## Finger angle conventions
 
-Angles are radians everywhere inside the app and DEGREES on the wire; the OSC boundary is the only conversion point. The sign conventions are stated on `FingerAngles` in `src/Vision/TrackingTypes.h`:
+Angles are radians everywhere inside the app. The wire carries no angles: `VmcRetarget` turns them into bone quaternions, and the OSC panel readout is the only place they are shown in degrees. The sign conventions are stated on `FingerAngles` in `src/Vision/TrackingTypes.h`:
 
 - `lateral` is splay about palm +Z, positive counter-clockwise (toward palm +Y). Purely geometric and identical for both hands; the palm frame carries the chirality, so positive is toward the pinky on a right hand and toward the thumb on a left.
 - `proximal` is the base bone away from its neutral direction, positive curling toward the palmar side (+Z).
 - `intermediate` and `distal` are each measured RELATIVE TO THE PARENT BONE, not the palm, positive toward the palm; zero means collinear with the parent. They chain, so an evenly curling finger reads three similar values.
 - The thumb's intermediate/distal hinge is pronated `kThumbPronationRad` (1.2 rad) about its metacarpal direction (`src/Tracking/HandPoseModel.cpp`), with the sign read from `baseInPalm[Index].y`: palm +Y runs toward the thumb on a left hand and toward the pinky on a right, so a left hand (index base at positive palm Y) pronates positively and a right hand (index base at negative palm Y) negatively. The side label plays no part.
 
-Zero is the rest pose. `HandSkeleton::neutralDirInPalm` is ALWAYS the flat-hand default (four fingers parallel to palm +X, thumb along its own metacarpal): it is where forward kinematics starts and it must mean one thing on the wire. A captured rest pose does not change it; the capture is stored as a per-side angle offset (`fusedRestAngles` in `AppConfig`) and subtracted once at fusion output (`HandFusion.cpp`). Consequently zero angles render an idealized flat hand, not the user's exact resting hand, and the thumb's zero moves when the skeleton is recalibrated, which is why bone calibration must precede rest capture (see [calibration.md](./calibration.md)).
+Zero is the rest pose. `HandSkeleton::neutralDirInPalm` is ALWAYS the flat-hand default (four fingers parallel to palm +X, thumb along its own metacarpal): it is where forward kinematics starts, and the VMC finger bones measure their identity rest against it, so it must mean one thing everywhere. A captured rest pose does not change it; the capture is stored as a per-side angle offset (`fusedRestAngles` in `AppConfig`) and subtracted once at fusion output (`HandFusion.cpp`). Consequently zero angles render an idealized flat hand, not the user's exact resting hand, and the thumb's zero moves when the skeleton is recalibrated, which is why bone calibration must precede rest capture (see [calibration.md](./calibration.md)).
 
 ## Units
 
-- Positions are meters in every metric space, including the wire.
+- Positions are meters in every metric space, including the VMC bone offsets.
 - Image quantities are pixels; reprojection and residual metrics are pixels.
-- Angles are radians internally, degrees on the wire.
+- Angles are radians internally. The wire carries rotations as quaternions.
 - Millimeters appear only in human-facing readouts (calibration spacing errors, jitter test results).
 
 ## Sides and handedness

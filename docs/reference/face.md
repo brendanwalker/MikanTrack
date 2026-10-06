@@ -27,7 +27,7 @@ The service has no thread of its own. The vision thread calls `update(steadyNowM
 
 `VisionThread::applyFaceToOutput` puts the live sample on every output frame just before the OSC send:
 
-- The 52 blendshapes go on `TrackingFrameResult::face`. In VMC mode the streamer sends them as `/VMC/Ext/Blend/Val` under the avatar's names (the face map in [avatar.md](./avatar.md)), then `/VMC/Ext/Blend/Apply`. The Mikan format does not carry them. The published result carries them too, so the 3D scene's avatar shows the face through its morph targets in either format.
+- The 52 blendshapes go on `TrackingFrameResult::face`. The streamer sends them as `/VMC/Ext/Blend/Val` under the avatar's names (the face map in [avatar.md](./avatar.md)), then `/VMC/Ext/Blend/Apply`. The published result carries them too, so the 3D scene's avatar shows the face through its morph targets.
 
 - The phone's head rotation replaces the camera head's orientation while the stream is live, with the head marked valid at full confidence. The phone measures the head far better than the body-pose stage. The position stays the camera head's, since the phone's is relative to the phone.
 

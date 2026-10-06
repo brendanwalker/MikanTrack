@@ -10,7 +10,7 @@
 // Pure math for the parametric hand representation: palm frame extraction,
 // finger bend angles relative to the neutral (straight) pose, skeleton
 // geometry, and the forward kinematics to rebuild joint positions from
-// pose + angles (3D visualization / client-side reference).
+// pose + angles (3D visualization and the VMC finger bones).
 //
 // All functions operate on a consistent 21-landmark point set in ANY
 // right-handed metric space (the model's local space, camera space or world

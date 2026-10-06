@@ -880,27 +880,6 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 
 	bChanged|= ImGui::Checkbox(locLabel("oscPanel.enabled"), &osc.enabled);
 
-	static const char* const k_oscFormatKeys[]= {"oscPanel.formatMikan", "oscPanel.formatVmc"};
-	int outputMode= (int)osc.outputMode;
-	if (ImGui::BeginCombo(locLabel("oscPanel.format"), locText(k_oscFormatKeys[outputMode])))
-	{
-		for (int optionIndex= 0; optionIndex < IM_ARRAYSIZE(k_oscFormatKeys); ++optionIndex)
-		{
-			const bool bSelected= outputMode == optionIndex;
-			if (ImGui::Selectable(locLabel(k_oscFormatKeys[optionIndex]), bSelected))
-			{
-				osc.outputMode= (eOscOutputMode)optionIndex;
-				bChanged= true;
-			}
-			if (bSelected)
-				ImGui::SetItemDefaultFocus();
-		}
-		ImGui::EndCombo();
-	}
-	ImGui::SetItemTooltip("%s", locText("oscPanel.formatTooltip"));
-
-	const bool bVmc= osc.outputMode == eOscOutputMode::Vmc;
-
 	char ipBuffer[64];
 	snprintf(ipBuffer, sizeof(ipBuffer), "%s", osc.targetIp.c_str());
 	if (ImGui::InputText(locLabel("oscPanel.targetIp"), ipBuffer, sizeof(ipBuffer), ImGuiInputTextFlags_EnterReturnsTrue))
@@ -909,17 +888,13 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		bChanged= true;
 	}
 
-	// Each format keeps its own port so switching modes cannot silently aim
-	// the stream at a listener that speaks the other one
-	int& activePort= bVmc ? osc.vmcPort : osc.targetPort;
-	int port= activePort;
-	if (ImGui::InputInt(bVmc ? locLabel("oscPanel.portVmc") : locLabel("oscPanel.port"), &port, 0) && port > 0 && port <= 65535)
+	int port= osc.port;
+	if (ImGui::InputInt(locLabel("oscPanel.port"), &port, 0) && port > 0 && port <= 65535)
 	{
-		activePort= port;
+		osc.port= port;
 		bChanged= true;
 	}
-	if (bVmc)
-		ImGui::SetItemTooltip("%s", locText("oscPanel.portVmcTooltip"));
+	ImGui::SetItemTooltip("%s", locText("oscPanel.portTooltip"));
 
 	bChanged|= ImGui::SliderInt(locLabel("oscPanel.maxRate"), &osc.maxRateHz, 10, 120, "%d Hz");
 
@@ -929,30 +904,24 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 	bChanged|= ImGui::SliderFloat(locLabel("oscPanel.dropoutHold"), &osc.holdOnDropoutMs, 0.f, 1000.f, "%.0f ms");
 	ImGui::SetItemTooltip("%s", locText("oscPanel.dropoutHoldTooltip"));
 
-	bChanged|= ImGui::Checkbox(locLabel("oscPanel.logPalmFrames"), &osc.logPalmFrames);
-	ImGui::SetItemTooltip("%s", locText("oscPanel.logPalmFramesTooltip"));
+	ImGui::Separator();
+	ImGui::TextDisabled("%s", locText("oscPanel.vmcSection"));
 
-	if (bVmc)
-	{
-		ImGui::Separator();
-		ImGui::TextDisabled("%s", locText("oscPanel.vmcSection"));
+	bChanged|= ImGui::SliderFloat(locLabel("oscPanel.headOffset"), &osc.vmcHeadOffsetMeters, 0.f, 0.25f, "%.3f m");
+	ImGui::SetItemTooltip("%s", locText("oscPanel.headOffsetTooltip"));
 
-		bChanged|= ImGui::SliderFloat(locLabel("oscPanel.headOffset"), &osc.vmcHeadOffsetMeters, 0.f, 0.25f, "%.3f m");
-		ImGui::SetItemTooltip("%s", locText("oscPanel.headOffsetTooltip"));
+	bChanged|= ImGui::Checkbox(locLabel("oscPanel.freezeOnLoss"), &osc.vmcFreezeOnLoss);
+	ImGui::SetItemTooltip("%s", locText("oscPanel.freezeOnLossTooltip"));
 
-		bChanged|= ImGui::Checkbox(locLabel("oscPanel.freezeOnLoss"), &osc.vmcFreezeOnLoss);
-		ImGui::SetItemTooltip("%s", locText("oscPanel.freezeOnLossTooltip"));
-
-		ImGui::TextDisabled("%s", locText("oscPanel.vmcBonesInfo"));
-		ImGui::TextDisabled("%s", locText("oscPanel.vmcAvatarBoneLengths"));
-	}
+	ImGui::TextDisabled("%s", locText("oscPanel.vmcBonesInfo"));
+	ImGui::TextDisabled("%s", locText("oscPanel.vmcAvatarBoneLengths"));
 
 	ImGui::Separator();
-	ImGui::TextDisabled("%s", locText("oscPanel.spaceInfo"));
-	ImGui::TextDisabled("%s", locText("oscPanel.palmFrameInfo"));
+	ImGui::TextDisabled("%s", locText("oscPanel.readoutInfo"));
 
-	// Live readout of exactly what's being streamed: palm transform + the 20
-	// finger angles per hand (shown in degrees)
+	// Solver diagnostic: the palm transform, forearm and the 20 finger angles
+	// per hand as the solver measures them (shown in degrees), which the VMC
+	// retarget then turns into bones
 	static const char* s_fingerNames[FINGER_COUNT]= {
 		"oscPanel.fingerThumb", "oscPanel.fingerIndex", "oscPanel.fingerMiddle",
 		"oscPanel.fingerRing", "oscPanel.fingerPinky"};
@@ -983,9 +952,8 @@ void SettingsPanels::drawOscPanel(AppConfig* config, VisionThread* visionThread,
 		ImGui::Text(locText("oscPanel.palmFmt"), palmPos.x, palmPos.y, palmPos.z,
 					bWorld ? "" : locText("oscPanel.cameraSpaceSuffix"));
 
-		// Wrist bend. NOT a wire value - /mikan/hand/{s}/forearm carries the
-		// forearm frame and leaves the joint angle to the consumer, which gets
-		// it from the palm the same way this does. Shown in DEGREES because it
+		// Wrist bend, the rotation between the measured forearm and palm. Shown
+		// in DEGREES because it
 		// is the number that tells you whether the mounting calibration is
 		// good: the wrist rotation is measured relative to the pose you
 		// captured, so a straight wrist should read near zero. A large angle

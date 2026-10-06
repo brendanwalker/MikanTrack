@@ -16,8 +16,8 @@ class VideoPreviewPanel;
 
 // Guided new-project setup: a chain of modal prompts and the existing
 // calibration wizards in dependency order (cameras, intrinsics per camera,
-// extrinsics, hands, then IMU mounting or body measurement by variant, then
-// output protocol). Runs inside the normal tracking UI so the wizards keep
+// extrinsics, hands, then IMU mounting or body measurement by variant).
+// Runs inside the normal tracking UI so the wizards keep
 // their preview-panel plumbing; the prompts are modals drawn on top, and
 // manual wizard launches are suppressed while the flow is active.
 //
@@ -47,7 +47,6 @@ public:
 		HandCalibRunning,
 		MountingRunning,  // JoyCon variant only
 		BodyCalibRunning, // tri-camera variant only
-		OutputProtocol,
 		ConfirmCancel,
 	};
 
@@ -74,6 +73,8 @@ public:
 private:
 	void transitionTo(eStep step);
 	void enterConfirmCancel();
+	// Saves the configured project and ends the flow
+	void finish();
 	// Ends the flow and asks App to delete the project and return to the menu
 	// (applied between frames, so nothing here runs on a torn-down project)
 	void requestDiscardProject();
@@ -82,7 +83,6 @@ private:
 	void updateCameraSelectionPrompt();
 	void updateCharucoPrintPrompt();
 	void updateArucoPrintPrompt();
-	void updateOutputProtocolPrompt();
 	void updateConfirmCancelPrompt();
 	// All five *Running steps: launch the step's wizard once, then wait for it
 	// to close and branch on Completed vs Cancelled

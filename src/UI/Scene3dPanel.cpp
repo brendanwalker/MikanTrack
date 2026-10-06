@@ -150,8 +150,8 @@ void Scene3dPanel::drawSkeleton(const TrackingFrameResult& result, float brightn
 {
 	// Forward-kinematics render from the parametric pose: palm frame axes +
 	// finger chains rebuilt from skeleton geometry and bend angles. This is
-	// exactly what an OSC client reconstructs, so what you see here is what
-	// the client gets.
+	// the same forward kinematics the VMC finger bones are built from, so
+	// what you see here is what the stream carries.
 	for (int sideIndex= 0; sideIndex < 2; ++sideIndex)
 	{
 		const HandPose& pose= result.poses[sideIndex];

@@ -117,10 +117,6 @@ Every length here is a landmark-space quantity, and this is the trap: the model'
 
 ### Outputs
 
-The solved joints leave over OSC via `OscStreamer` (`src/Osc/OscStreamer.h`):
+The solved joints leave over OSC via `OscStreamer` (`src/Osc/OscStreamer.h`) as VMC bones: the shoulders place the `Shoulder` and `UpperArm` bones, the elbow bends the arm chain, and the head drives the `Head` bone. A joint the solver did not produce is omitted or falls back as described in [wire-protocol.md](./wire-protocol.md).
 
-- `/mikan/hand/{left,right}/elbow`: `,ffff` position xyz plus confidence
-- `/mikan/hand/{left,right}/shoulder`: `,ffff` position xyz plus confidence
-- `/mikan/body/head`: `,ffffffff` position xyz plus orientation xyzw plus confidence
-
-The elbow position is derived from the forearm frame the solver fills on `poses[]`: the frame's +X runs from the elbow toward the hand, matching the palm frame at a neutral wrist, with roll taken from the palm. See [wire-protocol.md](./wire-protocol.md) for the full message contract.
+The elbow position is derived from the forearm frame the solver fills on `poses[]`: the frame's +X runs from the elbow toward the hand, matching the palm frame at a neutral wrist, with roll taken from the palm.

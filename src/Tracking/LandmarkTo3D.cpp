@@ -139,8 +139,8 @@ float LandmarkTo3D::computeFkReprojectionError(const TrackedHand& hand, const Ha
 	if (!m_bConfigured || !pose.hasCameraPose)
 		return 0.f;
 
-	// Rebuild the hand exactly as a client would - from the palm transform,
-	// skeleton and angles alone - and project it back into the image. Any
+	// Rebuild the hand exactly as the VMC retarget does - from the palm
+	// transform, skeleton and angles alone - and project it back into the image. Any
 	// error the parameterization introduces (wrong neutral reference, hinge
 	// convention, dropped degree of freedom) shows up here as pixels.
 	glm::mat4 palmTransform= glm::mat4_cast(pose.palmOrientationCamera);

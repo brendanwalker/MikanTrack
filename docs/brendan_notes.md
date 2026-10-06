@@ -54,7 +54,7 @@ Presentation Order
 
 - `src/Imu`: wrist inertial trackers. `ImuService` owns the devices, one `ImuOrientationFilter` per device, and the mounting calibration that turns a sensor orientation into a forearm orientation. `src/Imu/Joycon/` is the HID backend (`JoyconDevice`, `JoyconDeviceManager`). See [imu.md](./imu.md).
 
-- `src/Osc`: network output. `OscStreamer` encodes the fused frame in the Mikan or VMC schema (`eOscOutputMode`, `VmcRetarget`) via `OscWriter` over `UdpSocket`. See [wire-protocol.md](./wire-protocol.md).
+- `src/Osc`: network output. `OscStreamer` encodes the fused frame as the VMC protocol (`VmcRetarget`) via `OscWriter` over `UdpSocket`. See [wire-protocol.md](./reference/wire-protocol.md).
 
 - `src/Render`: minimal GL helpers for the 3D scene view: `GlFrameBuffer`, `GlTexture`, `GlLineRenderer`, `DebugDraw`, `OrbitCamera`, `Colors.h`. No scene graph.
 

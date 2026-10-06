@@ -9,7 +9,6 @@
 #include "glm/ext/matrix_double4x4.hpp"
 
 #include "MikanVideoSourceTypes.h"
-#include "OscOutputMode.h"
 #include "TrackingTypes.h"
 
 // Persisted per-project tracking settings, stored as JSON at the loaded
@@ -112,28 +111,18 @@ struct TrackingConfig
 struct OscConfig
 {
 	bool enabled= true;
-	// Which wire format is live. The two are mutually exclusive.
-	eOscOutputMode outputMode= eOscOutputMode::Mikan;
 	std::string targetIp= "127.0.0.1";
-	int targetPort= 8000;
-	// VMC's conventional Performer -> Marionette port. Held separately from
-	// targetPort so switching modes cannot silently aim a stream at a listener
-	// that speaks the other format.
-	int vmcPort= 39539;
+	// VMC's conventional Performer -> Marionette port
+	int port= 39539;
 	int maxRateHz= 60;
-	// Withhold a hand's pose messages (and report it untracked) below this
-	// fused confidence, so clients can hold/blend instead of jittering
+	// Treat a hand below this fused confidence as lost, so the avatar holds
+	// instead of jittering
 	float minConfidence= 0.f;
-	// Keep sending the last good pose (confidence decaying to zero) for this
-	// long after a dropout before reporting tracked=0 - bridges brief losses
-	// so clients don't slam to their rest-pose blend. 0 = report immediately.
+	// Keep streaming the last good pose for this long after a dropout before
+	// the loss rule (freeze or silence) applies - bridges brief losses.
+	// 0 = apply it immediately.
 	float holdOnDropoutMs= 250.f;
-	// Log every palm transform as it goes onto the wire, for diffing against
-	// what a client reports receiving. Off by default: this is one line per
-	// hand per frame.
-	bool logPalmFrames= false;
 
-	// -- VMC mode only ------------------------------------------------------
 	// Neck -> head bone offset. A VMC receiver replaces the translation of
 	// every bone it is sent, so the head needs one, and nothing on this rig
 	// measures a neck.

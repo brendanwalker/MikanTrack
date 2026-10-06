@@ -620,7 +620,6 @@ static int runVmcTest(const TestArgs&)
 		frame.head.confidence= 0.9f;
 
 		OscStreamerConfig config;
-		config.outputMode= eOscOutputMode::Vmc;
 		config.maxRateHz= 0.f; // no decimation, so one call encodes one bundle
 		config.shoulderWidthMeters= kShoulderWidth;
 		config.upperArmLengthMeters= kUpperArm;
@@ -715,76 +714,6 @@ static int runVmcTest(const TestArgs&)
 				fabsf(message.floats[6] - expectedHand.localRotation.w) < 1e-6f;
 		}
 		check(bHandMatches, "bone arguments are position xyz then rotation xyzw");
-
-		// The modes are mutually exclusive, which is the point of the toggle
-		config.outputMode= eOscOutputMode::Mikan;
-		streamer.setConfig(config);
-		std::vector<std::vector<uint8_t>> mikanPackets;
-		streamer.encodeFrame(frame, mikanPackets);
-
-		std::vector<DecodedMessage> mikanMessages;
-		bool bMikanWellFormed= !mikanPackets.empty();
-		size_t mikanBytes= 0;
-		for (const std::vector<uint8_t>& packet : mikanPackets)
-		{
-			bMikanWellFormed&= decodeBundle(packet, mikanMessages);
-			mikanBytes+= packet.size();
-		}
-		// The Mikan format is deliberately NOT chunked: its receiver treats one
-		// bundle as one frame (it publishes a frame event per bundle and counts
-		// loss off the sequence in /mikan/frame), so splitting a frame there is
-		// a two-sided protocol change rather than a sender-side fix.
-		check(mikanPackets.size() == 1, "Mikan mode is still one bundle per frame");
-
-		// The frame just measured carried the 1 Hz skeleton and info messages.
-		// The next one inside the same second does not, and THAT is the size
-		// that has to stay inside a datagram - the 1 Hz frames are the only
-		// ones exposed to IP fragmentation.
-		std::vector<std::vector<uint8_t>> steadyPackets;
-		streamer.encodeFrame(frame, steadyPackets);
-		const size_t steadyBytes= steadyPackets.empty() ? 0 : steadyPackets[0].size();
-		MIKAN_LOG_INFO("test-vmc") << "Mikan mode: " << mikanBytes << " bytes with the 1 Hz skeleton, "
-								   << steadyBytes << " bytes steady state";
-		check(steadyBytes > 0 && steadyBytes <= 1472,
-			  "a steady-state Mikan frame fits one unfragmented datagram");
-		check(bMikanWellFormed, "the Mikan stream still decodes");
-
-		bool bAnyVmc= false;
-		bool bAnyMikan= false;
-		for (const DecodedMessage& message : mikanMessages)
-		{
-			bAnyVmc|= message.address.rfind("/VMC/", 0) == 0;
-			bAnyMikan|= message.address.rfind("/mikan/", 0) == 0;
-		}
-		check(!bAnyVmc && bAnyMikan, "Mikan mode streams no VMC addresses");
-
-		// The forearm message is the one address whose consumer rebuilds an arm
-		// from it, so its exact layout is the contract: a receiver reads the
-		// arguments positionally and a silently reordered or resized message
-		// produces a plausible, wrong arm rather than a parse failure.
-		{
-			const HandPose& leftPose= frame.poses[0];
-			bool bForearmOnWire= false;
-			for (const DecodedMessage& message : mikanMessages)
-			{
-				if (message.address != "/mikan/hand/left/forearm")
-					continue;
-
-				bForearmOnWire=
-					message.tags == "ifffffff" && message.ints.size() == 1 && message.ints[0] == 1 &&
-					message.floats.size() == 7 &&
-					// The WRIST JOINT, not the palm center - anchoring the frame
-					// half a palm forward shifts the whole arm and still looks
-					// like tracking
-					nearlyEqual(glm::vec3(message.floats[0], message.floats[1], message.floats[2]),
-								leftPose.getWristPositionWorld(), 1e-6f) &&
-					fabsf(message.floats[3] - leftPose.forearmOrientationWorld.x) < 1e-6f &&
-					fabsf(message.floats[4] - leftPose.forearmOrientationWorld.y) < 1e-6f &&
-					fabsf(message.floats[5] - leftPose.forearmOrientationWorld.z) < 1e-6f &&
-					fabsf(message.floats[6] - leftPose.forearmOrientationWorld.w) < 1e-6f;
-			}
-			check(bForearmOnWire, "/forearm is ,ifffffff: valid, wrist-joint xyz, forearm quat xyzw");
-		}
 	}
 
 	// (i) Bone names, which are the whole contract with the receiver: a typo
@@ -835,7 +764,6 @@ static int runVmcTest(const TestArgs&)
 		frame.face.blendshapes[arkit("mouthSmileLeft")]= 0.4f;
 
 		OscStreamerConfig config;
-		config.outputMode= eOscOutputMode::Vmc;
 		config.maxRateHz= 0.f;
 		config.avatarPath= "C:\\avatars\\test.vrm";
 		config.avatarTitle= "Test";

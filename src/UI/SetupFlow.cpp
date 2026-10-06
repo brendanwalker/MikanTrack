@@ -66,9 +66,6 @@ void SetupFlow::update()
 		case eStep::ArucoPrint:
 			updateArucoPrintPrompt();
 			break;
-		case eStep::OutputProtocol:
-			updateOutputProtocolPrompt();
-			break;
 		case eStep::ConfirmCancel:
 			updateConfirmCancelPrompt();
 			break;
@@ -133,6 +130,12 @@ void SetupFlow::enterConfirmCancel()
 {
 	m_stepBeforeConfirm= m_step;
 	m_step= eStep::ConfirmCancel;
+}
+
+void SetupFlow::finish()
+{
+	m_app->getConfig()->save();
+	m_step= eStep::Inactive;
 }
 
 void SetupFlow::requestDiscardProject()
@@ -437,52 +440,6 @@ void SetupFlow::updateArucoPrintPrompt()
 	ImGui::EndPopup();
 }
 
-void SetupFlow::updateOutputProtocolPrompt()
-{
-	if (!beginCenteredModal(locWindowTitle("windows.modalOutputProtocol")))
-		return;
-
-	AppConfig* config= m_app->getConfig();
-
-	ImGui::PushTextWrapPos(k_promptWrapWidth);
-	ImGui::TextUnformatted(locText("setupFlow.outputProtocolPrompt"));
-	ImGui::PopTextWrapPos();
-	ImGui::Spacing();
-
-	static const char* k_outputModeKeys[]= {"setupFlow.outputFormatMikan", "setupFlow.outputFormatVmc"};
-
-	int outputMode= (int)config->osc.outputMode;
-	if (ImGui::BeginCombo(locLabel("setupFlow.outputFormatLabel"), locText(k_outputModeKeys[outputMode])))
-	{
-		for (int modeIndex= 0; modeIndex < 2; ++modeIndex)
-		{
-			if (ImGui::Selectable(locLabel(k_outputModeKeys[modeIndex]), outputMode == modeIndex))
-			{
-				outputMode= modeIndex;
-				config->osc.outputMode= (eOscOutputMode)outputMode;
-				config->markDirty();
-				m_app->getVisionThread()->requestConfigRefresh();
-			}
-		}
-		ImGui::EndCombo();
-	}
-
-	ImGui::Separator();
-	if (ImGui::Button(locLabel("common.finish"), ImVec2(120, 0)))
-	{
-		config->save();
-		ImGui::CloseCurrentPopup();
-		m_step= eStep::Inactive;
-	}
-	ImGui::SameLine();
-	if (ImGui::Button(locLabel("common.cancel"), ImVec2(120, 0)))
-	{
-		ImGui::CloseCurrentPopup();
-		enterConfirmCancel();
-	}
-	ImGui::EndPopup();
-}
-
 void SetupFlow::updateConfirmCancelPrompt()
 {
 	if (!beginCenteredModal(locWindowTitle("windows.modalCancelSetup")))
@@ -594,11 +551,11 @@ void SetupFlow::updateRunningWizardStep()
 			else if (m_trackingSetup == eTrackingSetup::TriCameraFront)
 				transitionTo(eStep::BodyCalibRunning);
 			else
-				transitionTo(eStep::OutputProtocol);
+				finish();
 			break;
 		case eStep::MountingRunning:
 		case eStep::BodyCalibRunning:
-			transitionTo(eStep::OutputProtocol);
+			finish();
 			break;
 		default:
 			break;

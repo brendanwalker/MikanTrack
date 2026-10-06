@@ -6,14 +6,13 @@
 <!-- AI_USAGE_BADGES:END -->
 
 Standalone Windows app for GPU hand and upper-body tracking from one or more
-webcams, streaming a parametric hand model (palm transform + finger bend
-angles) over OSC (built for consumption by Unreal Engine's OSC plugin).
+webcams, streaming the tracked hands, arms and head over OSC as the
+[VMC protocol](https://protocol.vmc.info), for VRM avatars in Unreal Engine
+(through VRM4U's VMC node) and other VMC receivers.
 
 The `Mikan` prefix places this alongside sibling tools such as
 [MikanXR](https://github.com/MikanXR/MikanXR), but MikanTrack is standalone
-and does not require or talk to any of them at runtime. The Unreal Engine
-plugin that consumes its OSC stream shares the MikanTrack name; the OSC
-namespace itself stays `/mikan/*`.
+and does not require or talk to any of them at runtime.
 
 Runs the Google MediaPipe hand models (palm detection + hand landmark) via
 **ONNX Runtime with the DirectML execution provider** — real GPU inference on
@@ -36,8 +35,8 @@ never the pose model's own metric 3D (measured unusable per frame): the elbow
 is the elbow ray against a forearm-length sphere around the FUSED wrist, the
 shoulders take their depth from the calibrated shoulder width, and the head
 takes its depth from the apparent ear separation. A calibrated wrist IMU still wins for the forearm
-when present. Rigs with only overhead cameras solve arms client-side with
-Two-Bone IK from the palm transform.
+when present. Rigs with only overhead cameras measure no elbow or shoulder,
+and the streamed arm degrades as described under [VMC output](#vmc-output).
 
 ## Features
 
@@ -60,12 +59,12 @@ Two-Bone IK from the palm transform.
   toon-shaded in the 3D scene, posed from the tracked hands, elbows and head
   with the avatar's own proportions (reach scaled onto its arms, elbows from a
   two-bone solve hinted by the measured elbow, fingers on its own hand rig).
-  In VMC mode the stream then carries that avatar's bones. The panel's Mapping
+  The VMC stream then carries that avatar's bones. The panel's Mapping
   and Retarget tabs fix a rig's bone mapping, trim its rest pose, place the
   elbow hints (draggable in the 3D scene) and tune the fingers, saved in a
   `<name>.mikanrig.json` beside the VRM.
 - Live preview with landmark overlay; alternate 3D scene view rendering the
-  forward-kinematics hand reconstruction (exactly what OSC clients rebuild),
+  forward-kinematics hand reconstruction (what the VMC finger bones are built from),
   camera frustums, marker grid, orbit camera
 - **Body measurement wizard** (Tracking panel -> Measure My Body): the elbow,
   shoulder and head estimates rest on lengths that are NOT anatomical - they
@@ -94,7 +93,7 @@ Two-Bone IK from the palm transform.
   in mm, scale) - the numbers are saved with the config as a baseline. Hand
   scale is measured continuously by stereo triangulation while tracking runs,
   until calibrated hand skeletons supersede it.
-- OSC 1.0 output over UDP unicast, one bundle per frame (rate-limited)
+- VMC protocol output (OSC 1.0 over UDP unicast, rate-limited)
 - Localized UI (English and Japanese; machine-translated Japanese for now),
   switchable live from the main menu or the Settings panel
 - Dear ImGui (docking) UI; per-project config persisted to
@@ -195,9 +194,8 @@ a dual-camera and a triple-camera rig) can coexist and be switched or shared
 without disturbing each other. **New Project** runs a guided setup: pick the
 tracking variant (two overhead cameras, with or without wrist Joy-Cons, or
 overhead pair + front camera), assign camera devices, print and measure the
-calibration patterns, and the calibration wizards below run in the right order,
-ending at the output-protocol choice. Cancelling the guided setup (after a
-confirmation) deletes the new project again, and Resume returns to whatever
+calibration patterns, and the calibration wizards below run in the right order.
+Cancelling the guided setup (after a confirmation) deletes the new project again, and Resume returns to whatever
 project came before it.
 On first run an existing `%APPDATA%/MikanTrack/config.json` is migrated into a
 `Default` project automatically (a `config.json.bak` is left beside it).
@@ -219,117 +217,22 @@ On first run an existing `%APPDATA%/MikanTrack/config.json` is migrated into a
 Without calibration the app still tracks and streams, but only image-space
 data is meaningful (no metric 3D / world space).
 
-## OSC output
-
-Two wire formats, one active at a time (**OSC panel -> Format**): the native
-`/mikan/*` schema below, or the [VMC protocol](#vmc-output) for VRM receivers.
-They describe the same pose in incompatible terms, so nothing sends both.
-
-Default target `127.0.0.1:8000` (configurable). One OSC 1.0 bundle per frame.
-Hands are streamed as a PARAMETRIC model - palm transform + finger bend
-angles - rather than raw landmarks: angles come from the network's local
-articulation (its most reliable output) and are depth-noise-free, and
-poses/angles fuse cleanly across cameras where landmark blending distorted
-bones. Elbow, shoulder and head addresses are always sent; their trailing
-confidence carries validity (0 = do not use), so they never go silent.
-
-| Address | Types | Meaning |
-|---|---|---|
-| `/mikan/frame` | `iifi` | frameId, timestampMs, fps, sendSequence |
-| `/mikan/hand/{left,right}/tracked` | `iff` | tracked (0/1), presence, confidence |
-| `/mikan/hand/{left,right}/elbow` | `4f` | elbow position xyz (m) + confidence; from the wrist IMU forearm when calibrated, else the vision body-pose solve |
-| `/mikan/hand/{left,right}/shoulder` | `4f` | shoulder position xyz (m) + confidence; vision body pose |
-| `/mikan/hand/{left,right}/palm` | `7f` | palm position xyz (m) + orientation quaternion xyzw |
-| `/mikan/hand/{left,right}/forearm` | `i7f` | valid (0/1), forearm position xyz (m) + orientation xyzw (world). Origin is the WRIST JOINT (half a palm back from the palm center), +X along the forearm toward the hand, so the elbow is one forearm length back along -X |
-| `/mikan/hand/{left,right}/fingers` | `20f` | per finger (thumb..pinky): lateral, proximalBend, intermediateBend, distalBend (DEGREES, 0 = the rest pose) |
-| `/mikan/hand/{left,right}/skeleton` | `45f` | per finger: base position in palm frame xyz + phalanx lengths [proximal, intermediate, distal] (m) + neutral (zero-angle) direction in palm frame xyz; sent at 1 Hz |
-| `/mikan/body/head` | `8f` | head position xyz (m) + orientation xyzw (+X facing, +Y person's left, +Z up) + confidence; vision body pose |
-| `/mikan/info` | `ss` | space/units/palm-frame convention, app version (1 Hz) |
-
-**Palm frame** (Ultraleap-compatible): origin at the palm center (midway
-wrist to middle knuckle), **+X toward the fingers**, **+Z out of the palmar
-surface**, +Y completing right-handed. Positions are in the marker-anchored
-world frame (right-handed, meters, +Z up out of the table); before extrinsics
-calibration they fall back to OpenCV camera space (`/mikan/info` says which).
-
-**Angle conventions** (all in the palm frame):
-
-- **Zero = the rest pose.** Forward kinematics starts from the per-finger
-  `neutralDirInPalm` streamed in the skeleton message (the flat-hand default:
-  four fingers parallel to palm +X, thumb along its own metacarpal) - use it,
-  don't derive one. **Tracking panel -> Calibrate Hands...** measures your
-  bone lengths and then captures your rest pose (in that order - measured
-  bones move the thumb's angle zero), so your rest pose reads zeros on all
-  four angles. Without the capture a hand hovering over a keyboard reports
-  20-50 degrees of knuckle flexion, which is *correct* but rarely what a
-  client wants as its origin.
-
-  The capture needs **both hands seen by two cameras**: the zero reference
-  is taken from the stereo-triangulated angles, because MediaPipe's model
-  landmarks are view-dependent (two cameras watching the same physical hand
-  disagree about its articulation by tens of degrees) and a single camera's
-  reading would bake that camera's bias into the zero.
-- **`lateral`** rotates about palm **+Z, positive counter-clockwise**, i.e.
-  toward palm **+Y = cross(palmZ, palmX)**. Purely geometric and identical
-  for both hands (the palm frame carries the chirality), so on a right hand
-  positive splays toward the pinky and on a left hand toward the thumb.
-- **`proximal`** is positive **curling toward the palm** (the +Z side).
-- **`intermediate` and `distal` are relative to their PARENT BONE**, not to
-  the palm: `intermediate` is the middle bone's bend from the proximal bone,
-  `distal` the tip bone's bend from the intermediate bone. Zero means
-  collinear with the parent. They chain, so an evenly curling finger reads
-  three similar values.
-
-**Client-side hand reconstruction**: place each finger base at its skeleton
-offset in the palm frame, start from that finger's streamed
-`neutralDirInPalm`, apply lateral rotation about palm +Z, then bend the three
-phalanx segments about the finger's lateral axis by the three bend angles. **Thumb exception**: the thumb's
-intermediate/distal bends rotate about its hinge PRONATED 1.2 rad (~69 deg)
-about the thumb metacarpal direction (positive pronation on a right hand,
-negative on a left) - the thumb rests twisted relative to the fingers, so
-its flexion sweeps across the palm toward the pinky rather than curling
-toward the palm plane. The app's own 3D view renders exactly this
-reconstruction, so it shows what your client will see.
-
-**Skeleton/bone lengths** come from MediaPipe's metric hand model scaled by
-the calibrated hand scale - no separate bone calibration needed.
-
-**Confidence** is `presence x stability`, where stability is measured from the
-observed palm jitter (the constant-velocity residual) rather than taken from
-the network. MediaPipe's own presence score answers "is a hand here" and stays
-near 1.0 on a badly conditioned edge-on view whose depth swings by centimeters,
-so it is not usable as a trust signal on its own. Fusion weights each camera by
-`confidence x how face-on the palm is`, so a camera with a poor view of a hand
-stops polluting the fused pose; the streamed confidence is the best
-contributing camera's. Set **OSC panel -> Min confidence** to withhold
-`/palm` and `/fingers` below a threshold - the hand is then streamed as
-`tracked=0` and the client should hold its last good pose or blend to a rest
-pose. Tune with the live per-camera confidence table in the Tracking panel.
-
-### Consuming in Unreal Engine
-
-UE is left-handed, Z-up, centimeters. Convert per landmark:
-
-```
-UE.X = 100 * mikan.Y
-UE.Y = 100 * mikan.X
-UE.Z = 100 * mikan.Z
-```
-
-(the axis swap performs the handedness flip; rotate the palm quaternion
-accordingly). In UE: enable the **OSC plugin**, create an OSC Server bound to
-the configured port, and drive your hand rig from the palm transform + finger
-angles - the same representation the Ultraleap SDK feeds it. Solve elbows
-with Two-Bone IK from the palm transform.
-
 ## VMC output
 
-Switch **OSC panel -> Format** to *VMC (VRM)* to stream the
-[VMC protocol](https://protocol.vmc.info) instead, for comparing this rig
-against other hand trackers on a receiver that already speaks it (tested
-against [VMC4UE](https://github.com/HAL9HARUKU/VMC4UE)). The port is held
-separately from the Mikan one and defaults to VMC's conventional **39539**, so
-switching formats cannot aim the stream at a listener that speaks the other.
+MikanTrack streams the [VMC protocol](https://protocol.vmc.info): OSC 1.0
+bundles over UDP unicast, default target `127.0.0.1:39539` (VMC's
+conventional port; **OSC panel -> Target IP / Port**). It was developed
+against [VMC4UE](https://github.com/HAL9HARUKU/VMC4UE). In Unreal Engine the
+consumer is [VRM4U](https://github.com/ruyo/VRM4U)'s VMC node
+(`AnimNode_VrmVMC`): point it at the configured port and it drives the VRM's
+skeleton directly.
+
+Hands are tracked as a PARAMETRIC model (palm transform + finger bend
+angles) rather than raw landmarks: angles come from the network's local
+articulation (its most reliable output) and are depth-noise-free, and
+poses/angles fuse cleanly across cameras where landmark blending distorted
+bones. The retarget turns that model, the solved elbows and shoulders, and
+the head into parent-relative bones.
 
 | Address | Types | Meaning |
 |---|---|---|
@@ -347,31 +250,80 @@ drives the `Head` bone. With no avatar loaded they go out as the 52 ARKit names.
 
 Bones streamed, using Unity's `HumanBodyBones` names: `Head`, both
 `Shoulder`/`UpperArm`/`LowerArm`/`Hand`, and all 30 finger bones. Everything
-else - spine, neck, legs, eyes, jaw - is left alone, because this rig does not
+else (spine, neck, legs, eyes, jaw) is left alone, because this rig does not
 measure it and a receiver holds an unstreamed bone at the avatar's rest pose.
 
 **Identity means the avatar's rest pose.** Streamed rotations are
 parent-relative and measured against a VRM-style rest: a T-pose with the palms
 facing down, all humanoid bones at identity local rotation. Finger rest
-directions are not assumed - they come from the same `neutralDirInPalm` the
-Mikan schema streams, so a hand held flat emits identity finger rotations
-whatever the avatar's own finger authoring.
+directions are not assumed: they come from the hand skeleton's
+`neutralDirInPalm`, so a hand at zero finger angles emits identity finger
+rotations whatever the avatar's own finger authoring.
 
 **The avatar takes the measured bone lengths.** A VMC receiver replaces both
 the rotation and the translation of every bone it is sent, so each one carries
 a real offset: shoulder width, upper arm and forearm from the Body panel, and
 the finger offsets from the calibrated hand skeleton. The one length nothing
 here measures is neck-to-head, which is the **Head offset** slider (raise it if
-the head sinks into the shoulders).
+the head sinks into the shoulders). With a VRM loaded in the Avatar panel the
+bones carry that avatar's own proportions instead.
 
-**Loss is expressed as stillness.** VMC carries no confidence, so past the
-dropout hold a lost hand's bones keep streaming frozen (**Freeze on loss**,
-default on). Turning it off stops the messages instead, which returns that arm
-to the avatar's rest T-pose.
+**Bones degrade one at a time.** VMC carries no confidence, so an unmeasured
+joint is expressed by which bones arrive. Without body pose there is no
+shoulder, so the clavicle and upper arm are simply not streamed and the hand
+still arrives correctly oriented. With no measured elbow the upper arm aims
+straight at the wrist and the forearm takes the hand's orientation. Positions
+are in the marker-anchored world frame, so before extrinsics calibration no
+hand bones are streamed at all.
 
-Bones degrade one at a time. Without body pose there is no shoulder, so the
-clavicle and upper arm are simply not streamed and the hand still arrives
-correctly oriented.
+**Confidence and loss.** Hand confidence is `presence x stability`, where
+stability is measured from the observed palm jitter (the constant-velocity
+residual) rather than taken from the network. MediaPipe's own presence score
+answers "is a hand here" and stays near 1.0 on a badly conditioned edge-on
+view whose depth swings by centimeters, so it is not usable as a trust signal
+on its own. Fusion weights each camera by `confidence x how face-on the palm
+is`, so a camera with a poor view of a hand stops polluting the fused pose.
+Set **OSC panel -> Min confidence** to treat a hand below a threshold as lost.
+A lost hand keeps streaming its last good pose for the **Dropout hold**
+(default 250 ms), which bridges brief losses. Past the hold its bones keep
+streaming frozen (**Freeze on loss**, default on); turning that off stops the
+messages instead, which returns that arm to the avatar's rest T-pose. Tune the
+threshold with the live per-camera confidence table in the Tracking panel.
+
+**Palm frame and finger angles.** The OSC panel shows what the solver
+measures for each hand, the inputs the bones are built from. The palm frame
+(Ultraleap-compatible) has its origin at the palm center (midway wrist to
+middle knuckle), **+X toward the fingers**, **+Z out of the palmar surface**,
++Y completing right-handed. Angles are shown in degrees:
+
+- **Zero = the rest pose.** Forward kinematics starts from the per-finger
+  `neutralDirInPalm` (the flat-hand default: four fingers parallel to palm
+  +X, thumb along its own metacarpal). **Tracking panel -> Calibrate
+  Hands...** measures your bone lengths and then captures your rest pose (in
+  that order, since measured bones move the thumb's angle zero), so your rest
+  pose reads zeros on all four angles and streams as the avatar's rest hand.
+  Without the capture a hand hovering over a keyboard reports 20-50 degrees of
+  knuckle flexion, which is *correct* but rarely what an avatar wants as its
+  rest.
+
+  The capture needs **both hands seen by two cameras**: the zero reference
+  is taken from the stereo-triangulated angles, because MediaPipe's model
+  landmarks are view-dependent (two cameras watching the same physical hand
+  disagree about its articulation by tens of degrees) and a single camera's
+  reading would bake that camera's bias into the zero.
+- **`lateral`** rotates about palm **+Z, positive counter-clockwise**, i.e.
+  toward palm **+Y = cross(palmZ, palmX)**. Purely geometric and identical
+  for both hands (the palm frame carries the chirality), so on a right hand
+  positive splays toward the pinky and on a left hand toward the thumb.
+- **`proximal`** is positive **curling toward the palm** (the +Z side).
+- **`intermediate` and `distal` are relative to their PARENT BONE**, not to
+  the palm: `intermediate` is the middle bone's bend from the proximal bone,
+  `distal` the tip bone's bend from the intermediate bone. Zero means
+  collinear with the parent. They chain, so an evenly curling finger reads
+  three similar values.
+
+**Skeleton/bone lengths** come from MediaPipe's metric hand model scaled by
+the calibrated hand scale, or from the hand bone calibration when it has run.
 
 **A frame is several datagrams.** 39 bone messages come to about 3.4 KB, which
 is split into complete bundles of at most 1400 bytes each (3 datagrams for a
@@ -379,11 +331,11 @@ fully tracked frame). This is not an optimization: a single oversized datagram
 does not reach common VMC receivers at all. It exceeds a 1500-byte ethernet
 MTU, so it relies on IP fragmentation where one lost fragment costs the whole
 bundle, and tools built on
-[Rug.Osc](https://www.nuget.org/packages/Rug.Osc) - among them
-[VMCProtocolMonitor](https://github.com/gpsnmeajp/VMCProtocolMonitor) -
+[Rug.Osc](https://www.nuget.org/packages/Rug.Osc) (among them
+[VMCProtocolMonitor](https://github.com/gpsnmeajp/VMCProtocolMonitor))
 allocate a **2048-byte** receive buffer by default, which a 3.4 KB bundle
 cannot fit. Each datagram carries its own `#bundle` header because UDP does
-not reassemble at the OSC layer. The Mikan format is deliberately not chunked.
+not reassemble at the OSC layer.
 
 **Troubleshooting a receiver that sees nothing:** only one process at a time
 gets a unicast UDP port on Windows. A generic OSC monitor left running on
